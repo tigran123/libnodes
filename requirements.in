@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+aiofiles
+python-multipart
+jinja2
+pyyaml
+sse-starlette
+pydantic-settings

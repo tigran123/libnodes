@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Devices · LibNodes{% endblock %}
+
+{% block crumb %}devices / <b>all</b>{% endblock %}
+
+{% block topbar_right %}
+  <span id="device-status"
+        hx-get="/devices/status"
+        hx-trigger="every 10s"
+        hx-swap="innerHTML"
+        style="display:contents">
+    {% include "device_status.html" %}
+  </span>
+  <button class="btn"
+          hx-post="/devices/rescan"
+          hx-target="#device-rows"
+          hx-swap="innerHTML"
+          hx-disabled-elt="this">Rescan</button>
+{% endblock %}
+
+{% block body %}
+<div class="view">
+
+  <div class="titlebar">
+    <h1 class="title">Devices</h1>
+    <span class="title-meta">{{ nodes|length }} devices · {{ profiles }} profiles</span>
+
+    <div class="titlebar-right">
+      <label class="field" style="width:230px">
+        <span class="slash">/</span>
+        <input type="search" name="q" value="{{ q }}"
+               placeholder="filter devices, types, addresses"
+               hx-get="/devices/rows"
+               hx-trigger="keyup changed delay:120ms, search"
+               hx-target="#device-rows"
+               hx-swap="innerHTML">
+      </label>
+
+      <div class="segmented">
+        <a class="{{ 'is-active' if view != 'grid' }}" href="/devices?view=table">TABLE</a>
+        <a class="{{ 'is-active' if view == 'grid' }}" href="/devices?view=grid">GRID</a>
+      </div>
+
+      <a class="btn btn-primary" href="/device/new">+ Add device</a>
+    </div>
+  </div>
+
+  {% if view == 'grid' %}
+    <div id="device-rows"
+         hx-get="/devices/grid"
+         hx-trigger="every 10s"
+         hx-swap="innerHTML">
+      {% include "device_grid.html" %}
+    </div>
+  {% else %}
+    <div class="panel">
+      <div class="thead device-grid">
+        <div>Device</div>
+        <div>Type</div>
+        <div>Address</div>
+        <div>Target path</div>
+        <div>Storage</div>
+        <div>Last sync</div>
+        <div class="cell-r">Actions</div>
+      </div>
+      <div id="device-rows"
+           hx-get="/devices/rows"
+           hx-trigger="every 10s"
+           hx-swap="innerHTML">
+        {% include "device_rows.html" %}
+      </div>
+    </div>
+  {% endif %}
+
+  {# No checkboxes in this table, so no selection to report. The design's blueprint
+     carried a "selected 0 · shift-click ranges" line here; it described the Library's
+     file table, not this one. #}
+  <div class="statusline">
+    <span><b>Actions</b> per device: full sync, scan, adopt, test — each shows its command</span>
+    <span>|</span>
+    <span>polling <b>{{ settings.probe_interval|int }}s</b> · hx-get <b>/devices/rows</b></span>
+  </div>
+
+</div>
+{% endblock %}

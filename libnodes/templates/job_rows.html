@@ -1,0 +1,80 @@
+{# Job table body. #}
+{% for job in jobs %}
+  {% set device = by_id.get(job.device_id) %}
+  <div class="trow jobs-grid {{ 'is-active' if job.state == 'running' }}" id="job-row-{{ job.id }}">
+
+    <div data-label="Job">
+      <span class="job-id {{ 'is-running' if job.state == 'running' }}">#{{ job.id }}</span>
+    </div>
+
+    <div data-label="Target" class="nowrap" style="font-weight:500">
+      {{ device.name if device else job.device_id }}
+    </div>
+
+    <div data-label="Source" class="mono nowrap" title="{{ job.sources|join(', ') }}">
+      {% if job.adopt %}<span class="badge">ADOPT</span> {% endif %}{% if job.dry_run %}<span class="badge badge-warn">DRY RUN</span> {% endif %}
+      {{ library_root }}/{{ job.label }}{{ ' (full)' if job.sources|length > 3 else '' }}
+    </div>
+
+    <div class="cell-r mono" data-label="Files">
+      {% if job.files_total %}{{ job.files_done }}/{{ job.files_total }}{% else %}—{% endif %}
+    </div>
+
+    <div class="cell-r mono" data-label="Bytes">
+      {% if job.state == 'running' %}
+        {{ job.bytes_done|hsize_short }}/{{ job.bytes_total|hsize_short }}
+      {% else %}
+        {{ job.bytes_total|hsize }}
+      {% endif %}
+    </div>
+
+    <div class="mono t-dim" data-label="Started">{{ job.started_at|clock }}</div>
+
+    <div class="cell-actions" data-label="State">
+      {% if job.state == 'running' %}
+        <span class="badge badge-accent">RUNNING {{ '%.0f'|format(job.pct) }}%</span>
+      {% elif job.state == 'queued' %}
+        <span class="badge">QUEUED</span>
+      {% elif job.state == 'deferred' and job.hold %}
+        <span class="badge" title="will not start on its own — press Start">HELD</span>
+        <button class="btn btn-push"
+                hx-post="/jobs/{{ job.id }}/start"
+                hx-target="#job-rows" hx-swap="innerHTML"
+                hx-disabled-elt="this"
+                title="Run this job now">Start</button>
+      {% elif job.state == 'deferred' %}
+        <span class="badge badge-warn" title="waiting for {{ device.name if device else job.device_id }} to answer">DEFERRED</span>
+      {% elif job.state == 'done' %}
+        <span class="badge badge-ok">DONE {{ job.duration|hhmmss }}</span>
+      {% elif job.state == 'aborted' %}
+        <span class="badge badge-err">ABORTED</span>
+      {% else %}
+        <span class="badge badge-err">FAILED</span>
+      {% endif %}
+
+      {# The log lives with its job, not in a separate section. #}
+      {% if job.started_at %}
+        <button class="btn btn-push"
+                hx-get="/jobs/{{ job.id }}/log/view"
+                hx-target="#notices"
+                hx-swap="beforeend"
+                title="Show this job's log">log</button>
+      {% endif %}
+
+      {# Every job must be removable. A deferred job whose device never comes back
+         would otherwise sit in this table for ever. #}
+      <button class="btn btn-ghost btn-icon"
+              hx-delete="/jobs/{{ job.id }}"
+              hx-target="#job-rows"
+              hx-swap="innerHTML"
+              hx-disabled-elt="this"
+              {% if job.state == 'running' %}hx-confirm="Abort and remove job #{{ job.id }}?"{% endif %}
+              title="{{ 'Abort and remove' if job.state in ('running', 'queued', 'deferred') else 'Remove from history' }}">✕</button>
+    </div>
+
+  </div>
+{% else %}
+  <div class="trow" style="grid-template-columns:1fr">
+    <div class="t-dim">No jobs yet. Push something from the Library.</div>
+  </div>
+{% endfor %}

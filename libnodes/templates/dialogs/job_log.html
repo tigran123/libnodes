@@ -1,0 +1,52 @@
+{# One job's log, shown where the job is rather than in a separate Logs section. #}
+<div class="backdrop" id="job-log">
+  <div class="dialog" style="width:min(900px, 94vw)">
+
+    <div class="dialog-head">
+      {% if job %}
+        <span class="dot {{ 'dot-ok' if job.exit_code == 0 else ('dot-err' if job.finished else 'dot-accent') }}"></span>
+      {% endif %}
+      Job #{{ job_id }}
+      {% if job %}
+        <span class="meta" style="margin-left:6px">
+          {{ device.name if device else job.device_id }} · {{ job.label }}
+          {% if job.finished %} · exit {{ job.exit_code if job.exit_code is not none else '—' }}{% endif %}
+        </span>
+      {% endif %}
+    </div>
+
+    <div class="dialog-body">
+      {% if lines %}
+        {% if truncated %}
+          {# No link here: `Raw` in the footer already opens the whole file. #}
+          <div class="meta">
+            last {{ lines|length }} lines · {{ truncated|commafy }} earlier lines omitted ·
+            <b>Raw</b> opens all {{ size|hsize }}
+          </div>
+        {% endif %}
+        <div class="term" style="height:min(420px, 60vh);overflow:auto;justify-content:flex-start">
+          {% for line in lines %}
+            <div class="{{ 'err' if 'rsync error' in line or line.startswith('rsync:') else ('cmd' if line.startswith('$ ') else ('prog' if line.strip().endswith(')') and '%' in line else '')) }}">{{ line }}</div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="meta">
+          No log for this job{% if job and not job.started_at %} — it has not run yet{% endif %}.
+        </div>
+      {% endif %}
+    </div>
+
+    <div class="dialog-foot">
+      {% if job and job.argv %}
+        <button class="btn" type="button" data-copy="{{ job.command }}"
+                style="margin-right:auto">Copy command</button>
+      {% endif %}
+      {% if lines %}
+        <a class="btn" href="/jobs/{{ job_id }}/log" target="_blank">Raw</a>
+      {% endif %}
+      <button class="btn" type="button"
+              onclick="document.getElementById('job-log').remove()">Close</button>
+    </div>
+
+  </div>
+</div>

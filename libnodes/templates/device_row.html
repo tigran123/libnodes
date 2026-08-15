@@ -1,0 +1,95 @@
+{# One device row. Renders standalone: /device/{id}/row swaps it as outerHTML. #}
+<div class="trow device-grid {{ node.row_class }}"
+     id="node-{{ node.device.id }}"
+     data-node="{{ node.device.id }}">
+
+  <div data-label="Device">
+    <span class="node-name">
+      <span class="dot {{ node.dot_class }}"></span>
+      <span class="nowrap">{{ node.device.name }}</span>
+    </span>
+  </div>
+
+  <div data-label="Type">
+    <span class="badge">{{ node.device.type|upper }}</span>
+  </div>
+
+  <div data-label="Address" class="mono nowrap">
+    {{ node.device.host }}:{{ node.device.effective_port }}
+  </div>
+
+  <div data-label="Target" class="mono t-muted nowrap"><span title="{{ node.device.target }}">{{ node.device.display_target }}</span></div>
+
+  <div data-label="Storage">
+    {% if node.offline or node.free is none %}
+      <span class="usage-v t-faint">—</span>
+    {% else %}
+      {# free / total -- the bar already implies we know both, so print both. #}
+      <div class="usage">
+        <span class="usage-v" title="{{ node.free|hsize }} free of {{ node.capacity|hsize }}">
+          {{ node.free|hsize_short }}{% if node.capacity %} / {{ node.capacity|hsize_short }}{% endif %}
+        </span>
+        <div class="track track-2"><i style="width:{{ '%.1f'|format(node.used_pct) }}%"></i></div>
+      </div>
+    {% endif %}
+  </div>
+
+  <div data-label="Last sync" class="mono t-dim">
+    {% if node.state == 'syncing' %}
+      <span class="t-accent">running</span>
+    {% else %}
+      {{ node.last_sync|reltime }}
+    {% endif %}
+  </div>
+
+  <div class="cell-actions" data-label="Actions">
+    {% if node.state == 'syncing' %}
+      <button class="btn" hx-get="/jobs/{{ node.job.id }}/log/view"
+              hx-target="#notices" hx-swap="beforeend">Open log</button>
+      <button class="btn btn-danger"
+              hx-post="/jobs/{{ node.job.id }}/abort"
+              hx-swap="none"
+              hx-disabled-elt="this">Abort</button>
+
+    {% else %}
+      {# Every action behind this menu needs the device to answer, so it is offered
+         only when the dot is green. Retry re-probes and brings it back. #}
+      {% if node.offline %}
+        <span class="mono t-err nowrap">{{ node.reach.error or 'unreachable' }}</span>
+      {% elif node.sleeping %}
+        <span class="mono t-warn nowrap">sshd asleep</span>
+      {% endif %}
+
+      {% if not node.online %}
+        <button class="btn"
+                hx-post="/device/{{ node.device.id }}/probe"
+                hx-target="#node-{{ node.device.id }}"
+                hx-swap="outerHTML"
+                hx-disabled-elt="this">Retry</button>
+        <button class="btn is-disabled" disabled
+                title="{{ node.device.name }} is not answering — Retry first">Actions</button>
+      {% else %}
+        {# One entry point. Full Sync, Adopt, Scan and Test all live behind it, each
+           showing the command it will run. #}
+        <button class="btn btn-default"
+                hx-get="/device/{{ node.device.id }}/menu"
+                hx-target="#notices"
+                hx-swap="beforeend">Actions</button>
+      {% endif %}
+    {% endif %}
+  </div>
+
+  {# The syncing row grows a second line: bar, percentage, current file, rate, eta. #}
+  {% if node.state == 'syncing' and node.job %}
+  <div class="subrow">
+    <div class="track track-thin track-striped" style="max-width:440px">
+      <i style="width:{{ '%.1f'|format(node.job.pct) }}%"></i>
+    </div>
+    <span class="t-accent">{{ '%.0f'|format(node.job.pct) }}%</span>
+    <span class="nowrap">{{ node.job.current_file or node.job.label }}</span>
+    <span>{{ node.job.rate }}</span>
+    {% if node.job.eta %}<span>eta {{ node.job.eta }}</span>{% endif %}
+  </div>
+  {% endif %}
+
+</div>

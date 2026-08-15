@@ -1,0 +1,9 @@
+{# Error toasts never auto-dismiss. #}
+<div class="toast">
+  <span class="dot dot-err"></span>
+  <div style="min-width:0">
+    <div class="toast-title">Could not queue</div>
+    <div class="toast-detail">{{ message }}</div>
+  </div>
+  <button class="x" onclick="this.closest('.toast').remove()">✕</button>
+</div>

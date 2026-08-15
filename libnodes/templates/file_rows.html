@@ -1,0 +1,90 @@
+{# File-table body. Swapped on every keystroke of the filter (120ms debounce). #}
+{# The counter lives up in the filter bar, so a swap carries it along out-of-band.
+   Only when swapping, though: on first paint this template is included *inside* the
+   pane, which already renders the counter in place. #}
+{% if oob %}
+<span id="result-count" class="result-count" hx-swap-oob="true">
+  {{ total_files|commafy }} → {{ match_count|commafy }} matches · {{ '%.0f'|format(elapsed_ms) }}ms
+</span>
+{% endif %}
+
+{% for row in rows %}
+  {% set states = presence.get(row.path, []) %}
+  <div class="trow file-grid" id="row-{{ loop.index }}">
+
+    <div class="cell-check">
+      <input class="check" type="checkbox" name="path" value="{{ row.path }}"
+             aria-label="Select {{ row.name }}">
+    </div>
+
+    <div data-label="Name">
+      <span class="file-name" title="{{ row.path }}">{{ row.label }}</span>
+      {% if row.title and row.title != row.name %}
+        <span class="file-title">{{ row.title }}{% if row.author %} · {{ row.author }}{% endif %}</span>
+      {% endif %}
+    </div>
+
+    <div data-label="Format">
+      {% if row.is_dir %}
+        <span class="badge">DIR {{ row.files|commafy }}</span>
+      {% elif row.fmt %}
+        <span class="badge">{{ row.fmt|upper }}</span>
+      {% else %}
+        <span class="t-faint">—</span>
+      {% endif %}
+    </div>
+
+    <div class="cell-r mono" data-label="Size">{{ row.size|hsize }}</div>
+    <div class="mono t-dim" data-label="Modified">{{ row.mtime|isodate }}</div>
+
+    <div data-label="Present on">
+      {% if states %}
+        <span class="present">
+        {% for s in states %}
+          {% set dev = by_id.get(s.device_id) %}
+          {# Provenance per chip: which device, what state, and when we last had any
+             evidence for it. This is a cached view, so the age is the point. #}
+          <span class="badge {{ s.badge_class }}"
+                title="{{ dev.name if dev else s.device_id }} · {{ s.detail or s.presence }} · {{ s.verb }} {{ s.at|reltime }}">{{ dev.display_abbr if dev else s.device_id }}{% if s.presence == 'stale' %} stale{% endif %}</span>
+        {% endfor %}
+        </span>
+      {% elif row.is_dir %}
+        <span class="t-faint">—</span>
+      {% else %}
+        <span class="t-faint">—</span>
+      {% endif %}
+    </div>
+
+    <div class="push-cell" data-label="Push">
+      {% for dev in push_devices %}
+        <button class="btn btn-push" type="button"
+                hx-post="/jobs"
+                hx-vals='{"device": "{{ dev.id }}", "path": "{{ row.path|e }}"}'
+                hx-target="#notices"
+                hx-swap="beforeend"
+                hx-disabled-elt="this"
+                title="Push to {{ dev.name }}">→ {{ dev.display_abbr }}</button>
+      {% endfor %}
+      {% if devices %}
+        <button class="btn btn-push btn-icon" type="button"
+                hx-get="/jobs/picker?path={{ row.path|urlencode }}"
+                hx-target="#notices"
+                hx-swap="beforeend"
+                title="Choose devices">⋯</button>
+      {% endif %}
+    </div>
+
+  </div>
+{% else %}
+  <div class="trow" style="grid-template-columns:1fr">
+    <div class="t-dim">
+      {% if q %}
+        Nothing matches <span class="mono">{{ q }}</span>{% if path %} under <span class="mono">{{ path }}</span>{% endif %}.
+      {% elif not index_meta.ready %}
+        Index not built yet — press <span class="mono">⟳</span> in the tree header.
+      {% else %}
+        Empty directory.
+      {% endif %}
+    </div>
+  </div>
+{% endfor %}

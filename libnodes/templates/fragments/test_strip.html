@@ -1,0 +1,28 @@
+{# Connection test result, shown in the Actions dialog. Success is ok-tinted, failure
+   err-tinted with the real stderr and a hint at the likely cause. #}
+<div class="test-strip {{ 'is-ok' if code == 0 else 'is-err' }}">
+  <div class="test-head">
+    <span class="section-label">Connection test</span>
+    <span class="mono {{ 't-ok' if code == 0 else 't-err' }}">
+      {% if code == 0 %}passed{% else %}exit {{ code if code is not none else '—' }}{% endif %}
+      · {{ '%.2f'|format(elapsed) }}s
+    </span>
+  </div>
+
+  <div class="term" style="height:auto;max-height:190px;overflow:auto">
+    <div class="cmd">$ {{ command }}</div>
+    {% for line in stdout.splitlines() %}
+      <div class="{{ 'info' if line.startswith('#') else 'prog' }}">{{ line }}</div>
+    {% endfor %}
+    {% for line in stderr.splitlines() %}
+      <div class="err">{{ line }}</div>
+    {% endfor %}
+    {% for h in hints %}
+      <div class="warn">hint: {{ h }}</div>
+    {% endfor %}
+  </div>
+
+  {% if summary %}
+    <div class="mono t-ok">✓ {{ summary|join(' · ') }}</div>
+  {% endif %}
+</div>

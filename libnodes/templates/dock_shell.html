@@ -1,0 +1,23 @@
+{# The dock's outer element, which decides how this page gets job updates.
+
+   HTTP/1.1 allows six connections per host, and an EventSource holds one open for as
+   long as the page lives. Connecting unconditionally meant six open tabs consumed the
+   entire pool and every subsequent navigation queued for ever — the app deadlocking
+   itself. So the stream is opened only while there is something to stream:
+
+     idle    poll /jobs/dock every 15s (a near-empty response) and hold nothing open
+     active  one SSE connection, no polling
+
+   The transition back to idle is scheduled by dock.html when it renders empty. #}
+<div class="dock" id="job-dock"
+  {% if jobs %}
+     hx-ext="sse"
+     sse-connect="/jobs/stream"
+     sse-swap="dock"
+     hx-swap="innerHTML"
+  {% else %}
+     hx-get="/jobs/dock"
+     hx-trigger="every 15s"
+     hx-swap="outerHTML"
+  {% endif %}
+>{% include "dock.html" %}</div>

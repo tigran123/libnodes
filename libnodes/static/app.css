@@ -1,0 +1,2332 @@
+/* LibNodes design system.
+ *
+ * Hand-written from the design bundle this UI implements. The token names mirror that
+ * bundle's Tailwind theme 1:1, so the two stay cross-readable. No build step: this file
+ * is the stylesheet.
+ *
+ * Layout order: tokens, reset, shell, primitives, views, animations, responsive.
+ */
+
+/* ---------------------------------------------------------------- tokens -- */
+
+:root {
+  --bg: #08090b;
+  --panel: #0f1114;
+  --surface: #131519;
+  --hover: #1a1d23;
+  --line: #1c1f25;
+  --border: #262a32;
+  --border-hi: #343a44;
+
+  --ink: #e6e8ec;
+  --ink-2: #c3c8d1;
+  --ink-3: #a8b0bc;
+  --muted: #7d8695;
+  --dim: #5f6774;
+  --faint: #4a5160;
+
+  --accent: #9a8ce6;
+  --accent-hi: #b6acef;
+  --ok: #4fb383;
+  --warn: #d3a05a;
+  --err: #d1685c;
+
+  /* Chrome sits between bg and panel; two row states get their own value. */
+  --chrome: #0b0c0f;
+  --row-active: #111319;
+  --row-offline: #0d0e11;
+
+  --rail: 190px;
+  --tree: 300px;
+  --bar: 44px;
+  --row: 34px;
+  --dock: 600px;
+  --gutter: 18px;
+
+  --r-ctl: 4px;
+  --r-panel: 6px;
+  --r-dock: 7px;
+  --r-badge: 2px;
+
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Text that sits on an --accent fill. */
+  --on-accent: #0c0d10;
+
+  /* Native widgets -- select popups, form controls, scrollbars -- are drawn by the
+     browser, not by this stylesheet. Without this they render light-on-light. */
+  color-scheme: dark;
+}
+
+/* ------------------------------------------------------------ light theme --
+ *
+ * Same token names, same semantic roles, so no rule below this block needs to know
+ * which theme is active. The palette is not an inversion: the accent and state colours
+ * are darkened until they carry their meaning against white, which #9a8ce6 and #4fb383
+ * do not. Set by data-theme on <html>, written server-side from a cookie so the first
+ * paint is already correct.
+ */
+
+:root[data-theme="light"] {
+  --bg: #f7f8fa;
+  --panel: #ffffff;
+  --surface: #f1f3f6;
+  --hover: #e7eaef;
+  --line: #e6e9ee;
+  --border: #d5d9e0;
+  --border-hi: #b3b9c4;
+
+  --ink: #14171c;
+  --ink-2: #2f353d;
+  --ink-3: #464e59;
+  --muted: #626b78;
+  --dim: #78818f;
+  --faint: #9aa2ae;
+
+  --accent: #6244cf;
+  --accent-hi: #4f34b8;
+  --ok: #1f7a52;
+  --warn: #92661f;
+  --err: #b23d31;
+
+  --chrome: #eef0f4;
+  --row-active: #f3f0fd;
+  --row-offline: #f4f5f7;
+
+  --on-accent: #ffffff;
+
+  color-scheme: light;
+}
+
+/* State tints are written as rgba() literals of the dark palette throughout, which are
+ * far too weak over white. Restate the handful that matter. */
+:root[data-theme="light"] .badge-ok {
+  background: rgba(31, 122, 82, 0.1);
+  border-color: rgba(31, 122, 82, 0.3);
+}
+:root[data-theme="light"] .badge-warn {
+  background: rgba(146, 102, 31, 0.1);
+  border-color: rgba(146, 102, 31, 0.3);
+}
+:root[data-theme="light"] .badge-err {
+  background: rgba(178, 61, 49, 0.1);
+  border-color: rgba(178, 61, 49, 0.3);
+}
+:root[data-theme="light"] .badge-accent,
+:root[data-theme="light"] .chip-accent {
+  background: rgba(98, 68, 207, 0.1);
+  border-color: rgba(98, 68, 207, 0.3);
+}
+:root[data-theme="light"] .nav-count {
+  background: rgba(98, 68, 207, 0.12);
+}
+:root[data-theme="light"] .dot {
+  box-shadow: 0 0 0 3px rgba(98, 106, 120, 0.18);
+}
+:root[data-theme="light"] .dot-ok {
+  box-shadow: 0 0 0 3px rgba(31, 122, 82, 0.2);
+}
+:root[data-theme="light"] .dot-warn {
+  box-shadow: 0 0 0 3px rgba(146, 102, 31, 0.2);
+}
+:root[data-theme="light"] .dot-err {
+  box-shadow: 0 0 0 3px rgba(178, 61, 49, 0.2);
+}
+:root[data-theme="light"] .dot-accent {
+  box-shadow: 0 0 0 3px rgba(98, 68, 207, 0.2);
+}
+:root[data-theme="light"] .tree-row.is-selected {
+  background: rgba(98, 68, 207, 0.1);
+}
+:root[data-theme="light"] .selbar {
+  border-color: rgba(98, 68, 207, 0.35);
+  background: rgba(98, 68, 207, 0.06);
+}
+:root[data-theme="light"] .selbar-count {
+  color: var(--accent-hi);
+}
+:root[data-theme="light"] .card.is-active {
+  border-color: rgba(98, 68, 207, 0.4);
+}
+:root[data-theme="light"] .card.is-offline {
+  background: var(--row-offline);
+}
+:root[data-theme="light"] .dock-banner.is-ok {
+  background: rgba(31, 122, 82, 0.1);
+  border-bottom-color: rgba(31, 122, 82, 0.3);
+}
+:root[data-theme="light"] .dock-banner.is-err {
+  background: rgba(178, 61, 49, 0.1);
+  border-bottom-color: rgba(178, 61, 49, 0.3);
+}
+:root[data-theme="light"] .dock-card.is-err {
+  border-color: rgba(178, 61, 49, 0.4);
+}
+:root[data-theme="light"] .strip {
+  background: rgba(178, 61, 49, 0.09);
+  border-bottom-color: rgba(178, 61, 49, 0.3);
+}
+:root[data-theme="light"] .strip-line {
+  color: var(--err);
+}
+:root[data-theme="light"] .code-body > div.is-bad {
+  background: rgba(178, 61, 49, 0.1);
+}
+:root[data-theme="light"] .btn-danger:hover {
+  background: rgba(178, 61, 49, 0.08);
+}
+:root[data-theme="light"] .backdrop {
+  background: rgba(20, 23, 28, 0.4);
+}
+:root[data-theme="light"] .dock {
+  box-shadow: 0 18px 50px rgba(20, 23, 28, 0.18);
+}
+:root[data-theme="light"] .track-striped > i {
+  background-image: repeating-linear-gradient(
+    115deg,
+    rgba(255, 255, 255, 0.3) 0 8px,
+    transparent 8px 28px
+  );
+}
+:root[data-theme="light"] ::selection {
+  background: rgba(98, 68, 207, 0.22);
+}
+
+/* The terminal keeps its own dark ground in both themes: it shows literal process
+ * output, and a light terminal reads as a text editor rather than a console. */
+:root[data-theme="light"] .term {
+  background: #16181d;
+  border-top: 1px solid var(--border);
+}
+:root[data-theme="light"] .term > div {
+  color: #c8ccd4;
+}
+:root[data-theme="light"] .term .cmd {
+  color: #8a929f;
+}
+:root[data-theme="light"] .term .info {
+  color: #a2aab6;
+}
+:root[data-theme="light"] .term .prog {
+  color: #5fc493;
+}
+:root[data-theme="light"] .term .err {
+  color: #e08b80;
+}
+:root[data-theme="light"] .term .warn {
+  color: #e0b46a;
+}
+
+/* ----------------------------------------------------------------- reset -- */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+/* The dropdown list is OS-rendered; it inherits nothing from the control, so both the
+   select and its options need explicit colours or the menu is unreadable. */
+select {
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+option {
+  background: var(--panel);
+  color: var(--ink);
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* The UA's `[hidden] { display: none }` is a low-specificity rule, so ANY author rule
+   that sets `display` beats it. `.tree-row { display: flex }` did exactly that: rows
+   were marked hidden and stayed on screen, so collapsing a subtree changed the caret
+   and nothing else. */
+[hidden] {
+  display: none !important;
+}
+
+::selection {
+  background: rgba(154, 140, 230, 0.3);
+}
+
+:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Scrollbars, so panes do not get a bright Chrome default on a dark app. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-hi) transparent;
+}
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border-hi);
+  border-radius: 5px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ----------------------------------------------------------------- shell -- */
+
+.shell {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.view {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px var(--gutter) var(--gutter);
+}
+
+/* Left rail --------------------------------------------------------------- */
+
+.rail {
+  width: var(--rail);
+  flex-shrink: 0;
+  background: var(--chrome);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.rail-brand {
+  height: var(--bar);
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 14px;
+  flex-shrink: 0;
+}
+
+.rail-mark {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+
+.rail-brand span {
+  font-weight: 600;
+  font-size: 13.5px;
+  letter-spacing: -0.01em;
+}
+
+.rail-nav {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 8px 12px;
+}
+
+.rail-group + .rail-group {
+  margin-top: 16px;
+}
+
+.section-label {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--dim);
+  padding: 6px 8px 8px;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 8px;
+  border-radius: var(--r-ctl);
+  color: var(--ink-3);
+  font-size: 12.5px;
+}
+
+.nav-item::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--border-hi);
+  flex-shrink: 0;
+}
+
+.nav-item:hover {
+  background: var(--surface);
+}
+
+.nav-item.is-active {
+  background: var(--hover);
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.nav-item.is-active::before {
+  background: var(--accent);
+}
+
+.nav-count {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--accent);
+  background: rgba(154, 140, 230, 0.12);
+  border-radius: var(--r-badge);
+  padding: 1px 5px;
+}
+
+.rail-foot {
+  border-top: 1px solid var(--line);
+  padding: 12px 14px;
+  flex-shrink: 0;
+}
+
+.stat {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  line-height: 1.9;
+}
+
+.stat b {
+  font-weight: 400;
+  color: var(--ink-3);
+}
+
+.stat .v-ok {
+  color: var(--ok);
+}
+.stat .v-warn {
+  color: var(--warn);
+}
+.stat .v-accent {
+  color: var(--accent);
+}
+
+.disk-bar {
+  height: 3px;
+  background: var(--line);
+  border-radius: 2px;
+  margin-top: 7px;
+  overflow: hidden;
+}
+
+.disk-bar > i {
+  display: block;
+  height: 100%;
+  background: var(--faint);
+}
+
+/* Pinned push target (Library rail) ---------------------------------------- */
+
+.target-pick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  background: var(--surface);
+  border: 1px solid var(--border-hi);
+  border-radius: var(--r-ctl);
+  font-size: 12px;
+  text-align: left;
+}
+
+/* Not `all: unset` -- that strips the colour too, and the OS-drawn dropdown then
+   renders the page's light text on its own light background. */
+.target-select {
+  flex: 1;
+  min-width: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  border: none;
+  outline: none;
+  padding: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-overflow: ellipsis;
+}
+
+.target-pick .caret {
+  margin-left: auto;
+  color: var(--dim);
+}
+
+.pin-scan {
+  border-top: 1px solid var(--line);
+  margin-top: 10px;
+  padding-top: 9px;
+}
+
+.rail-caption {
+  font-size: 10.5px;
+  color: var(--dim);
+  line-height: 1.5;
+  padding: 8px 2px 0;
+}
+
+/* Top bar ----------------------------------------------------------------- */
+
+.topbar {
+  height: var(--bar);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 var(--gutter);
+  background: var(--chrome);
+  border-bottom: 1px solid var(--line);
+}
+
+.crumb {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.crumb b {
+  font-weight: 400;
+  color: var(--ink);
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* Present in the DOM (so Copy can read it inside a user gesture) but never shown. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.theme-toggle {
+  font-size: 13px;
+  line-height: 1;
+  padding: 5px 8px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-ctl);
+  padding: 4px 9px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.chip-accent {
+  color: var(--accent);
+  border-color: rgba(154, 140, 230, 0.3);
+  background: rgba(154, 140, 230, 0.1);
+}
+
+/* Title block ------------------------------------------------------------- */
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 0 12px;
+}
+
+.title {
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+.title-meta {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.titlebar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ------------------------------------------------------------ primitives -- */
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-panel);
+  overflow: hidden;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+
+.meta {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--dim);
+}
+
+.hint {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--dim);
+  padding: 9px 2px 0;
+}
+
+.t-ok {
+  color: var(--ok);
+}
+.t-warn {
+  color: var(--warn);
+}
+.t-err {
+  color: var(--err);
+}
+.t-accent {
+  color: var(--accent);
+}
+.t-muted {
+  color: var(--muted);
+}
+.t-dim {
+  color: var(--dim);
+}
+.t-faint {
+  color: var(--faint);
+}
+
+/* Status dot -------------------------------------------------------------- */
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--muted);
+  box-shadow: 0 0 0 3px rgba(125, 134, 149, 0.15);
+}
+
+.dot-ok {
+  background: var(--ok);
+  box-shadow: 0 0 0 3px rgba(79, 179, 131, 0.15);
+}
+.dot-warn {
+  background: var(--warn);
+  box-shadow: 0 0 0 3px rgba(211, 160, 90, 0.15);
+}
+.dot-err {
+  background: var(--err);
+  box-shadow: 0 0 0 3px rgba(209, 104, 92, 0.15);
+}
+.dot-accent {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px rgba(154, 140, 230, 0.15);
+}
+.dot-dim {
+  background: var(--dim);
+  box-shadow: 0 0 0 3px rgba(95, 103, 116, 0.15);
+}
+
+.dot-pulse {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+/* Buttons ----------------------------------------------------------------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-ctl);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.btn:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.btn-default {
+  border-color: var(--border-hi);
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.btn-primary {
+  padding: 5px 11px;
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.btn-primary:hover {
+  background: var(--accent-hi);
+  border-color: var(--accent-hi);
+  color: var(--on-accent);
+}
+
+.btn-danger {
+  border-color: rgba(209, 104, 92, 0.45);
+  color: var(--err);
+}
+
+.btn-danger:hover {
+  background: rgba(209, 104, 92, 0.1);
+  color: var(--err);
+}
+
+.btn-ghost {
+  border-color: transparent;
+  color: var(--dim);
+}
+
+.btn[disabled],
+.btn.is-disabled {
+  border-color: var(--line);
+  color: var(--faint);
+  background: none;
+  pointer-events: none;
+}
+
+.btn-icon {
+  padding: 5px 8px;
+}
+
+/* Segmented control ------------------------------------------------------- */
+
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--r-ctl);
+  overflow: hidden;
+}
+
+.segmented > * {
+  padding: 5px 11px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--dim);
+  background: none;
+}
+
+.segmented > * + * {
+  border-left: 1px solid var(--border);
+}
+
+.segmented > .is-active {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+/* Inputs ------------------------------------------------------------------ */
+
+.field {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-ctl);
+  padding: 6px 9px;
+}
+
+.field:focus-within {
+  border-color: var(--border-hi);
+}
+
+.field .slash {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.field.is-accent .slash {
+  color: var(--accent);
+}
+
+.field input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: none;
+  outline: none;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.field input::placeholder {
+  color: var(--dim);
+}
+
+/* Badges ------------------------------------------------------------------ */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.6;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-badge);
+  background: var(--hover);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.badge-ok {
+  color: var(--ok);
+  background: rgba(79, 179, 131, 0.1);
+  border-color: rgba(79, 179, 131, 0.25);
+}
+.badge-warn {
+  color: var(--warn);
+  background: rgba(211, 160, 90, 0.1);
+  border-color: rgba(211, 160, 90, 0.25);
+}
+.badge-err {
+  color: var(--err);
+  background: rgba(209, 104, 92, 0.1);
+  border-color: rgba(209, 104, 92, 0.25);
+}
+.badge-accent {
+  color: var(--accent);
+  background: rgba(154, 140, 230, 0.1);
+  border-color: rgba(154, 140, 230, 0.25);
+}
+
+/* Progress ---------------------------------------------------------------- */
+
+.track {
+  height: 6px;
+  background: var(--line);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.track > i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.25s linear;
+}
+
+.track-thin {
+  height: 3px;
+  border-radius: 2px;
+}
+
+.track-2 {
+  height: 2px;
+  border-radius: 1px;
+}
+
+.track-ok > i {
+  background: var(--ok);
+}
+.track-err > i {
+  background: var(--err);
+}
+
+/* The one animated fill: a 115deg stripe drifting across the accent bar. */
+.track-striped > i {
+  background-image: repeating-linear-gradient(
+    115deg,
+    rgba(255, 255, 255, 0.16) 0 8px,
+    transparent 8px 28px
+  );
+  background-size: 28px 100%;
+  animation: stripe 0.7s linear infinite;
+}
+
+/* --------------------------------------------------------------- tables -- */
+
+.thead,
+.trow {
+  display: grid;
+  align-items: center;
+  gap: 0;
+}
+
+.thead {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.thead > * {
+  padding: 8px 12px;
+}
+
+.trow {
+  min-height: var(--row);
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.trow:last-child {
+  border-bottom: none;
+}
+
+.trow:hover {
+  background: var(--surface);
+}
+
+/* 5px keeps a button-bearing row at the spec's 34px: an 11px button is ~25px tall,
+ * and 8px padding would push every row past 40. */
+.trow > * {
+  padding: 5px 12px;
+  min-width: 0;
+}
+
+.trow.is-active {
+  background: var(--row-active);
+}
+
+.trow.is-offline {
+  background: var(--row-offline);
+  color: var(--muted);
+}
+
+.trow.is-selected {
+  background: var(--surface);
+}
+
+.cell-r {
+  text-align: right;
+}
+
+.cell-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+/* Same reason as .file-name: ellipsis needs a block-level box. */
+.nowrap {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.statusline {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--dim);
+  padding: 9px 2px 0;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.statusline b {
+  font-weight: 400;
+  color: var(--ink-3);
+}
+
+/* --------------------------------------------------------------- devices -- */
+
+.device-grid {
+  grid-template-columns: 210px 96px 176px 200px 120px 132px 1fr;
+}
+
+.node-name {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.trow.is-offline .node-name {
+  color: var(--muted);
+}
+
+.usage {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.usage-v {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-2);
+}
+
+.trow.is-offline .usage-v,
+.trow.is-offline .mono {
+  color: var(--faint);
+}
+
+/* ...but the failure reason is the one thing on an offline row that must stay loud. */
+.trow.is-offline .t-err,
+.trow .t-err {
+  color: var(--err);
+}
+.trow.is-offline .t-warn {
+  color: var(--warn);
+}
+
+/* The syncing row grows a second sub-row with its own progress readout. */
+.subrow {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px 9px !important;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--dim);
+}
+
+.subrow .track {
+  flex: 1;
+}
+
+/* Card grid variant ------------------------------------------------------- */
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-panel);
+  padding: 13px 14px;
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.card-head .badge {
+  margin-left: auto;
+}
+
+.card-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.card.is-active {
+  background: var(--row-active);
+  border-color: rgba(154, 140, 230, 0.35);
+}
+
+.card.is-offline {
+  background: var(--row-offline);
+  border-color: var(--line);
+  color: var(--faint);
+}
+
+.card.is-offline .card-title {
+  color: var(--muted);
+}
+
+.card-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.card-actions > * {
+  flex: 1;
+  justify-content: center;
+}
+
+/* --------------------------------------------------------------- library -- */
+
+.lib {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.tree-pane {
+  width: var(--tree);
+  flex-shrink: 0;
+  background: var(--chrome);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.tree-head {
+  height: var(--bar);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.tree-body {
+  flex: 1;
+  overflow: auto;
+  padding: 8px;
+}
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-2);
+  border-left: 2px solid transparent;
+}
+
+.tree-row:hover {
+  background: var(--surface);
+}
+
+.tree-row.is-selected {
+  background: rgba(154, 140, 230, 0.13);
+  border-left-color: var(--accent);
+}
+
+.tree-row.is-selected .tree-size {
+  color: var(--accent);
+}
+
+.tree-row.is-hidden {
+  color: var(--faint);
+  pointer-events: none;
+}
+
+/* Its own control, with a hit area you can actually land on. */
+.tree-caret {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dim);
+  font-size: 10px;
+  border-radius: 3px;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+button.tree-caret:hover {
+  background: var(--border);
+  color: var(--ink);
+}
+
+/* The name fills the rest of the row, so clicking anywhere but the caret navigates. */
+.tree-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.tree-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tree-size {
+  font-size: 10.5px;
+  color: var(--faint);
+  white-space: nowrap;
+}
+
+.tree-foot {
+  border-top: 1px solid var(--line);
+  padding: 10px 12px;
+  font-size: 10.5px;
+  color: var(--dim);
+  line-height: 1.5;
+}
+
+.lib-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.filterbar {
+  height: var(--bar);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 var(--gutter);
+  border-bottom: 1px solid var(--line);
+}
+
+.filterbar .field {
+  flex: 1;
+}
+
+.result-count {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.lib-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px var(--gutter) var(--gutter);
+}
+
+.pathline {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding-bottom: 12px;
+}
+
+.pathline .parent {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.pathline .leaf {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.pathline .summary {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--dim);
+}
+
+/* Selection bar ----------------------------------------------------------- */
+
+.selbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid rgba(154, 140, 230, 0.35);
+  background: rgba(154, 140, 230, 0.07);
+  border-radius: 5px;
+  padding: 9px 12px;
+  margin-bottom: 12px;
+}
+
+.selbar-count {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #c9c1f5;
+}
+
+.selbar-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+}
+
+/* File table -------------------------------------------------------------- */
+
+.file-grid {
+  grid-template-columns: 26px 1fr 76px 84px 108px 150px 190px;
+}
+
+.file-grid > * {
+  padding: 8px 12px;
+}
+
+/* The whole row toggles selection, so say so. */
+.trow.file-grid {
+  cursor: default;
+  user-select: none;
+}
+
+.file-grid .cell-check {
+  padding-left: 12px;
+  padding-right: 0;
+}
+
+/* A real checkbox, restyled — keeps keyboard focus and form serialisation, which the
+ * selection bar depends on (it is just an hx-include of the checked boxes). */
+.check {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 11px;
+  height: 11px;
+  margin: 0;
+  border-radius: 2px;
+  border: 1px solid var(--border-hi);
+  background: none;
+  display: block;
+  cursor: pointer;
+}
+
+.check:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* display:block is load-bearing: text-overflow:ellipsis has no effect on an inline box,
+   so without it a long filename overflows its cell and prints over the FORMAT column. */
+.file-name {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-title {
+  display: block;
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.present {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+/* Push targets stay quiet until the row is hovered or checked. */
+.push-cell {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  opacity: 0.35;
+  transition: opacity 0.1s linear;
+}
+
+.trow:hover .push-cell,
+.trow.is-selected .push-cell {
+  opacity: 1;
+}
+
+.btn-push {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 4px 7px;
+}
+
+/* ------------------------------------------------------------------ jobs -- */
+
+.jobs-grid {
+  grid-template-columns: 76px 168px 1fr 100px 108px 128px 132px;
+}
+
+.job-id {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.job-id.is-running {
+  color: var(--accent);
+}
+
+/* ------------------------------------------------------------------ dock -- */
+
+.dock {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  width: var(--dock);
+  max-width: calc(100vw - 40px);
+  background: var(--chrome);
+  border: 1px solid var(--border-hi);
+  border-radius: var(--r-dock);
+  /* The only shadow in the application. */
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);
+  z-index: 40;
+  overflow: hidden;
+}
+
+.dock:empty {
+  display: none;
+}
+
+.dock-tabs {
+  display: flex;
+  align-items: center;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.dock-tab {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 13px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+  border-bottom: 2px solid transparent;
+}
+
+.dock-tab.is-active {
+  background: var(--chrome);
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+}
+
+.dock-win {
+  margin-left: auto;
+  display: flex;
+  gap: 2px;
+  padding-right: 8px;
+}
+
+.dock-win button {
+  padding: 4px 7px;
+  color: var(--dim);
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+.dock-win button:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.dock-meta {
+  padding: 11px 14px 10px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.dock-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.dock-line .grow {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink-2);
+}
+
+.dock-line .r {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.dock-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dock-bar .track {
+  flex: 1;
+}
+
+.dock-pct {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+  min-width: 38px;
+  text-align: right;
+}
+
+.dock-pct.is-ok {
+  color: var(--ok);
+}
+.dock-pct.is-err {
+  color: var(--err);
+}
+
+/* State-tinted dock headers ------------------------------------------------ */
+
+.dock-banner {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--line);
+}
+
+.dock-banner .x {
+  margin-left: auto;
+  color: var(--dim);
+}
+
+.dock-banner.is-ok {
+  background: rgba(79, 179, 131, 0.1);
+  border-bottom-color: rgba(79, 179, 131, 0.28);
+  color: var(--ok);
+}
+
+.dock-banner.is-err {
+  background: rgba(209, 104, 92, 0.1);
+  border-bottom-color: rgba(209, 104, 92, 0.28);
+  color: var(--err);
+}
+
+.dock-card.is-err {
+  border-color: rgba(209, 104, 92, 0.4);
+}
+
+.dock-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  background: var(--chrome);
+  border-top: 1px solid var(--line);
+}
+
+.dock-foot .note {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dock-foot .r {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* Collapsed pill ---------------------------------------------------------- */
+
+.dock-pill {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: var(--bar);
+  padding: 0 14px;
+}
+
+.dock-pill .track {
+  flex: 1;
+  height: 4px;
+}
+
+.dock-pill .label {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* Terminal ---------------------------------------------------------------- */
+
+.term {
+  height: 206px;
+  overflow: hidden;
+  background: var(--bg);
+  padding: 10px 13px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+.term > div {
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink-2);
+  /* Load-bearing. The terminal is a fixed-height flex column, so the default
+     flex-shrink:1 divides the height among the lines: 200 lines in a 420px box render
+     at 2px each and the whole log looks blank. */
+  flex-shrink: 0;
+}
+
+.term .cmd {
+  color: var(--dim);
+}
+.term .info {
+  color: var(--muted);
+}
+.term .prog {
+  color: var(--ok);
+}
+.term .err {
+  color: var(--err);
+}
+.term .warn {
+  color: var(--warn);
+}
+
+.caret {
+  display: inline-block;
+  width: 7px;
+  height: 13px;
+  background: var(--accent);
+  vertical-align: text-bottom;
+  animation: blink 1.1s step-end infinite;
+}
+
+/* --------------------------------------------------------------- notices -- */
+
+.notices {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 8px;
+  z-index: 50;
+  max-width: 340px;
+}
+
+/* When the dock is up, toasts stack above it. */
+.dock:not(:empty) ~ .notices {
+  bottom: calc(20px + var(--bar) + 8px);
+}
+
+.toast {
+  display: flex;
+  gap: 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-panel);
+  padding: 13px 14px;
+  animation: toast-in 0.18s ease-out;
+}
+
+.toast .dot {
+  margin-top: 5px;
+}
+
+.toast-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.toast-detail {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--dim);
+  margin-top: 3px;
+}
+
+.toast .x {
+  margin-left: auto;
+  color: var(--dim);
+  align-self: flex-start;
+}
+
+/* ---------------------------------------------------------------- dialog -- */
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 5, 7, 0.66);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+  padding: 20px;
+}
+
+.dialog {
+  width: 454px;
+  max-width: 100%;
+  background: var(--panel);
+  border: 1px solid var(--border-hi);
+  border-radius: var(--r-panel);
+  overflow: hidden;
+}
+
+.dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 13px 15px;
+  font-size: 13px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--line);
+}
+
+.dialog-body {
+  padding: 13px 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dialog-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 15px;
+  border-top: 1px solid var(--line);
+}
+
+.test-strip {
+  margin-top: 8px;
+  padding: 9px 10px;
+  border-radius: var(--r-ctl);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.test-strip.is-ok {
+  background: rgba(79, 179, 131, 0.08);
+  border-color: rgba(79, 179, 131, 0.3);
+}
+
+.test-strip.is-err {
+  background: rgba(209, 104, 92, 0.08);
+  border-color: rgba(209, 104, 92, 0.3);
+}
+
+.test-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* Device actions: button, meaning, and the command it runs. */
+
+.action + .action {
+  border-top: 1px solid var(--line);
+  margin-top: 10px;
+  padding-top: 10px;
+}
+
+.action-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.action-head .btn {
+  flex-shrink: 0;
+  min-width: 150px;
+  justify-content: center;
+}
+
+.action-note {
+  font-size: 11.5px;
+  color: var(--dim);
+  line-height: 1.45;
+}
+
+.action-cmd {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 7px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-ctl);
+  padding: 6px 8px;
+}
+
+/* A note where a command would be: dashed, so it reads as "nothing runs here". */
+.action-cmd.is-empty {
+  background: none;
+  border-style: dashed;
+}
+
+.action-cmd.is-empty code {
+  color: var(--dim);
+  white-space: normal;
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+}
+
+.action-cmd code {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+  /* The full-sync line names every top-level directory; let it scroll rather than
+     wrap into a paragraph or stretch the dialog. */
+  white-space: pre;
+  overflow-x: auto;
+  display: block;
+}
+
+.action-cmd .btn {
+  flex-shrink: 0;
+}
+
+/* The two halves share the row: the name keeps its natural width, the path takes what
+   is left and ellipsises rather than escaping the dialog. */
+.pick-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+}
+
+.pick-name {
+  flex-shrink: 0;
+}
+
+.pick-target {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  direction: rtl; /* keep the meaningful tail (…/home/sd/Books) visible */
+}
+
+.opt {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  font-size: 12px;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+
+.opt .check {
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+
+.opt-note {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--dim);
+  margin-top: 3px;
+}
+
+/* ----------------------------------------------------------- devices.yaml -- */
+
+.yaml-panel {
+  width: 700px;
+  max-width: 100%;
+}
+
+.yaml-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.yaml-path {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.strip {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 14px;
+  background: rgba(209, 104, 92, 0.1);
+  border-bottom: 1px solid rgba(209, 104, 92, 0.28);
+}
+
+.strip-line {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #e08b80;
+  white-space: nowrap;
+}
+
+.strip-msg {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.code {
+  display: flex;
+  background: var(--bg);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.7;
+  overflow-x: auto;
+  padding: 10px 0;
+}
+
+.code-gutter {
+  flex-shrink: 0;
+  text-align: right;
+  padding: 0 12px 0 14px;
+  color: var(--border-hi);
+  user-select: none;
+}
+
+.code-body {
+  flex: 1;
+  min-width: 0;
+  padding-right: 14px;
+}
+
+/* One div per line, each with white-space:pre. Never `pre` on the container --
+ * source newlines between the divs would render as blank lines and knock the
+ * gutter out of alignment. */
+.code-body > div,
+.code-gutter > div {
+  white-space: pre;
+}
+
+.code-body > div.is-bad {
+  background: rgba(209, 104, 92, 0.12);
+  /* bleed the highlight to the panel edges */
+  margin: 0 -14px 0 -14px;
+  padding: 0 14px;
+}
+
+.code-gutter > div.is-bad {
+  color: var(--err);
+}
+
+.y-key {
+  color: var(--accent);
+}
+.y-punct {
+  color: var(--dim);
+}
+.y-str {
+  color: var(--ink-2);
+}
+.y-bool {
+  color: var(--ok);
+}
+.y-num {
+  color: var(--warn);
+}
+.y-bad {
+  color: var(--err);
+}
+.y-comment {
+  color: var(--faint);
+}
+
+.panel-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+}
+
+.panel-foot .r {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+}
+
+/* ------------------------------------------------------------ animations -- */
+
+/* The design permits exactly four, all CSS. */
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+@keyframes stripe {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 28px 0;
+  }
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* ------------------------------------------------------------ responsive -- */
+
+.rail-toggle {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  body {
+    font-size: 12.5px;
+  }
+
+  .rail {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 45;
+    transform: translateX(-100%);
+    transition: transform 0.15s ease-out;
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.6);
+  }
+
+  .shell.rail-open .rail {
+    transform: none;
+  }
+
+  .rail-toggle {
+    display: inline-flex;
+    font-size: 15px;
+    color: var(--ink-3);
+    padding: 4px 8px;
+  }
+
+  /* Tables become stacked cards: labels move in front of values. */
+  .thead {
+    display: none;
+  }
+
+  .trow,
+  .file-grid,
+  .device-grid,
+  .jobs-grid {
+    grid-template-columns: 1fr;
+    padding: 4px 0 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .trow > * {
+    padding: 5px 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 0;
+  }
+
+  .trow > [data-label]::before {
+    content: attr(data-label);
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--muted);
+    width: 92px;
+    flex-shrink: 0;
+  }
+
+  .cell-r,
+  .cell-actions {
+    justify-content: flex-start;
+    text-align: left;
+  }
+
+  .push-cell {
+    opacity: 1;
+    justify-content: flex-start;
+  }
+
+  .cards {
+    grid-template-columns: 1fr;
+  }
+
+  /* The toolbar is a single row on desktop; at tablet width it has to wrap or the
+     segmented control falls off the edge. */
+  .titlebar {
+    flex-wrap: wrap;
+    row-gap: 10px;
+  }
+
+  .titlebar-right {
+    margin-left: 0;
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .titlebar-right .field {
+    flex: 1 1 100%;
+    width: auto !important;
+  }
+
+  .title-meta {
+    white-space: nowrap;
+  }
+
+  .topbar {
+    gap: 8px;
+  }
+
+  .topbar-right .chip {
+    max-width: 40vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Tree collapses to a breadcrumb; the content pane owns the width. */
+  .tree-pane {
+    display: none;
+  }
+
+  .lib-body,
+  .view {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  /* Filter takes its own row; the format/sort controls follow underneath rather than
+     being pushed off the edge. */
+  .filterbar {
+    height: auto;
+    min-height: var(--bar);
+    padding: 8px 12px;
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+
+  .filterbar .field {
+    flex: 1 1 100%;
+  }
+
+  /* Dock becomes a bottom sheet with a drag handle. */
+  .dock {
+    right: 0;
+    left: 0;
+    bottom: 0;
+    width: auto;
+    max-width: none;
+    border-radius: 12px 12px 0 0;
+    border-bottom: none;
+  }
+
+  .dock::before {
+    content: "";
+    display: block;
+    width: 34px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--border-hi);
+    margin: 7px auto 3px;
+  }
+
+  .term {
+    height: 150px;
+  }
+
+  .dock-foot .r {
+    flex: 1;
+  }
+
+  .dock-foot .r > * {
+    flex: 1;
+    justify-content: center;
+  }
+
+  .dock-foot .note {
+    display: none;
+  }
+
+  .notices {
+    right: 12px;
+    left: 12px;
+    max-width: none;
+  }
+
+  /* Touch targets. */
+  .btn,
+  .segmented > *,
+  .nav-item,
+  .target-pick {
+    min-height: 44px;
+    padding-top: 11px;
+    padding-bottom: 11px;
+    font-size: 12.5px;
+  }
+
+  .field {
+    min-height: 44px;
+  }
+
+  .tree-row {
+    min-height: 44px;
+  }
+}

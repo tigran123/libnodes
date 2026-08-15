@@ -1,0 +1,54 @@
+{# Whole dock body. Re-rendered on every `dock` event; empty when nothing is live. #}
+{% if not jobs %}
+  {# Nothing left to watch. Swap the shell back to polling shortly, which closes the
+     EventSource and returns the connection to the browser's pool. Harmless if the shell
+     is already in polling mode. #}
+  <div hx-get="/jobs/dock"
+       hx-trigger="load delay:2s"
+       hx-target="#job-dock"
+       hx-swap="outerHTML"
+       style="display:none"></div>
+{% endif %}
+{% if jobs %}
+
+  {# Collapsed pill -- persists across page swaps, toggled by app.js. #}
+  <div data-dock-pill hidden>
+    <div class="dock-pill">
+      <span class="dot dot-accent {{ 'dot-pulse' if running }}"></span>
+      <span class="label">{{ jobs|length }} job{{ '' if jobs|length == 1 else 's' }}</span>
+      <div class="track"><i style="width:{{ '%.1f'|format(total_pct) }}%"></i></div>
+      <span class="dock-pct">{{ '%.0f'|format(total_pct) }}%</span>
+      <button class="btn btn-ghost btn-icon" data-dock-collapse title="Expand">⤢</button>
+    </div>
+  </div>
+
+  <div data-dock-full>
+    <div class="dock-tabs">
+      {% for job in jobs %}
+        {% set device = by_id.get(job.device_id) %}
+        <button class="dock-tab {{ 'is-active' if job.id == active_id }}"
+                hx-get="/jobs/dock?active={{ job.id }}"
+                hx-target="#job-dock"
+                hx-swap="innerHTML">
+          <span class="dot {{ 'dot-accent dot-pulse' if job.state == 'running' else ('dot-ok' if job.state == 'done' else ('dot-err' if job.state in ('failed','aborted') else 'dot-dim')) }}"></span>
+          {{ device.display_abbr if device else job.device_id }} · {{ short_path(job.label, 1) }}
+        </button>
+      {% endfor %}
+
+      <div class="dock-win">
+        <button data-dock-collapse title="Collapse">—</button>
+        <button data-dock-collapse title="Expand">⤢</button>
+        {% if active_id %}
+          <button hx-post="/jobs/{{ active_id }}/dismiss" hx-target="#job-dock" hx-swap="innerHTML" title="Close">✕</button>
+        {% endif %}
+      </div>
+    </div>
+
+    {% for job in jobs %}
+      {% if job.id == active_id %}
+        {% include "dock_card.html" %}
+      {% endif %}
+    {% endfor %}
+  </div>
+
+{% endif %}

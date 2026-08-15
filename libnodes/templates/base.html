@@ -1,0 +1,96 @@
+<!doctype html>
+{# data-theme is rendered server-side from the cookie, so the correct palette is in
+   place on first paint -- no flash of the other theme. #}
+<html lang="en"{% if theme == 'light' %} data-theme="light"{% endif %}>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}LibNodes{% endblock %}</title>
+<link rel="stylesheet" href="/static/fonts.css">
+<link rel="stylesheet" href="/static/app.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%239a8ce6'/></svg>">
+<script src="/static/htmx.min.js" defer></script>
+<script src="/static/htmx-ext-sse.js" defer></script>
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<div class="shell" id="shell">
+
+  <aside class="rail">
+    <div class="rail-brand">
+      <div class="rail-mark"></div>
+      <span>LibNodes</span>
+    </div>
+
+    <nav class="rail-nav">
+      <div class="rail-group">
+        <div class="section-label">Orchestrate</div>
+        <a class="nav-item {% if active == 'devices' %}is-active{% endif %}" href="/devices">Devices</a>
+        <a class="nav-item {% if active == 'library' %}is-active{% endif %}" href="/library">Library</a>
+        <a class="nav-item {% if active == 'jobs' %}is-active{% endif %}" href="/jobs">
+          Jobs
+          {% if job_count %}<span class="nav-count">{{ job_count }}</span>{% endif %}
+        </a>
+        <a class="nav-item {% if active == 'presets' %}is-active{% endif %}" href="/presets">Presets</a>
+      </div>
+
+      {% block rail_extra %}{% endblock %}
+
+      <div class="rail-group">
+        <div class="section-label">System</div>
+        <a class="nav-item {% if active == 'config' %}is-active{% endif %}" href="/devices.yaml">devices.yaml</a>
+        <a class="nav-item {% if active == 'keys' %}is-active{% endif %}" href="/keys">Keys</a>
+      </div>
+    </nav>
+
+    <div class="rail-foot">
+      {% block rail_foot %}
+      <div class="stat"><span>{{ host.hostname }}</span><b>{{ host.uptime_label }}</b></div>
+      <div class="stat"><span>load</span><b>{{ host.load_label }}</b></div>
+      {# The library and the disk it lives on are two different numbers. Showing the
+         filesystem's usage under a /Books label claimed 894G for a 248G library. #}
+      <div class="stat">
+        <span>{{ library_root }}</span>
+        <b title="library size, summed by the index">{{ library_bytes|hsize_short }}</b>
+      </div>
+      <div class="stat">
+        <span>disk</span>
+        <b>{{ host.disk_used|hsize_short }} / {{ host.disk_total|hsize_short }}</b>
+      </div>
+      <div class="disk-bar"><i style="width:{{ '%.1f'|format(host.disk_pct) }}%"></i></div>
+      {% endblock %}
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <div style="display:flex;align-items:center;gap:10px;min-width:0">
+        <button class="rail-toggle" type="button" data-rail-toggle aria-label="Menu">≡</button>
+        <div class="crumb">{% block crumb %}{% endblock %}</div>
+      </div>
+      <div class="topbar-right">
+        {% block topbar_right %}{% endblock %}
+        <button class="btn btn-icon theme-toggle" type="button"
+                data-theme-toggle
+                title="Switch to {{ 'dark' if theme == 'light' else 'light' }} theme"
+                aria-label="Switch theme">{{ '◐' if theme == 'light' else '◑' }}</button>
+      </div>
+    </div>
+
+    {% block body %}{% endblock %}
+  </main>
+
+</div>
+
+<!-- Live sync dock. Streams only while a job is running; see dock_shell.html. -->
+{% with jobs = dock.jobs, active_id = dock.active_id, running = dock.running,
+        pending = dock.pending, by_id = dock.by_id, terminal = dock.terminal,
+        short_path = dock.short_path, total_pct = dock.total_pct %}
+  {% include "dock_shell.html" %}
+{% endwith %}
+
+<!-- Any response may push a toast in here with hx-swap-oob. -->
+<div class="notices" id="notices"></div>
+
+</body>
+</html>

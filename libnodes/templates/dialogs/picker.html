@@ -1,0 +1,62 @@
+{# Choose devices for a push. Multi-select: one job per device.
+   Used both by the selection bar and by a row's `⋯`. #}
+<div class="backdrop" id="device-picker">
+  <div class="dialog" style="width:460px">
+
+    <div class="dialog-head">
+      <span class="dot dot-accent"></span>
+      {% if dry_run %}Dry run — what would change{% else %}Push to…{% endif %}
+    </div>
+
+    <div class="dialog-body">
+      <div class="mono t-dim">
+        {{ paths|length }} item{{ '' if paths|length == 1 else 's' }} ·
+        {{ total_bytes|hsize }}
+      </div>
+      <div class="mono t-dim nowrap" title="{{ paths|join(', ') }}">{{ paths[0] }}{% if paths|length > 1 %} +{{ paths|length - 1 }} more{% endif %}</div>
+
+      <form id="push-form">
+        {% for p in paths %}<input type="hidden" name="path" value="{{ p }}">{% endfor %}
+        {% if dry_run %}<input type="hidden" name="dry_run" value="on">{% endif %}
+        {% for d in devices %}
+          {% set st = status(d.id) %}
+          <label class="opt">
+            {# Nothing pre-checked: the first device in the file may well be offline,
+               and a dialog that arrives with a surprise already selected is worse than
+               one extra click. The row's inline → buttons remain the one-click path. #}
+            <input class="check" type="checkbox" name="device" value="{{ d.id }}">
+            <span style="flex:1;min-width:0">
+              {{ d.name }}
+              <span class="opt-note">
+                <span class="dot {{ st.dot_class }}" style="display:inline-block;vertical-align:middle"></span>
+                {{ st.state }} · {{ d.display_target }} · {{ d.effective_fs }}
+                {% if d.fs_profile.max_file and biggest > d.fs_profile.max_file %}
+                  <span class="t-err">
+                    — {{ d.fs_profile.note }} cannot hold a file over
+                    {{ d.fs_profile.max_file|hsize }}; the largest here is {{ biggest|hsize }}
+                  </span>
+                {% endif %}
+              </span>
+            </span>
+          </label>
+        {% else %}
+          <div class="meta">No devices configured.</div>
+        {% endfor %}
+      </form>
+    </div>
+
+    <div class="dialog-foot">
+      <button class="btn" type="button"
+              onclick="document.getElementById('device-picker').remove()">Cancel</button>
+      <button class="btn btn-primary" type="button"
+              hx-post="{{ '/jobs/dry-run' if dry_run else '/jobs' }}"
+              hx-include="#push-form"
+              hx-target="#notices" hx-swap="beforeend"
+              hx-disabled-elt="this"
+              onclick="document.getElementById('device-picker').remove()">
+        {{ 'Dry run' if dry_run else 'Push' }}
+      </button>
+    </div>
+
+  </div>
+</div>

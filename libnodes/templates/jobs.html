@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Jobs · LibNodes{% endblock %}
+
+{% block crumb %}jobs / <b>queue</b>{% endblock %}
+
+{% block topbar_right %}
+  {% if running or pending %}
+    <span class="chip chip-accent">
+      <span class="dot dot-accent dot-pulse"></span>
+      {{ running }} running · {{ pending }} queued
+    </span>
+  {% endif %}
+  <button class="btn"
+          hx-delete="/jobs/finished"
+          hx-target="#job-rows"
+          hx-swap="innerHTML"
+          hx-confirm="Clear all finished jobs from history?"
+          hx-disabled-elt="this">Clear finished</button>
+{% endblock %}
+
+{# The Jobs rail footer swaps host stats for live transfer telemetry. #}
+{# Poll fast only while something is actually transferring. An idle Jobs page left open
+   was asking the Pi for telemetry every 3s for ever. #}
+{% block rail_foot %}
+<span id="telemetry"
+      hx-get="/jobs/telemetry"
+      hx-trigger="every {{ '3s' if running else '20s' }}"
+      hx-swap="innerHTML"
+      style="display:contents">
+  {% include "fragments/telemetry.html" %}
+</span>
+{% endblock %}
+
+{% block body %}
+<div class="view">
+
+  <div class="titlebar">
+    <h1 class="title">Jobs</h1>
+    <span class="title-meta">
+      concurrency {{ concurrency }} · retries {{ defaults.retries }} · --partial
+    </span>
+  </div>
+
+  <div class="panel">
+    <div class="thead jobs-grid">
+      <div>Job</div>
+      <div>Target</div>
+      <div>Source</div>
+      <div class="cell-r">Files</div>
+      <div class="cell-r">Bytes</div>
+      <div>Started</div>
+      <div class="cell-r">State</div>
+    </div>
+    <div id="job-rows" hx-get="/jobs/rows"
+         hx-trigger="every {{ '5s' if running else '20s' }}"
+         hx-swap="innerHTML">
+      {% include "job_rows.html" %}
+    </div>
+  </div>
+
+</div>
+{% endblock %}

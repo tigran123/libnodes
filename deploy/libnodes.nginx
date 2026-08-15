@@ -1,0 +1,60 @@
+# OPTIONAL. You almost certainly do not need this.
+#
+# uvicorn already listens on 0.0.0.0:8090, so http://pi:8090/ works directly and is one
+# less moving part. Putting nginx in front buys exactly two things:
+#
+#   1. LibNodes on port 80, i.e. http://pi/ instead of http://pi:8090/, alongside the
+#      existing plain file browser on :8080.
+#   2. /static served straight off the disk, so uvicorn never spends a request on the
+#      600 KB of fonts and CSS.
+#
+# If neither appeals, skip this file entirely.
+#
+#   sudo cp deploy/libnodes.nginx /etc/nginx/sites-available/libnodes
+#   sudo ln -s /etc/nginx/sites-available/libnodes /etc/nginx/sites-enabled/
+#   sudo nginx -t && sudo systemctl reload nginx
+#
+# If you do install it, tighten the service afterwards so 8090 is not a second public
+# door: change --host 0.0.0.0 to --host 127.0.0.1 in libnodes.service, then
+#   sudo systemctl daemon-reload && sudo systemctl restart libnodes
+
+server {
+    listen 80;
+    server_name _;
+
+    client_max_body_size 1m;
+
+    # Served from disk, not proxied — nginx is much better at this than uvicorn and the
+    # files never change between deploys.
+    location /static/ {
+        alias /home/pi/libnodes/libnodes/static/;
+        access_log off;
+        expires 7d;
+        add_header Cache-Control "public";
+        try_files $uri =404;
+    }
+
+    # The job stream is Server-Sent Events. With buffering on, nginx holds the fragments
+    # and the sync dock appears to freeze mid-transfer — this block is the whole reason
+    # the SSE endpoint gets its own location.
+    location /jobs/stream {
+        proxy_pass http://127.0.0.1:8090;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_cache off;
+        chunked_transfer_encoding off;
+        proxy_read_timeout 24h;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:8090;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
+    }
+}

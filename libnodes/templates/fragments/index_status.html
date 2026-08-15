@@ -1,0 +1,8 @@
+{% if index_meta.running %}
+  <span class="dot dot-accent dot-pulse"></span> reindexing…
+{% elif index_meta.ready %}
+  <span class="dot dot-ok"></span>
+  index {{ index_meta.indexed_at|freshness }} · {{ index_meta.entry_count|commafy }} entries
+{% else %}
+  <span class="dot dot-warn"></span> index not built
+{% endif %}

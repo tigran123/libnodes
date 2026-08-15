@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}devices.yaml · LibNodes{% endblock %}
+{% block crumb %}system / <b>devices.yaml</b>{% endblock %}
+
+{% block topbar_right %}
+  {% if issues %}
+    <span class="chip"><span class="dot dot-err"></span> {{ issues|length }} problem{{ '' if issues|length == 1 else 's' }}</span>
+  {% else %}
+    <span class="chip"><span class="dot dot-ok"></span> valid</span>
+  {% endif %}
+{% endblock %}
+
+{% block body %}
+{# inotify-driven: the server pushes a re-rendered panel the moment the file changes.
+   No polling, and no stale version to look at. The connection lives only while this
+   page is open. #}
+<div class="view"
+     hx-ext="sse"
+     sse-connect="/devices.yaml/stream"
+     sse-swap="config"
+     hx-target="#yaml-panel"
+     hx-swap="outerHTML">
+  {% include "devices_panel.html" %}
+</div>
+{% endblock %}

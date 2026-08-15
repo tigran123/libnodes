@@ -1,0 +1,10 @@
+.venv/
+var/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+
+# The design bundle this UI was built from. Consumed: the implementation is the
+# artefact now, and keeping ~1.6 MB of PNGs in git buys nothing.
+design_handoff_libnodes/

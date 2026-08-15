@@ -1,0 +1,22 @@
+{# Visible only when at least one row is checked. #}
+{% if sel_count %}
+<div class="selbar">
+  <span class="selbar-count">{{ sel_count }} item{{ '' if sel_count == 1 else 's' }} selected</span>
+  <span class="mono t-dim">{{ sel_bytes|hsize }} · {{ sel_files|commafy }} files</span>
+
+  <div class="selbar-actions">
+    <button class="btn" type="button"
+            hx-get="/jobs/picker?from=selection"
+            hx-include="#sel-form"
+            hx-target="#notices"
+            hx-swap="beforeend">Dry run…</button>
+    {# One button, then choose devices — rather than a pinned target chosen elsewhere. #}
+    <button class="btn btn-primary" type="button"
+            hx-get="/jobs/picker"
+            hx-include="#sel-form"
+            hx-target="#notices"
+            hx-swap="beforeend"
+            hx-disabled-elt="this">Push →</button>
+  </div>
+</div>
+{% endif %}

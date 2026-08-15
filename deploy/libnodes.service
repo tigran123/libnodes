@@ -1,0 +1,36 @@
+# /etc/systemd/system/libnodes.service
+#
+#   sudo cp deploy/libnodes.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now libnodes
+#
+# Note: /home/pi/libnodes must be mounted READ-WRITE. See deploy/README.md.
+
+[Unit]
+Description=LibNodes — library orchestrator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/libnodes
+Environment=LIBNODES_LIBRARY_ROOT=/Books
+Environment=LIBNODES_STATE_DIR=/home/pi/libnodes/var
+Environment=LIBNODES_CATALOG_DB=/Books/.data/db/lib.db
+# Port 8090: 8080 is taken by nginx (urantia-library).
+ExecStart=/home/pi/libnodes/.venv/bin/uvicorn libnodes.main:app \
+    --host 0.0.0.0 --port 8090 --workers 1 --loop uvloop --http httptools
+Restart=on-failure
+RestartSec=5
+
+# The Pi has 1 GB total and also runs nginx, rsync and hostapd. Expect ~60 MB RSS;
+# this cap exists to catch a leak, not to constrain normal operation.
+MemoryMax=320M
+
+# rsync and ssh are spawned as children, so no sandboxing that blocks exec or network.
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

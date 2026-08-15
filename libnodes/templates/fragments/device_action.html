@@ -1,0 +1,39 @@
+{# One row of the device Actions dialog: the button, what it means, and the exact
+   command it runs. Expects `act` with `method` + `url`.
+
+   NOT `act.get` — Jinja resolves attributes before keys, so a key named `get` returns
+   dict.get, the bound method, and the button renders
+   hx-get="<built-in method get of dict object ...>". Same trap for `items`, `keys`,
+   `values`, `pop`, `update`.
+
+   All buttons look the same on purpose. Styling one as primary makes it the obvious
+   thing to press, and the heaviest action here (a 250 GB Full Sync) is the last thing
+   that should be inviting. #}
+<div class="action">
+  <div class="action-head">
+    <button class="btn btn-default" type="button"
+            {% if act.method == 'post' %}hx-post="{{ act.url }}"{% else %}hx-get="{{ act.url }}"{% endif %}
+            hx-target="{{ act.target }}"
+            hx-swap="{{ act.swap }}"
+            hx-disabled-elt="this"
+            {% if act.confirm %}hx-confirm="{{ act.confirm }}"{% endif %}
+            {# Close AFTER the response lands. Removing the dialog in onclick tears the
+               triggering element out of the DOM mid-flight, and htmx abandons the
+               request. #}
+            {% if act.close %}hx-on::after-request="document.getElementById('device-menu')?.remove()"{% endif %}
+    >{{ act.label }}</button>
+    <span class="action-note">{{ act.note }}</span>
+  </div>
+
+  {% if act.cmd %}
+    <div class="action-cmd">
+      <code>{{ act.cmd }}</code>
+      <button class="btn btn-ghost btn-icon" type="button"
+              data-copy="{{ act.cmd }}"
+              title="Copy this command">⧉</button>
+    </div>
+  {% elif act.cmd_note %}
+    {# Same slot, so the list reads consistently even where there is no command. #}
+    <div class="action-cmd is-empty"><code>{{ act.cmd_note }}</code></div>
+  {% endif %}
+</div>

@@ -1,0 +1,28 @@
+{# Toast per queued job. Swapped into #notices with beforeend. #}
+{% for job in (jobs_queued if jobs_queued is defined else [job]) %}
+  {% set device = by_id.get(job.device_id) if by_id else None %}
+  <div class="toast" id="toast-job-{{ job.id }}">
+    <span class="dot {{ 'dot-warn' if job.state == 'deferred' else 'dot-accent' }}"></span>
+    <div style="min-width:0">
+      <div class="toast-title">
+        {% if job.state == 'deferred' and job.hold %}
+          #{{ job.id }} held · {{ device.name if device else job.device_id }}
+        {% elif job.state == 'deferred' %}
+          {{ device.name if device else job.device_id }} queued
+        {% else %}
+          #{{ job.id }} {{ 'dry run' if job.dry_run else 'started' }} · {{ device.name if device else job.device_id }}
+        {% endif %}
+      </div>
+      <div class="toast-detail nowrap">
+        {% if job.state == 'deferred' and job.hold %}
+          waiting for you — press Start in Jobs
+        {% elif job.state == 'deferred' %}
+          will run when sshd answers · watching every 60s
+        {% else %}
+          {{ job.label }} · {{ job.files_total|commafy }} files · {{ job.bytes_total|hsize }}
+        {% endif %}
+      </div>
+    </div>
+    <button class="x" onclick="this.closest('.toast').remove()">✕</button>
+  </div>
+{% endfor %}

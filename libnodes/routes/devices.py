@@ -1,0 +1,470 @@
+"""Devices view: every device in devices.yaml and whether it answers right now."""
+
+from __future__ import annotations
+
+import asyncio
+import shlex
+import time
+from dataclasses import dataclass
+
+from fastapi import APIRouter, Request
+from fastapi.responses import HTMLResponse
+
+from ..deps import base_context, state
+from ..probe import FreeSpace, Reachability, ssh_argv
+from ..scan import scan_argv
+from ..jobs import Job, build_argv, full_sync_sources, hints_for_text
+from ..models import Device
+from ..state import AppState
+from ..templating import templates
+
+router = APIRouter()
+
+
+@dataclass
+class DeviceView:
+    """One device row: config, live reachability, storage, and any running transfer."""
+
+    device: Device
+    reach: Reachability
+    space: FreeSpace
+    last_sync: float | None
+    job: Job | None
+
+    @property
+    def state(self) -> str:
+        if self.job is not None and self.job.state == "running":
+            return "syncing"
+        return self.reach.state
+
+    @property
+    def dot_class(self) -> str:
+        if self.state == "syncing":
+            return "dot-accent dot-pulse"
+        return self.reach.dot_class
+
+    @property
+    def row_class(self) -> str:
+        return {
+            "syncing": "is-active",
+            "offline": "is-offline",
+        }.get(self.state, "")
+
+    @property
+    def offline(self) -> bool:
+        return self.state == "offline"
+
+    @property
+    def sleeping(self) -> bool:
+        return self.state == "sleeping"
+
+    @property
+    def online(self) -> bool:
+        """Green. Every device action needs this — offering them otherwise just
+        produces a failure the user could have been spared."""
+        return self.state == "online"
+
+    @property
+    def capacity(self) -> int | None:
+        """Prefer what the device reported; fall back to the declared figure."""
+        return self.space.total or self.device.capacity_bytes
+
+    @property
+    def free(self) -> int | None:
+        return self.space.free
+
+    @property
+    def used_pct(self) -> float:
+        total = self.capacity
+        if not total or self.space.used is None:
+            return 0.0
+        return max(0.0, min(100.0, 100.0 * self.space.used / total))
+
+
+def device_views(app: AppState) -> list[DeviceView]:
+    running = {j.device_id: j for j in app.jobs.active() if j.state == "running"}
+    out = []
+    for device in app.devices.config.devices:
+        out.append(
+            DeviceView(
+                device=device,
+                reach=app.probe.status(device.id),
+                space=app.probe.space(device.id),
+                last_sync=app.manifests.last_sync(device.id),
+                job=running.get(device.id),
+            )
+        )
+    return out
+
+
+def _filtered(views: list[DeviceView], q: str | None) -> list[DeviceView]:
+    if not q:
+        return views
+    needle = q.lower().strip()
+    return [
+        v
+        for v in views
+        if needle in v.device.name.lower()
+        or needle in v.device.id.lower()
+        or needle in v.device.host.lower()
+        or needle in v.device.type.lower()
+        or needle in v.device.target.lower()
+    ]
+
+
+def devices_context(request: Request, q: str | None = None) -> dict:
+    app = state(request)
+    views = _filtered(device_views(app), q)
+    online, total = app.probe.reachable_count
+    ctx = base_context(request, "devices")
+    ctx.update(
+        {
+            "nodes": views,
+            "q": q or "",
+            "online": online,
+            "total": total,
+            "last_scan": app.probe.last_scan,
+            "profiles": app.devices.config.profiles,
+        }
+    )
+    return ctx
+
+
+@router.get("/devices", response_class=HTMLResponse)
+async def devices_page(request: Request, q: str | None = None, view: str = "table"):
+    ctx = devices_context(request, q)
+    ctx["view"] = view if view in ("table", "grid") else "table"
+    return templates.TemplateResponse(request, "devices.html", ctx)
+
+
+@router.get("/devices/rows", response_class=HTMLResponse)
+async def device_rows(request: Request, q: str | None = None):
+    return templates.TemplateResponse(request, "device_rows.html", devices_context(request, q))
+
+
+@router.get("/devices/grid", response_class=HTMLResponse)
+async def device_grid(request: Request, q: str | None = None):
+    return templates.TemplateResponse(request, "device_grid.html", devices_context(request, q))
+
+
+@router.get("/devices/status", response_class=HTMLResponse)
+async def device_status(request: Request):
+    """The top-bar chips — polled alongside the table."""
+    return templates.TemplateResponse(request, "device_status.html", devices_context(request))
+
+
+def _one(request: Request, device_id: str) -> DeviceView | None:
+    for view in device_views(state(request)):
+        if view.device.id == device_id:
+            return view
+    return None
+
+
+@router.get("/device/{device_id}/row", response_class=HTMLResponse)
+async def device_row(request: Request, device_id: str):
+    view = _one(request, device_id)
+    if view is None:
+        return HTMLResponse("", status_code=404)
+    ctx = base_context(request, "devices")
+    ctx["node"] = view
+    return templates.TemplateResponse(request, "device_row.html", ctx)
+
+
+@router.post("/device/{device_id}/probe", response_class=HTMLResponse)
+async def device_probe(request: Request, device_id: str):
+    """Re-probe one device.
+
+    The TCP connect is awaited because the user asked for it and it is bounded by
+    `probe_timeout`. The `df` probe is not — it spawns ssh and can take 15s, which has
+    no business sitting in a request.
+    """
+    app = state(request)
+    device = app.devices.device(device_id)
+    if device is None:
+        return HTMLResponse("", status_code=404)
+    await app.probe.probe(device)
+    if app.probe.status(device_id).online:
+        app.probe.probe_space_soon(device, force=True)
+    return await device_row(request, device_id)
+
+
+@router.post("/devices/rescan", response_class=HTMLResponse)
+async def devices_rescan(request: Request, q: str | None = None):
+    """Sweep every device, ignoring backoff — without making the browser wait.
+
+    Awaiting this would make Rescan cost one connect timeout per unreachable node. The
+    returned fragment schedules a single follow-up refresh to pick up the results.
+    """
+    app = state(request)
+    app.probe.rescan_soon(force=True)
+    ctx = devices_context(request, q)
+    ctx["rescanning"] = True
+    return templates.TemplateResponse(request, "device_rows.html", ctx)
+
+
+def _shell(argv: list[str]) -> str:
+    """An argv rendered as the shell line it is equivalent to — for display only."""
+    return " ".join(shlex.quote(a) for a in argv)
+
+
+@router.get("/device/{device_id}/menu", response_class=HTMLResponse)
+async def device_menu(request: Request, device_id: str):
+    """Every action for one device, each showing the command it will actually run.
+
+    An action whose effect you have to infer from its label is a bad action — "Adopt
+    existing copy" means nothing until you see the `--size-only` that makes it safe.
+    """
+    app = state(request)
+    device = app.devices.device(device_id)
+    if device is None:
+        return HTMLResponse("", status_code=404)
+
+    config = app.devices.config
+    sources = full_sync_sources(app.settings)
+    files, total_bytes, _last = app.manifests.summary(device_id)
+
+    ctx = base_context(request, "devices")
+    ctx.update(
+        {
+            "device": device,
+            "node": _one(request, device_id),
+            "manifest_files": files,
+            "manifest_bytes": total_bytes,
+            "scan": app.scanner.result(device_id),
+            "scanning": app.scanner.is_running(device_id),
+            "commands": {
+                "full_sync": _shell(
+                    build_argv(device, config, sources, app.settings)
+                ),
+                "dry_run": _shell(
+                    build_argv(device, config, sources, app.settings, dry_run=True)
+                ),
+                "adopt": _shell(
+                    build_argv(device, config, sources, app.settings, adopt=True)
+                ),
+                "scan": _shell(scan_argv(device, app.settings)),
+                "test": _shell(
+                    [
+                        *ssh_argv(device, app.settings),
+                        f"df -Pk {shlex.quote(device.target)}",
+                    ]
+                ),
+            },
+            "library_root": str(app.settings.library_root),
+        }
+    )
+    return templates.TemplateResponse(request, "dialogs/device_menu.html", ctx)
+
+
+#: One remote probe answering the three questions the design's test strip asks: is it
+#: reachable, does it have rsync, is the target writable. Deliberately read-only —
+#: `test -w` rather than creating a probe file on someone's device.
+#: `df -Pk` is the portable form on GNU coreutils, but Android's toybox rejects the
+#: flags, prints its output anyway and exits non-zero — so a plain `a || b` runs df
+#: twice and prints the table twice. Capture first, fall back only on empty output.
+_TEST_SCRIPT = (
+    'echo "# df"; d=`df -Pk {t} 2>/dev/null`; '
+    '[ -n "$d" ] || d=`df {t} 2>&1`; echo "$d"; '
+    'echo "# rsync"; rsync --version 2>/dev/null | head -1 || echo "rsync: not found"; '
+    'echo "# write"; if test -w {t}; then echo "writable"; else echo "NOT writable"; fi'
+)
+
+
+@router.post("/device/{device_id}/test", response_class=HTMLResponse)
+async def device_test(request: Request, device_id: str):
+    """ssh in and report back, in the dialog rather than silently.
+
+    The design calls for a connection-test strip: the echoed command, its output, and a
+    one-line verdict — with the failure case naming a likely cause.
+    """
+    app = state(request)
+    device = app.devices.device(device_id)
+    if device is None:
+        return HTMLResponse("", status_code=404)
+
+    remote = _TEST_SCRIPT.format(t=shlex.quote(device.target))
+    argv = [*ssh_argv(device, app.settings), remote]
+    started = time.perf_counter()
+    out = err = ""
+    code: int | None = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=20)
+            out = stdout.decode(errors="replace")
+            err = stderr.decode(errors="replace")
+            code = proc.returncode
+        except asyncio.TimeoutError:
+            proc.kill()
+            err = "timed out after 20s"
+    except OSError as exc:
+        err = str(exc)
+
+    elapsed = time.perf_counter() - started
+    # Re-probe reachability too, so the row behind the dialog agrees with the strip.
+    await app.probe.probe(device)
+
+    ctx = base_context(request, "devices")
+    ctx.update(
+        {
+            "device": device,
+            "command": _shell(argv),
+            "stdout": out.strip(),
+            "stderr": err.strip(),
+            "code": code,
+            "elapsed": elapsed,
+            "summary": _test_summary(out) if code == 0 else None,
+            "hints": hints_for_text(f"{out}\n{err}", code if code is not None else 255),
+        }
+    )
+    return templates.TemplateResponse(request, "fragments/test_strip.html", ctx)
+
+
+def _test_summary(out: str) -> list[str]:
+    """Turn the probe's output into the design's one-line verdict."""
+    bits = []
+    if "# df" in out:
+        bits.append("reachable")
+    for line in out.splitlines():
+        if line.startswith("rsync  version") or line.startswith("rsync version"):
+            bits.append(line.strip().split(" protocol")[0].strip())
+        elif line.strip() == "writable":
+            bits.append("target writable")
+        elif line.strip() == "NOT writable":
+            bits.append("target NOT writable")
+        elif line.startswith("rsync: not found"):
+            bits.append("no rsync on device")
+    return bits
+
+
+@router.post("/device/{device_id}/scan", response_class=HTMLResponse)
+async def device_scan(request: Request, device_id: str):
+    """Ask the device what it already holds.
+
+    Runs in the background — a real device takes ~35s for 20k files — so this returns
+    immediately and the row picks up the result on its next poll.
+    """
+    app = state(request)
+    device = app.devices.device(device_id)
+    if device is None:
+        return HTMLResponse("", status_code=404)
+    started = app.scanner.start(device)
+    ctx = base_context(request, "devices")
+    ctx.update({"device": device, "started": started})
+    return templates.TemplateResponse(request, "fragments/scan_started.html", ctx)
+
+
+@router.get("/device/{device_id}/extras", response_class=HTMLResponse)
+async def device_extras(request: Request, device_id: str):
+    """Files the device holds that the library does not.
+
+    Orphans: books deleted from the library since, and copies whose filenames were
+    mangled by whatever wrote them — a real device turned out to hold 17 of these, the
+    same albums a second time under a double-encoded name.
+    """
+    app = state(request)
+    device = app.devices.device(device_id)
+    if device is None:
+        return HTMLResponse("", status_code=404)
+    rows, total, duplicates = app.manifests.extras(
+        device_id, app.index.all_file_paths()
+    )
+    ctx = base_context(request, "devices")
+    ctx.update(
+        {
+            "device": device,
+            "extras": rows,
+            "extra_total": total,
+            "extra_dupes": duplicates,
+            "extra_bytes": sum(r["size"] for r in rows),
+        }
+    )
+    return templates.TemplateResponse(request, "dialogs/device_extras.html", ctx)
+
+
+@router.get("/device/{device_id}/scan-status", response_class=HTMLResponse)
+async def device_scan_status(request: Request, device_id: str):
+    app = state(request)
+    files, total_bytes, _last = app.manifests.summary(device_id)
+    ctx = base_context(request, "devices")
+    ctx.update(
+        {
+            "device_id": device_id,
+            "scan": app.scanner.result(device_id),
+            "scanning": app.scanner.is_running(device_id),
+            "manifest_files": files,
+            "manifest_bytes": total_bytes,
+        }
+    )
+    return templates.TemplateResponse(request, "fragments/scan_status.html", ctx)
+
+
+@router.post("/device/{device_id}/adopt", response_class=HTMLResponse)
+async def device_adopt(request: Request, device_id: str):
+    """Reconcile a device that already holds the library, without moving its bytes.
+
+    The files are there and correct; only their timestamps say otherwise, so rsync's
+    default check would re-send all of them. This queues a `--size-only` run, which
+    repairs the metadata and transfers nothing.
+    """
+    app = state(request)
+    device = app.devices.device(device_id)
+    if device is None:
+        return HTMLResponse("", status_code=404)
+    sources = full_sync_sources(app.settings)
+    reachable = app.probe.status(device_id).online
+    job = app.jobs.submit(
+        device,
+        sources,
+        label="(adopt existing copy)",
+        deferred=not reachable,
+        adopt=True,
+    )
+    ctx = base_context(request, "devices")
+    ctx["job"] = job
+    return templates.TemplateResponse(request, "fragments/queued.html", ctx)
+
+
+@router.post("/device/{device_id}/dry-run", response_class=HTMLResponse)
+async def device_dry_run(request: Request, device_id: str):
+    """What a Full Sync would actually do, without doing it.
+
+    Runs as an ordinary job so it queues behind anything in flight, streams its file
+    list into the dock, and lands in history — a preview you can read afterwards rather
+    than a number that flashes past.
+    """
+    app = state(request)
+    device = app.devices.device(device_id)
+    if device is None:
+        return HTMLResponse("", status_code=404)
+    job = app.jobs.submit(
+        device,
+        full_sync_sources(app.settings),
+        label="(dry run · full library)",
+        dry_run=True,
+    )
+    ctx = base_context(request, "devices")
+    ctx["job"] = job
+    return templates.TemplateResponse(request, "fragments/queued.html", ctx)
+
+
+@router.post("/device/{device_id}/full-sync", response_class=HTMLResponse)
+async def device_full_sync(request: Request, device_id: str):
+    """Queue the whole library. Only offered for devices with `full_sync: true`."""
+    app = state(request)
+    device = app.devices.device(device_id)
+    if device is None or not device.full_sync:
+        return HTMLResponse("", status_code=404)
+    sources = full_sync_sources(app.settings)
+    reachable = app.probe.status(device_id).online
+    job = app.jobs.submit(
+        device, sources, label="(full library)", deferred=not reachable
+    )
+    ctx = base_context(request, "devices")
+    ctx["job"] = job
+    ctx["node"] = _one(request, device_id)
+    return templates.TemplateResponse(request, "fragments/queued.html", ctx)

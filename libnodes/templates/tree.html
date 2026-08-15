@@ -1,0 +1,34 @@
+{# Tree pane. Served from the SQLite index -- never a live stat() walk. #}
+<aside class="tree-pane" id="tree-pane">
+  <div class="tree-head">
+    <span>Tree · Cached</span>
+    <button class="btn btn-ghost btn-icon"
+            hx-post="/lib/reindex"
+            hx-target="#index-status"
+            hx-swap="innerHTML"
+            hx-disabled-elt="this"
+            title="Rebuild the index">⟳</button>
+  </div>
+
+  <div class="tree-body" id="tree-body">
+    <div class="tree-row {{ 'is-selected' if path == '' }}" data-depth="-1">
+      <span class="tree-caret">▾</span>
+      <a class="tree-link"
+         href="/library"
+         hx-get="/lib/pane"
+         hx-target="#lib"
+         hx-swap="outerHTML"
+         hx-push-url="/library">
+        <span class="tree-name">{{ library_root }}</span>
+        <span class="tree-size">{{ index_meta.total_bytes|hsize_short }}</span>
+      </a>
+    </div>
+
+    {% with rows = tree %}{% include "tree_rows.html" %}{% endwith %}
+  </div>
+
+  <div class="tree-foot">
+    Tree served from a SQLite index, not a live <span class="mono">stat()</span> walk.<br>
+    <span class="mono">▸</span> toggles · the name opens the directory
+  </div>
+</aside>

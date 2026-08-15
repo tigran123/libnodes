@@ -1,0 +1,7 @@
+{# Returned by the tree's ⟳. Polls itself until the walk finishes, then stops. #}
+<span hx-get="/lib/index-status"
+      hx-trigger="every 2s"
+      hx-swap="innerHTML"
+      style="display:contents">
+  {% include "fragments/index_status.html" %}
+</span>

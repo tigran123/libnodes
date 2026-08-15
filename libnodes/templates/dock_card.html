@@ -1,0 +1,77 @@
+{# One job's body. Also the payload of `job-N-done`, which replaces it outerHTML. #}
+{% set device = by_id.get(job.device_id) %}
+<div class="dock-card {{ 'is-err' if job.state in ('failed', 'aborted') }}"
+     id="job-{{ job.id }}"
+     sse-swap="job-{{ job.id }}-done"
+     hx-swap="outerHTML">
+
+  {% if job.state == 'done' %}
+    <div class="dock-banner is-ok">
+      <span class="dot dot-ok"></span>
+      SYNC COMPLETE · {{ device.name if device else job.device_id }}
+      <button class="x"
+              hx-post="/jobs/{{ job.id }}/dismiss"
+              hx-target="#job-dock" hx-swap="innerHTML">✕</button>
+    </div>
+  {% elif job.state == 'failed' %}
+    <div class="dock-banner is-err">
+      <span class="dot dot-err"></span>
+      {{ 'DEVICE WENT OFFLINE' if job.exit_code == 255 else 'TRANSFER FAILED' }} ·
+      {{ device.name if device else job.device_id }}
+      <button class="x" hx-post="/jobs/{{ job.id }}/dismiss" hx-target="#job-dock" hx-swap="innerHTML">✕</button>
+    </div>
+  {% elif job.state == 'aborted' %}
+    <div class="dock-banner is-err">
+      <span class="dot dot-err"></span>
+      ABORTED · {{ device.name if device else job.device_id }}
+      <button class="x" hx-post="/jobs/{{ job.id }}/dismiss" hx-target="#job-dock" hx-swap="innerHTML">✕</button>
+    </div>
+  {% endif %}
+
+  <div class="dock-meta" id="job-{{ job.id }}-meta"
+       sse-swap="job-{{ job.id }}-progress"
+       hx-swap="innerHTML">
+    {% include "dock_meta.html" %}
+  </div>
+
+  <div class="term" id="job-{{ job.id }}-term"
+       sse-swap="job-{{ job.id }}-line"
+       hx-swap="beforeend">
+    {% for css, text in terminal(job.id) %}
+      <div{% if css %} class="{{ css }}"{% endif %}>{{ text }}</div>
+    {% endfor %}
+    {% if job.running %}<div><span class="caret"></span></div>{% endif %}
+  </div>
+
+  <div class="dock-foot">
+    {% if job.finished %}
+      <span class="note">#{{ job.id }} · exit {{ job.exit_code if job.exit_code is not none else '—' }}</span>
+    {% else %}
+      <span class="note">sse: /jobs/stream · reconnects automatically</span>
+    {% endif %}
+    <div class="r">
+      {% if job.running %}
+        <button class="btn" type="button"
+                onclick="navigator.clipboard&&navigator.clipboard.writeText(this.dataset.cmd)"
+                data-cmd="{{ job.command|e }}">Copy command</button>
+        <button class="btn" type="button" data-dock-collapse>Background</button>
+        <button class="btn btn-danger"
+                hx-post="/jobs/{{ job.id }}/abort" hx-swap="none"
+                hx-disabled-elt="this">Abort</button>
+      {% elif job.state == 'failed' %}
+        <button class="btn" hx-get="/jobs/{{ job.id }}/log/view"
+                hx-target="#notices" hx-swap="beforeend">Open log</button>
+        <button class="btn btn-primary"
+                hx-post="/jobs/{{ job.id }}/retry"
+                hx-target="#notices" hx-swap="beforeend"
+                hx-disabled-elt="this">Resume when online</button>
+      {% else %}
+        <button class="btn" hx-get="/jobs/{{ job.id }}/log/view"
+                hx-target="#notices" hx-swap="beforeend">See log</button>
+        <button class="btn btn-default"
+                hx-post="/jobs/{{ job.id }}/dismiss" hx-target="#job-dock" hx-swap="innerHTML">Dismiss</button>
+      {% endif %}
+    </div>
+  </div>
+
+</div>

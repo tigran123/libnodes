@@ -1,0 +1,63 @@
+{# Card variant of the devices table. Same states, same colours, different geometry. #}
+<div class="cards">
+{% for node in nodes %}
+  <div class="card {{ 'is-active' if node.state == 'syncing' }}{{ 'is-offline' if node.offline }}"
+       id="card-{{ node.device.id }}">
+
+    <div class="card-head">
+      <span class="dot {{ node.dot_class }}"></span>
+      <span class="card-title">{{ node.device.name }}</span>
+      {% if node.state == 'syncing' %}
+        <span class="badge badge-accent">{{ '%.0f'|format(node.job.pct) }}%</span>
+      {% elif node.offline %}
+        <span class="badge badge-err">OFFLINE</span>
+      {% elif node.sleeping %}
+        <span class="badge badge-warn">ASLEEP</span>
+      {% else %}
+        <span class="badge">{{ node.device.type|upper }}</span>
+      {% endif %}
+    </div>
+
+    <div class="mono nowrap">{{ node.device.host }}:{{ node.device.effective_port }}</div>
+    <div class="mono t-muted nowrap"><span title="{{ node.device.target }}">{{ node.device.display_target }}</span></div>
+
+    <div>
+      <div class="stat" style="line-height:1.4">
+        <span>{{ node.last_sync|reltime }}</span>
+        <b title="{{ node.free|hsize }} free of {{ node.capacity|hsize }}">
+          {%- if node.free is not none -%}
+            {{ node.free|hsize_short }}{% if node.capacity %} / {{ node.capacity|hsize_short }}{% endif %}
+          {%- else -%}—{%- endif -%}
+        </b>
+      </div>
+      <div class="disk-bar" style="height:3px">
+        <i style="width:{{ '%.1f'|format(node.used_pct) }}%"></i>
+      </div>
+    </div>
+
+    <div class="card-actions">
+      {% if node.state == 'syncing' %}
+        <button class="btn" hx-get="/jobs/{{ node.job.id }}/log/view"
+                hx-target="#notices" hx-swap="beforeend">Open log</button>
+        <button class="btn btn-danger"
+                hx-post="/jobs/{{ node.job.id }}/abort"
+                hx-swap="none" hx-disabled-elt="this">Abort</button>
+      {% elif not node.online %}
+        <button class="btn"
+                hx-post="/device/{{ node.device.id }}/probe"
+                hx-target="#device-rows" hx-swap="innerHTML"
+                hx-disabled-elt="this">Retry</button>
+        <button class="btn is-disabled" disabled
+                title="not answering — Retry first">Actions</button>
+      {% else %}
+        <button class="btn btn-default"
+                hx-get="/device/{{ node.device.id }}/menu"
+                hx-target="#notices" hx-swap="beforeend">Actions</button>
+      {% endif %}
+    </div>
+
+  </div>
+{% else %}
+  <div class="card"><span class="t-dim">No devices configured.</span></div>
+{% endfor %}
+</div>

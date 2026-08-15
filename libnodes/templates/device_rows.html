@@ -1,0 +1,24 @@
+{# Table body. Polled every 10s and swapped wholesale. #}
+{% if rescanning %}
+  {# The sweep runs in the background; collect its result once, shortly. #}
+  <div hx-get="/devices/rows{% if q %}?q={{ q|urlencode }}{% endif %}"
+       hx-trigger="load delay:2.5s"
+       hx-target="#device-rows"
+       hx-swap="innerHTML"
+       style="display:none"></div>
+{% endif %}
+{% if not nodes %}
+  <div class="trow" style="grid-template-columns:1fr">
+    <div class="t-dim">
+      {% if q %}
+        No device matches <span class="mono">{{ q }}</span>.
+      {% else %}
+        No devices configured yet — add entries to
+        <span class="mono">{{ settings.resolved_devices_file }}</span>.
+      {% endif %}
+    </div>
+  </div>
+{% endif %}
+{% for node in nodes %}
+  {% include "device_row.html" %}
+{% endfor %}

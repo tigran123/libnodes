@@ -1,0 +1,97 @@
+{# Everything you can do to one device, each showing the command it will run.
+   The command is the documentation: "Adopt existing copy" means nothing until you can
+   see the --size-only that makes it safe.
+
+   Every action reports back. Ones that create a job close the dialog first, because
+   #notices sits below the backdrop and a toast fired underneath it is invisible. #}
+<div class="backdrop" id="device-menu">
+  <div class="dialog" style="width:720px">
+
+    <div class="dialog-head">
+      <span class="dot {{ node.dot_class if node else 'dot-dim' }}"></span>
+      {{ device.name }}
+      <span class="meta" style="margin-left:6px">
+        {{ device.host }}:{{ device.effective_port }} · {{ device.display_target }}
+      </span>
+    </div>
+
+    <div class="dialog-body">
+      <div id="scan-status-{{ device.id }}">
+        {% with device_id = device.id %}{% include "fragments/scan_status.html" %}{% endwith %}
+      </div>
+
+      {% if device.full_sync %}
+        {# Dry run first: on a device that already holds the library this answers
+           "would anything actually move?" in about 15s, without moving it. #}
+        {% set act = {
+          'label': 'Dry run',
+          'note': 'list what a Full Sync would transfer — changes nothing. Streams into
+                   the dock; takes ~15s because rsync still compares the whole library.',
+          'cmd': commands.dry_run,
+          'method': 'post', 'url': '/device/' ~ device.id ~ '/dry-run',
+          'target': '#notices', 'swap': 'beforeend', 'close': true,
+        } %}
+        {% include "fragments/device_action.html" %}
+
+        {% set act = {
+          'label': 'Full Sync',
+          'note': 'push the whole library — ' ~ library_root ~ ' in full. Adds and
+                   updates only; never deletes anything on the device.',
+          'cmd': commands.full_sync,
+          'method': 'post', 'url': '/device/' ~ device.id ~ '/full-sync',
+          'target': '#notices', 'swap': 'beforeend', 'close': true,
+          'confirm': 'Push the entire library to ' ~ device.name ~ '?',
+        } %}
+        {% include "fragments/device_action.html" %}
+      {% endif %}
+
+      {% set act = {
+        'label': 'Scan device',
+        'note': 'read what is already there · updates PRESENT ON',
+        'cmd': commands.scan,
+        'method': 'post', 'url': '/device/' ~ device.id ~ '/scan',
+        'target': '#scan-status-' ~ device.id, 'swap': 'innerHTML',
+      } %}
+      {% include "fragments/device_action.html" %}
+
+      {% set act = {
+        'label': 'Adopt existing copy',
+        'note': 'for a device already holding the library: repairs timestamps so future
+                 syncs are incremental. --size-only means matching sizes are skipped,
+                 so no file contents move.',
+        'cmd': commands.adopt,
+        'method': 'post', 'url': '/device/' ~ device.id ~ '/adopt',
+        'target': '#notices', 'swap': 'beforeend', 'close': true,
+        'confirm': 'Reconcile ' ~ device.name ~ ' against the library? Transfers no data.',
+      } %}
+      {% include "fragments/device_action.html" %}
+
+      {% set act = {
+        'label': 'Test connection',
+        'note': 'ssh in and report free space, rsync version and whether the target is writable',
+        'cmd': commands.test,
+        'method': 'post', 'url': '/device/' ~ device.id ~ '/test',
+        'target': '#test-result-' ~ device.id, 'swap': 'innerHTML',
+      } %}
+      {% include "fragments/device_action.html" %}
+      <div id="test-result-{{ device.id }}"></div>
+
+      {% set act = {
+        'label': "What is on it that we don't have",
+        'note': 'orphans and mangled names',
+        'cmd': none,
+        'cmd_note': 'no command — compares the stored manifest against the library
+                     index, locally. Touches no device.',
+        'method': 'get', 'url': '/device/' ~ device.id ~ '/extras',
+        'target': '#notices', 'swap': 'beforeend', 'close': true,
+      } %}
+      {% include "fragments/device_action.html" %}
+    </div>
+
+    <div class="dialog-foot">
+      <button class="btn" type="button"
+              onclick="document.getElementById('device-menu').remove()">Close</button>
+    </div>
+
+  </div>
+</div>

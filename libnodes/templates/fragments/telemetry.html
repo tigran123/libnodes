@@ -1,0 +1,15 @@
+{# Live host telemetry for the Jobs rail. #}
+<div class="stat">
+  <span>net out</span>
+  <b class="{{ 'v-accent' if running }}">{{ host.net_out|hsize_short if host.net_out is not none else '—' }}/s</b>
+</div>
+<div class="stat">
+  <span>cpu</span>
+  <b>{% if host.cpu_pct is not none %}{{ '%.0f'|format(host.cpu_pct) }}%{% else %}—{% endif %}</b>
+</div>
+<div class="stat">
+  <span>temp</span>
+  <b class="{{ 'v-warn' if host.temp_c and host.temp_c > 60 }}">
+    {%- if host.temp_c is not none %}{{ '%.0f'|format(host.temp_c) }}°C{% else %}—{% endif -%}
+  </b>
+</div>

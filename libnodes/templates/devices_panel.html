@@ -1,0 +1,42 @@
+{# The whole devices.yaml panel — code, node count, mtime and error strip together.
+   Standalone, because the SSE `config` event replaces this element wholesale whenever
+   inotify reports the file changed. #}
+<div class="panel yaml-panel" id="yaml-panel">
+
+  <div class="yaml-head">
+    <span class="yaml-path">{{ path }}</span>
+    <span class="meta">{{ node_count }} devices · mtime {{ mtime|clock }}</span>
+    <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+      <button class="btn" type="button"
+              data-copy-from="#yaml-code"
+              title="Copy the file's contents to the clipboard">Copy</button>
+    </div>
+  </div>
+
+  {% include "fragments/validation_strip.html" %}
+
+  {# The verbatim source, for Copy. Hidden rather than fetched so copying stays a
+     synchronous user-gesture — required by the execCommand fallback below. #}
+  <textarea id="yaml-code" class="visually-hidden" readonly aria-hidden="true"
+            tabindex="-1">{{ raw }}</textarea>
+
+  <div class="code">
+    <div class="code-gutter">
+      {% for line in lines %}<div id="L{{ line.number }}" class="{{ 'is-bad' if line.bad }}">{{ line.number }}</div>{% endfor %}
+    </div>
+    {# One <div> per line, each white-space:pre. Never `pre` on the container: the
+       newlines between these divs would render as blank lines and the gutter would
+       lose alignment. #}
+    <div class="code-body">
+      {% for line in lines %}<div class="{{ 'is-bad' if line.bad }}">{{ line.html }}</div>{% endfor %}
+    </div>
+  </div>
+
+  <div class="panel-foot">
+    <span class="meta">
+      read-only here · edit in <span class="mono">$EDITOR</span> on the Pi ·
+      edits take effect at once — the file's mtime is watched, nothing needs applying
+    </span>
+  </div>
+
+</div>

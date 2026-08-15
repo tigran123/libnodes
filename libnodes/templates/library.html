@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Library · LibNodes{% endblock %}
+
+{% block crumb %}library / <b>{{ path or 'root' }}</b>{% endblock %}
+
+{% block topbar_right %}
+  <span class="chip" id="index-status">{% include "fragments/index_status.html" %}</span>
+{% endblock %}
+
+{% block rail_foot %}
+  <div class="stat"><span>index</span><b class="v-ok">{{ index_meta.indexed_at|freshness }}</b></div>
+  <div class="stat"><span>entries</span><b>{{ index_meta.entry_count|commafy }}</b></div>
+  <div class="stat">
+    <span>{{ library_root }}</span>
+    <b title="library size, summed by the index">{{ library_bytes|hsize_short }}</b>
+  </div>
+  <div class="stat">
+    <span>disk</span>
+    <b>{{ host.disk_used|hsize_short }} / {{ host.disk_total|hsize_short }}</b>
+  </div>
+  <div class="disk-bar"><i style="width:{{ '%.1f'|format(host.disk_pct) }}%"></i></div>
+{% endblock %}
+
+{% block body %}
+{% include "lib_pane.html" %}
+{% endblock %}

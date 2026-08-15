@@ -1,0 +1,62 @@
+{# Files on the device that the library has no record of. #}
+<div class="backdrop" id="device-extras">
+  <div class="dialog" style="width:680px">
+
+    <div class="dialog-head">
+      <span class="dot {{ 'dot-warn' if extra_total else 'dot-ok' }}"></span>
+      {{ device.name }} · {{ extra_total|commafy }} file{{ '' if extra_total == 1 else 's' }} not in the library
+    </div>
+
+    <div class="dialog-body">
+      {% if extra_total %}
+        <div class="meta">
+          Present on the device, absent from {{ library_root }}.
+          {% if extra_dupes %}
+            <span class="t-warn">{{ extra_dupes }}</span> of them are the same book under
+            a mangled filename — the library has it under the decoded name, so those are
+            duplicates and safe to delete.
+          {% endif %}
+          LibNodes never deletes anything on a device.
+        </div>
+
+        <div class="panel" style="max-height:340px;overflow:auto">
+          {% for x in extras %}
+            <div class="trow" style="grid-template-columns:1fr 90px;align-items:start">
+              <div style="min-width:0">
+                <div class="file-name" title="{{ x.path }}">{{ x.path }}</div>
+                {% if x.real %}
+                  <div class="file-title" title="{{ x.real }}">
+                    {% if x.duplicate %}
+                      <span class="t-warn">duplicate of</span>
+                    {% else %}
+                      really
+                    {% endif %}
+                    {{ x.real }}
+                  </div>
+                {% endif %}
+              </div>
+              <div class="cell-r mono t-dim">{{ x.size|hsize }}</div>
+            </div>
+          {% endfor %}
+        </div>
+
+        <div class="meta">
+          {% if extras|length < extra_total %}
+            showing first {{ extras|length }} of {{ extra_total|commafy }} ·
+          {% endif %}
+          {{ extra_bytes|hsize }} listed
+        </div>
+      {% else %}
+        <div class="meta">
+          Nothing extra — the device holds exactly what the library has, and no more.
+        </div>
+      {% endif %}
+    </div>
+
+    <div class="dialog-foot">
+      <button class="btn" type="button"
+              onclick="document.getElementById('device-extras').remove()">Close</button>
+    </div>
+
+  </div>
+</div>

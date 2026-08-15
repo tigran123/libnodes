@@ -1,0 +1,11 @@
+{% if started %}
+  <div class="mono t-accent" style="display:flex;align-items:center;gap:8px"
+       hx-get="/device/{{ device.id }}/scan-status"
+       hx-trigger="every 3s"
+       hx-target="this"
+       hx-swap="outerHTML">
+    <span class="dot dot-accent dot-pulse"></span> scanning…
+  </div>
+{% else %}
+  <div class="mono t-warn">a scan is already running for this device</div>
+{% endif %}

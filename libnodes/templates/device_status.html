@@ -1,0 +1,6 @@
+{# Top-bar chips. Standalone fragment, polled every 10s. #}
+<span class="chip">
+  <span class="dot {{ 'dot-ok' if online else 'dot-err' }}"></span>
+  sshd {{ online }}/{{ total }} reachable
+</span>
+<span class="chip">last scan {{ last_scan|reltime }}</span>

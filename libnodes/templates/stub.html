@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}{{ stub_title }} · LibNodes{% endblock %}
+{% block crumb %}<b>{{ stub_title|lower }}</b>{% endblock %}
+
+{% block body %}
+<div class="view">
+  <div class="titlebar"><h1 class="title">{{ stub_title }}</h1></div>
+  <div class="panel" style="padding:14px;max-width:620px">
+    <div class="t-dim" style="line-height:1.6">{{ stub_note }}</div>
+  </div>
+</div>
+{% endblock %}

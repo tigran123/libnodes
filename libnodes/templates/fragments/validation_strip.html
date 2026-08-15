@@ -1,0 +1,12 @@
+{# Renders nothing when the file is valid — which is why it must never be the only
+   thing a button swaps in. #}
+{% for issue in issues %}
+<div class="strip">
+  <span class="dot dot-err"></span>
+  <span class="strip-line">{{ issue.label }}</span>
+  <span class="strip-msg">{{ issue.message }}</span>
+  {% if issue.line %}
+    <a class="btn" style="margin-left:auto" href="#L{{ issue.line }}">Jump</a>
+  {% endif %}
+</div>
+{% endfor %}

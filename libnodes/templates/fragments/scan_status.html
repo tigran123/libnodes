@@ -1,0 +1,20 @@
+{# What LibNodes believes is on this device, and how it found out. #}
+{% if scanning %}
+  <div class="mono t-accent" style="display:flex;align-items:center;gap:8px"
+       hx-get="/device/{{ device_id }}/scan-status"
+       hx-trigger="every 3s"
+       hx-target="this"
+       hx-swap="outerHTML">
+    <span class="dot dot-accent dot-pulse"></span>
+    scanning… {{ '~35s for a full library' }}
+  </div>
+{% elif scan and scan.error %}
+  <div class="mono t-err">scan failed: {{ scan.error }}</div>
+{% elif manifest_files %}
+  <div class="mono t-dim">
+    <span class="t-ok">{{ manifest_files|commafy }} files</span> · {{ manifest_bytes|hsize }}
+    {% if scan and scan.finished_at %} · scanned {{ scan.finished_at|reltime }}{% endif %}
+  </div>
+{% else %}
+  <div class="mono t-dim">nothing recorded yet — scan to find out what is there</div>
+{% endif %}

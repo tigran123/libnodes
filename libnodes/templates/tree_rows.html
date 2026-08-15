@@ -1,0 +1,33 @@
+{# Tree rows, flat with an explicit depth. Flat rather than nested so a collapse can be
+   done by hiding a contiguous run of deeper rows, with no DOM surgery. #}
+{% for node, depth, expanded in rows %}
+  {% if node.hidden %}
+    <div class="tree-row is-hidden" data-depth="{{ depth }}"
+         style="padding-left:{{ 8 + (depth + 1) * 14 }}px">
+      <span class="tree-caret"></span>
+      <span class="tree-name">{{ node.name }}</span>
+      <span class="tree-size">hidden</span>
+    </div>
+  {% else %}
+    <div class="tree-row {{ 'is-selected' if node.path == path }}"
+         data-depth="{{ depth }}"
+         data-path="{{ node.path }}"
+         data-collapsed="{{ '0' if expanded else '1' }}"
+         style="padding-left:{{ 8 + (depth + 1) * 14 }}px">
+      {# The disclosure is its own control: it opens and closes the subtree without
+         navigating. Clicking the name still goes there. #}
+      <button class="tree-caret" type="button" data-tree-toggle
+              aria-label="{{ 'Collapse' if expanded else 'Expand' }} {{ node.name }}"
+              >{{ '▾' if expanded else '▸' }}</button>
+      <a class="tree-link"
+         href="/library?p={{ node.path|urlencode }}"
+         hx-get="/lib/pane?p={{ node.path|urlencode }}"
+         hx-target="#lib"
+         hx-swap="outerHTML"
+         hx-push-url="/library?p={{ node.path|urlencode }}">
+        <span class="tree-name">{{ node.name }}</span>
+        <span class="tree-size">{{ node.files|commafy }} · {{ node.size|hsize_short }}</span>
+      </a>
+    </div>
+  {% endif %}
+{% endfor %}

@@ -1,0 +1,98 @@
+{# Tree + content. A tree click swaps this whole element so selection state follows. #}
+<div class="lib" id="lib">
+
+  {% include "tree.html" %}
+
+  <div class="lib-main">
+
+    <div class="filterbar">
+      <label class="field is-accent">
+        <span class="slash">/</span>
+        <input type="search" name="q" value="{{ q }}" autocomplete="off"
+               placeholder="filter this subtree"
+               hx-get="/lib/list"
+               hx-trigger="keyup changed delay:120ms, search"
+               hx-target="#file-rows"
+               hx-swap="innerHTML"
+               hx-include="#lib-params, [name=fmt]:checked, [name=sort]">
+      </label>
+      <span id="result-count" class="result-count">
+        {{ total_files|commafy }} → {{ match_count|commafy }} matches · {{ '%.0f'|format(elapsed_ms) }}ms
+      </span>
+
+      {# Hidden carriers so every fragment request knows where it is. #}
+      <span id="lib-params" style="display:none">
+        <input type="hidden" name="p" value="{{ path }}">
+      </span>
+
+      <span class="segmented">
+        {% for f in ['epub', 'pdf', 'djvu'] %}
+          <label class="{{ 'is-active' if f in fmt }}">
+            <input type="checkbox" name="fmt" value="{{ f }}" hidden
+                   {{ 'checked' if f in fmt }}
+                   hx-get="/lib/list"
+                   hx-trigger="change"
+                   hx-target="#file-rows"
+                   hx-swap="innerHTML"
+                   hx-include="#lib-params, [name=q], [name=fmt]:checked, [name=sort]">
+            {{ f|upper }}
+          </label>
+        {% endfor %}
+      </span>
+
+      <select class="btn" name="sort"
+              hx-get="/lib/list"
+              hx-trigger="change"
+              hx-target="#file-rows"
+              hx-swap="innerHTML"
+              hx-include="#lib-params, [name=q], [name=fmt]:checked">
+        <option value="name" {{ 'selected' if sort == 'name' }}>name ↑</option>
+        <option value="size" {{ 'selected' if sort == 'size' }}>size ↓</option>
+        <option value="modified" {{ 'selected' if sort == 'modified' }}>modified ↓</option>
+      </select>
+    </div>
+
+    <div class="lib-body">
+
+      <div class="pathline">
+        <span class="parent">{{ library_root }}/{% for a in ancestors %}{{ a.name }}/{% endfor %}</span>
+        {% if entry.path %}<span class="leaf">{{ entry.name }}</span>{% endif %}
+        {# Recursive totals for the directory, not just its direct children. #}
+        <span class="summary">
+          {{ entry.files|commafy }} files · {{ entry.size|hsize }} · mtime {{ entry.mtime|isodate }}
+        </span>
+      </div>
+
+      <div id="selbar"></div>
+
+      <form id="sel-form" data-selectable
+            hx-get="/lib/selection"
+            hx-trigger="change, selection-changed"
+            hx-target="#selbar"
+            hx-swap="innerHTML"
+            hx-include="#lib-params">
+        <div class="panel">
+          <div class="thead file-grid">
+            <div></div>
+            <div>Name</div>
+            <div>Format</div>
+            <div class="cell-r">Size</div>
+            <div>Modified</div>
+            <div>Present on</div>
+            <div class="cell-r">Push</div>
+          </div>
+          <div id="file-rows">
+            {% include "file_rows.html" %}
+          </div>
+        </div>
+      </form>
+
+      <div class="statusline">
+        <span>row hover reveals push targets · first two devices inline, rest under <b>⋯</b></span>
+        <span>|</span>
+        <span>PRESENT ON is a cached view — what we last pushed or scanned, not a live look</span>
+      </div>
+
+    </div>
+  </div>
+</div>

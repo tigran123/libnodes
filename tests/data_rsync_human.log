@@ -1,0 +1,42 @@
+$ rsync -avhP --partial --info=progress2 -L -R -e 'ssh -p 22 -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new' Science/Chess/ pi@pi:/ext/disk4/work/rsync-test/
+sending incremental file list
+Science/
+              0   0%    0.00kB/s    0:00:00 (xfr#0, to-chk=14/16)
+Science/Chess/
+Science/Chess/Alberta-Chess-Teaching-Manual.pdf
+         32.77K   0%    0.00kB/s    0:00:00  
+        734.38K   1%  334.56MB/s    0:00:00 (xfr#1, to-chk=13/16)
+        734.38K   1%  334.56MB/s    0:00:00 (xfr#1, to-chk=0/16) 
+Science/Chess/Averbakh-Endshpile.djvu
+          1.78M   3%  128.36MB/s    0:00:00 (xfr#2, to-chk=12/16)
+Science/Chess/Averbakh-Samouchitel.djvu
+          4.38M   8%   21.35MB/s    0:00:00 (xfr#3, to-chk=11/16)
+Science/Chess/Bondarevski-Uchites-igrat-v-shaxmaty.djvu
+          7.02M  13%   15.94MB/s    0:00:00 (xfr#4, to-chk=10/16)
+Science/Chess/Bronstein-Samouchitel-shaxmat-1980.djvu
+         10.52M  20%   13.93MB/s    0:00:00 (xfr#5, to-chk=9/16) 
+Science/Chess/Capablanca-Chess-Fundamentals.djvu
+         13.83M  26%   13.06MB/s    0:00:02  
+         20.76M  40%   12.45MB/s    0:00:01 (xfr#6, to-chk=8/16)
+Science/Chess/Chandler-How-to-beat-your-Dad-at-Chess.pdf
+         24.43M  47%   11.52MB/s    0:00:02  
+         26.65M  51%   11.35MB/s    0:00:02 (xfr#7, to-chk=7/16)
+Science/Chess/Lasker-Chess-Strategy.pdf
+         27.90M  54%   11.20MB/s    0:00:02 (xfr#8, to-chk=6/16)
+Science/Chess/LawsOfChess.pdf
+         28.20M  54%   11.19MB/s    0:00:02 (xfr#9, to-chk=5/16)
+Science/Chess/Mephisto-ChessMaster-Manual.pdf
+         29.21M  56%   11.10MB/s    0:00:02 (xfr#10, to-chk=4/16)
+Science/Chess/Muldijarov-Shaxmaty-Uroki-mudroj-igry-2007.djvu
+         33.72M  65%   10.65MB/s    0:00:03 (xfr#11, to-chk=3/16)
+Science/Chess/Nann-Sekrety-prakticeskix-shaxmat-2009.djvu
+         33.76M  65%   10.61MB/s    0:00:01  
+         37.95M  73%   10.41MB/s    0:00:03 (xfr#12, to-chk=2/16)
+Science/Chess/Novotelnov-Znakomtes-shaxmaty-1981.djvu
+         42.89M  83%   10.12MB/s    0:00:00  
+         47.19M  91%   10.06MB/s    0:00:04 (xfr#13, to-chk=1/16)
+Science/Chess/Smullyan-The-Chess-Mysteries-of-Sherlock-Holmes.pdf
+         51.61M 100%    9.98MB/s    0:00:04 (xfr#14, to-chk=0/16)
+         51.61M 100%    9.53MB/s    0:00:05 (xfr#14, to-chk=0/16)
+sent 51.62M bytes  received 294 bytes  9.39M bytes/sec
+total size is 51.61M  speedup is 1.00

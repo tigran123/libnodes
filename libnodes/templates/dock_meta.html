@@ -1,0 +1,26 @@
+{# Destination, aggregate progress, current file. Replaced by `progress` at ~2 Hz. #}
+<div class="dock-line">
+  <span class="grow">{{ job.dest }}</span>
+  <span class="r">
+    {{ job.files_done }}/{{ job.files_total }} files ·
+    {{ job.bytes_done|hsize }} of {{ job.bytes_total|hsize }}
+  </span>
+</div>
+
+<div class="dock-bar">
+  <div class="track {{ 'track-striped' if job.running }}{{ ' track-ok' if job.state == 'done' }}{{ ' track-err' if job.state in ('failed', 'aborted') }}">
+    <i style="width:{{ '%.1f'|format(job.pct) }}%"></i>
+  </div>
+  <span class="dock-pct {{ 'is-ok' if job.state == 'done' }}{{ 'is-err' if job.state in ('failed','aborted') }}">{{ '%.0f'|format(job.pct) }}%</span>
+</div>
+
+<div class="dock-line">
+  <span class="grow">{{ job.current_file or job.label }}</span>
+  <span class="r">
+    {% if job.running %}
+      {{ job.rate }}{% if job.eta %} · eta {{ job.eta }}{% endif %}
+    {% else %}
+      {{ job.duration|hhmmss }}
+    {% endif %}
+  </span>
+</div>
