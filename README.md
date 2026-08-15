@@ -17,6 +17,21 @@ uv run pytest
 
 Deploying to a Pi: [`deploy/README.md`](deploy/README.md).
 
+## What it looks like
+
+**Devices** — every device from `devices.yaml`, whether it answers right now, how much
+room is left on it, and one menu of actions per device. Reachability is a cached
+background probe, so an unreachable e-reader costs the page nothing.
+
+![The Devices view](docs/devices.png)
+
+**Library** — the tree and file list are served from a SQLite index rather than a live
+`stat()` walk, so filtering 20,000 entries stays interactive on a Pi. `PRESENT ON` shows
+which devices already hold each item, and hovering a chip says when we last had evidence
+for it. Both a dark and a light theme are built in.
+
+![The Library view](docs/library.png)
+
 ## The one thing to know about the library
 
 It is **content-addressed**. Every book in the browsable tree is a symlink into a vault
