@@ -302,11 +302,13 @@ def test_extras_flags_mangled_duplicates(settings, index):
     )
 
     library = {cyrillic_real, real}
-    rows, total, dupes = manifests.extras("kobo", library)
+    found = manifests.extras("kobo", library)
 
-    assert total == 2
-    assert dupes == 1
-    by_path = {r["path"]: r for r in rows}
+    assert found.known is True
+    assert found.total == 2
+    assert found.duplicates == 1
+    assert found.listed_bytes == 300
+    by_path = {r["path"]: r for r in found.rows}
     assert by_path[cyrillic_mangled]["real"] == cyrillic_real
     assert by_path[cyrillic_mangled]["duplicate"] is True
     orphan = by_path["Fiction/genuinely-orphaned.pdf"]
@@ -319,8 +321,52 @@ def test_extras_is_empty_when_the_device_matches(settings, index):
     manifests = Manifests(settings.manifests_db)
     entry = index.entry("Fiction/Joyce/Ulysses.pdf")
     manifests.replace_scan("kobo", [(entry.path, None, entry.size, entry.mtime, 0)])
-    rows, total, dupes = manifests.extras("kobo", {entry.path})
-    assert (rows, total, dupes) == ([], 0, 0)
+    found = manifests.extras("kobo", {entry.path})
+    assert (found.rows, found.total, found.duplicates) == ([], 0, 0)
+    # ...and it is empty because a scan looked, which is the whole difference.
+    assert found.known is True
+    assert found.scanned_at is not None
+
+
+def test_extras_says_it_does_not_know_when_the_device_was_never_scanned(settings, index):
+    """BK502: 0 manifest rows, 36 files on the card, "nothing extra" on the screen.
+
+    An empty set difference is not an answer, and a device nobody has ever listed
+    produces exactly the same empty list as a device that genuinely holds nothing extra.
+    """
+    from libnodes.manifests import Manifests
+
+    manifests = Manifests(settings.manifests_db)
+    found = manifests.extras("bk", index.all_file_paths())
+
+    assert found.known is False
+    assert found.scanned_at is None
+    assert (found.rows, found.total) == ([], 0)
+
+
+def test_a_push_manifest_cannot_answer_what_is_on_the_device(settings, index):
+    """note10: 20,782 push rows, no scan, and a clean bill of health it never checked.
+
+    A push manifest records what LibNodes sent, so it can never contain a file LibNodes
+    did not send. Subtracting the library from it is guaranteed to yield nothing.
+    """
+    from libnodes.manifests import Manifests
+
+    manifests = Manifests(settings.manifests_db)
+    entry = index.entry("Fiction/Joyce/Ulysses.pdf")
+    manifests.record("kobo", [(entry.path, entry.blob, entry.size, entry.mtime, 0)])
+    # A stale push row for a book since deleted from the library: still not evidence of
+    # what is on the card, because it is evidence of what we sent.
+    manifests.record("kobo", [("Fiction/deleted-since.pdf", None, 10, 0, 0)])
+
+    library = {entry.path}
+    assert manifests.extras("kobo", library).known is False
+
+    # One scan, and the same question becomes answerable — over what the scan saw.
+    manifests.replace_scan("kobo", [("MoonReader/settings.db", None, 4096, 0, 0)])
+    found = manifests.extras("kobo", library)
+    assert found.known is True
+    assert [r["path"] for r in found.rows] == ["MoonReader/settings.db"]
 
 
 # ------------------------------------------------- staleness is visible --
@@ -392,6 +438,55 @@ async def test_actions_menu_shows_the_command_each_action_runs(client):
 async def test_actions_menu_commands_are_copyable(client):
     r = await client.get("/device/kobo/menu")
     assert "data-copy=" in r.text
+
+
+async def test_the_extras_dialog_never_claims_a_device_it_has_not_seen(client, app, index):
+    """The screen that started this: a positive claim about a device never looked at.
+
+    Device-scoped fragments cannot be parametrised into FRAGMENTS in test_routes.py, so
+    the HTMX contract is asserted here too.
+    """
+    r = await client.get("/device/kobo/extras")
+    assert r.status_code == 200
+    assert "<html" not in r.text.lower()
+
+    assert "never scanned" in r.text
+    assert "exactly what the library has" not in r.text
+    # ...and the scan is offered where the question was asked, command and all.
+    assert "/device/kobo/scan" in r.text
+    assert "--list-only" in r.text
+
+    # Once a scan has looked, the reassurance is allowed — and dated.
+    entry = index.entry("Fiction/Joyce/Ulysses.pdf")
+    app.state.lib.manifests.replace_scan(
+        "kobo", [(entry.path, None, entry.size, entry.mtime, 0)]
+    )
+    r = await client.get("/device/kobo/extras")
+    assert "exactly what the library has" in r.text
+    assert "as the scan" in r.text
+
+
+async def test_the_extras_dialog_finishes_the_scan_it_started(client, app):
+    """Offering the scan is only half of it: the dialog has to come back with the answer.
+
+    The scan POST replies with a status line, not a dialog, so the button re-requests
+    this route and the reply — rendered while the scan is running — carries the poll that
+    turns itself into the list. If either half is missing the user presses Scan and the
+    dialog sits on "never scanned" for ever.
+    """
+    idle = (await client.get("/device/kobo/extras")).text
+    assert 'hx-trigger="every 3s"' not in idle             # nothing to wait for yet
+    # ...but the button re-requests this dialog once the scan is under way. The JS is
+    # HTML-escaped in the attribute, hence &#39; where the source has a quote.
+    assert "hx-on::after-request=" in idle
+    assert "htmx.ajax(&#39;GET&#39;,&#39;/device/kobo/extras&#39;" in idle
+
+    app.state.lib.scanner._running.add("kobo")
+    running = (await client.get("/device/kobo/extras")).text
+    assert 'hx-get="/device/kobo/extras"' in running
+    assert 'hx-trigger="every 3s"' in running
+    assert 'hx-swap="outerHTML"' in running
+    assert "scanning" in running
 
 
 async def test_full_sync_lives_in_the_actions_menu(client):

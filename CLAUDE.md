@@ -12,7 +12,7 @@ variable. This file is what neither of those says: how to work in the tree.
 ```bash
 uv pip sync requirements-dev.txt                    # uv, not pip. /usr/local/bin/uv here
 uv run uvicorn libnodes.main:app --reload           # http://127.0.0.1:8000/devices
-uv run pytest                                       # 283 tests, ~13s, no network
+uv run pytest                                       # 317 tests, ~13s, no network
 uv run pytest tests/test_jobs.py::test_name -x
 ./deploy/deploy.sh [--no-restart]                   # sync to pi, uv pip sync, restart, poll /healthz
 ```

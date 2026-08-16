@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from libnodes.probe import DeviceProbe, Reachability, _parse_df
+from libnodes.probe import DeviceProbe, FreeSpace, Reachability, _parse_df
 
 
 def _probe(app) -> DeviceProbe:
@@ -363,3 +363,51 @@ async def test_actions_is_disabled_unless_the_device_is_green(client, app, monke
     kobo = row_for((await client.get("/devices/rows")).text, "kobo")
     assert "/device/kobo/menu" in kobo
     assert "is-disabled" not in kobo
+
+
+# ------------------------------------------ storage says one thing, not two --
+
+
+async def test_storage_prints_the_number_the_bar_draws(client, app):
+    """The column printed free space under a bar drawing used space.
+
+    LG G4's real card reads "163G / 466G" beside a bar two-thirds full, and the rail
+    below it prints `disk 894G / 2.7T` — used over total — for the Pi's own disk. A
+    figure and a bar side by side have to be the same quantity.
+    """
+    lib = app.state.lib
+    total, used, free = _parse_df(TOYBOX_DF)      # the real card: 466G, 303G used, 163G free
+    now = time.time()
+    lib.probe._slot("kobo").reach = Reachability(state="online", last_ok=now, checked_at=now)
+    lib.probe._slot("kobo").space = FreeSpace(
+        total=total, used=used, free=free, checked_at=now
+    )
+
+    pct = 100.0 * used / total                    # 64.9%, and the bar already said so
+    for path in ("/devices/rows", "/devices/grid"):
+        text = (await client.get(path)).text
+        assert "303G / 466G" in text, path
+        assert "163G / 466G" not in text, path
+        assert f"width:{pct:.1f}%" in text, path
+        # Free space still matters before a push; it moved to the tooltip.
+        assert "163.5 GB free of" in text, path
+
+
+def test_the_grid_and_the_table_draw_the_bar_the_same_way():
+    """Same datum, same colour. The card used `.disk-bar` (`> i` is --faint) beside a
+    table using `.track` (`> i` is --accent), so one device's usage rendered grey in
+    GRID and purple in TABLE — under a card comment claiming "same colours"."""
+    import re as _re
+
+    from libnodes.templating import TEMPLATES_DIR
+
+    bar = _re.compile(r'<div class="([^"]+)"[^>]*>\s*<i style="width:\{\{[^}]*used_pct')
+    classes = {}
+    for name in ("device_row.html", "device_grid.html"):
+        text = (TEMPLATES_DIR / name).read_text(encoding="utf-8")
+        match = bar.search(text)
+        assert match, f"{name}: no usage bar found"
+        classes[name] = match.group(1).split()
+
+    assert classes["device_row.html"] == classes["device_grid.html"]
+    assert "disk-bar" not in classes["device_grid.html"]

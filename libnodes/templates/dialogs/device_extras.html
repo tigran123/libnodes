@@ -1,18 +1,89 @@
-{# Files on the device that the library has no record of. #}
-<div class="backdrop" id="device-extras">
+{# Files on the device that the library has no record of — and, before that, whether we
+   have any record of the device at all.
+
+   The empty list is not an answer. BK502 had never been pushed to and never scanned, so
+   the set difference came out empty and this dialog reported "the device holds exactly
+   what the library has, and no more" over 36 files it had never seen. Every branch below
+   exists to keep the three states apart: we have not looked, we cannot compare, we
+   looked and this is what is there. #}
+<div class="backdrop" id="device-extras"
+     {% if scanning %}
+       {# The dialog is its own poller, so a scan started from here turns into the list
+          without the user reopening anything. The attributes exist only while the scan
+          runs, so it stops the moment there is an answer. Deliberately not
+          fragments/scan_status.html: that fragment polls and swaps *itself*, and two
+          pollers in one node fight over the same DOM. #}
+       hx-get="/device/{{ device.id }}/extras"
+       hx-trigger="every 3s"
+       hx-target="this"
+       hx-swap="outerHTML"
+     {% endif %}>
   <div class="dialog" style="width:680px">
 
     <div class="dialog-head">
-      <span class="dot {{ 'dot-warn' if extra_total else 'dot-ok' }}"></span>
-      {{ device.name }} · {{ extra_total|commafy }} file{{ '' if extra_total == 1 else 's' }} not in the library
+      {% if scanning %}
+        <span class="dot dot-accent dot-pulse"></span>
+      {% elif not index_meta.ready %}
+        <span class="dot dot-warn"></span>
+      {% elif not extras.known %}
+        <span class="dot dot-dim"></span>
+      {% else %}
+        <span class="dot {{ 'dot-warn' if extras.total else 'dot-ok' }}"></span>
+      {% endif %}
+      {{ device.name }} ·
+      {%- if scanning %} scanning…
+      {%- elif not index_meta.ready %} library index not built
+      {%- elif not extras.known %} never scanned
+      {%- else %} {{ extras.total|commafy }} file{{ '' if extras.total == 1 else 's' }} not in the library
+      {%- endif %}
     </div>
 
     <div class="dialog-body">
-      {% if extra_total %}
+      {% if scanning %}
         <div class="meta">
-          Present on the device, absent from {{ library_root }}.
-          {% if extra_dupes %}
-            <span class="t-warn">{{ extra_dupes }}</span> of them are the same book under
+          Listing {{ device.display_target }} — about 35s for a full library. This dialog
+          fills in by itself when the listing lands.
+        </div>
+
+      {% elif not index_meta.ready %}
+        <div class="meta">
+          The library index has not been built, so there is nothing to compare against —
+          and an empty index would call every file on {{ device.name }} an orphan. Build
+          it from the Library view, then ask again.
+        </div>
+
+      {% elif not extras.known %}
+        <div class="meta">
+          Nothing is known about what {{ device.name }} holds: it has never been scanned.
+          {% if scan and scan.error %}
+            The last scan failed — <span class="t-err mono">{{ scan.error }}</span>.
+          {% endif %}
+          A push manifest cannot stand in for one, either. It records what LibNodes
+          <em>sent</em>, so it can never contain a file LibNodes did not send, and
+          subtracting the library from it yields nothing whatever is on the card.
+        </div>
+
+        {# `swap: none` because the scan POST answers with a status line, not a dialog:
+           its reply is dropped and `after` re-requests this dialog instead.
+           `Scanner.start` marks the device running before it creates the task, so that
+           reply comes back with `scanning` set and takes over the poll above. #}
+        {% set act = {
+          'label': 'Scan device',
+          'note': 'read what is already there · ~35s for a full library',
+          'cmd': commands.scan,
+          'method': 'post', 'url': '/device/' ~ device.id ~ '/scan',
+          'target': 'this', 'swap': 'none',
+          'after': "htmx.ajax('GET','/device/" ~ device.id ~ "/extras',"
+                   ~ "{target:'#device-extras',swap:'outerHTML'})",
+        } %}
+        {% include "fragments/device_action.html" %}
+
+      {% elif extras.total %}
+        <div class="meta">
+          Present on the device, absent from {{ library_root }}, as the scan
+          {{ extras.scanned_at|reltime }} saw it.
+          {% if extras.duplicates %}
+            <span class="t-warn">{{ extras.duplicates }}</span> of them are the same book under
             a mangled filename — the library has it under the decoded name, so those are
             duplicates and safe to delete.
           {% endif %}
@@ -20,7 +91,7 @@
         </div>
 
         <div class="panel" style="max-height:340px;overflow:auto">
-          {% for x in extras %}
+          {% for x in extras.rows %}
             <div class="trow" style="grid-template-columns:1fr 90px;align-items:start">
               <div style="min-width:0">
                 <div class="file-name" title="{{ x.path }}">{{ x.path }}</div>
@@ -41,14 +112,18 @@
         </div>
 
         <div class="meta">
-          {% if extras|length < extra_total %}
-            showing first {{ extras|length }} of {{ extra_total|commafy }} ·
+          {% if extras.rows|length < extras.total %}
+            showing first {{ extras.rows|length }} of {{ extras.total|commafy }} ·
           {% endif %}
-          {{ extra_bytes|hsize }} listed
+          {{ extras.listed_bytes|hsize }} listed
         </div>
+
       {% else %}
+        {# The one branch that may reassure, because a scan actually looked. It carries
+           when it looked: this is a claim about a moment, not a standing property. #}
         <div class="meta">
-          Nothing extra — the device holds exactly what the library has, and no more.
+          Nothing extra — as the scan {{ extras.scanned_at|reltime }} saw it, the device
+          held exactly what the library has, and no more.
         </div>
       {% endif %}
     </div>

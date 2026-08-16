@@ -15,6 +15,7 @@ from ..probe import FreeSpace, Reachability, ssh_argv
 from ..procs import reap
 from ..scan import scan_argv
 from ..jobs import Job, build_argv, full_sync_sources, hints_for_text
+from ..manifests import Extras
 from ..models import Device
 from ..state import AppState
 from ..templating import reltime, templates
@@ -120,6 +121,16 @@ class DeviceView:
     @property
     def free(self) -> int | None:
         return self.space.free
+
+    @property
+    def used(self) -> int | None:
+        """What the Storage column prints, because it is what the bar draws.
+
+        `_parse_df` sets total/used/free together or not at all, and the declared-capacity
+        fallback (probe.py) leaves both used and free None, so this is None in exactly the
+        cases `free` was.
+        """
+        return self.space.used
 
     @property
     def used_pct(self) -> float:
@@ -428,22 +439,34 @@ async def device_extras(request: Request, device_id: str):
     Orphans: books deleted from the library since, and copies whose filenames were
     mangled by whatever wrote them — a real device turned out to hold 17 of these, the
     same albums a second time under a double-encoded name.
+
+    Answerable only for a scanned device, and the dialog says so rather than reporting
+    nought — see `Manifests.extras`. This route is also its own poller while a scan
+    started from the dialog runs, so both guards below are checked before anything
+    expensive: `all_file_paths()` is 20,782 rows on the Pi and would run every 3s.
     """
     app = state(request)
     device = app.devices.device(device_id)
     if device is None:
         return HTMLResponse("", status_code=404)
-    rows, total, duplicates = app.manifests.extras(
-        device_id, app.index.all_file_paths()
+
+    # An unbuilt index answers `all_file_paths()` with an empty set rather than an error,
+    # which would report every file on a scanned device as an extra. Unknown, not 24,616.
+    scanned = app.manifests.scanned_at(device_id)
+    found = (
+        app.manifests.extras(device_id, app.index.all_file_paths())
+        if scanned is not None and app.index.meta().ready
+        else Extras.unknown()
     )
     ctx = base_context(request, "devices")
     ctx.update(
         {
             "device": device,
-            "extras": rows,
-            "extra_total": total,
-            "extra_dupes": duplicates,
-            "extra_bytes": sum(r["size"] for r in rows),
+            "extras": found,
+            "scan": app.scanner.result(device_id),
+            "scanning": app.scanner.is_running(device_id),
+            # So the Scan button here shows what it will run, like every action does.
+            "commands": {"scan": _shell(scan_argv(device, app.settings))},
         }
     )
     return templates.TemplateResponse(request, "dialogs/device_extras.html", ctx)

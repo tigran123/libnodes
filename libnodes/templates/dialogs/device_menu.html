@@ -75,8 +75,9 @@
         'label': "What is on it that we don't have",
         'note': 'orphans and mangled names',
         'cmd': none,
-        'cmd_note': 'no command — compares the stored manifest against the library
-                     index, locally. Touches no device.',
+        'cmd_note': 'no command — compares the scan against the library index, locally.
+                     Touches no device, and says so rather than "nothing extra" until one
+                     has been scanned.',
         'method': 'get', 'url': '/device/' ~ device.id ~ '/extras',
         'target': '#notices', 'swap': 'beforeend', 'close': true,
       } %}

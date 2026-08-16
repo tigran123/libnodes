@@ -26,13 +26,18 @@
   <div data-label="Target" class="mono t-muted nowrap"><span title="{{ node.device.target }}">{{ node.device.display_target }}</span></div>
 
   <div data-label="Storage">
-    {% if node.offline or node.free is none %}
+    {% if node.offline or node.used is none %}
       <span class="usage-v t-faint">—</span>
     {% else %}
-      {# free / total -- the bar already implies we know both, so print both. #}
+      {# used / total, because the bar under it is `used_pct`: a figure and a bar side by
+         side have to be the same quantity. This printed free space over a used bar, so
+         LG G4 read "163G / 466G" with the bar two-thirds full, and disagreed with the
+         rail's own `disk 894G / 2.7T`. Free space still matters before a push — it is in
+         the tooltip, where it is read rather than compared. #}
       <div class="usage">
-        <span class="usage-v" title="{{ node.free|hsize }} free of {{ node.capacity|hsize }}">
-          {{ node.free|hsize_short }}{% if node.capacity %} / {{ node.capacity|hsize_short }}{% endif %}
+        <span class="usage-v"
+              title="{{ node.used|hsize }} used · {{ node.free|hsize }} free of {{ node.capacity|hsize }}">
+          {{ node.used|hsize_short }}{% if node.capacity %} / {{ node.capacity|hsize_short }}{% endif %}
         </span>
         <div class="track track-2"><i style="width:{{ '%.1f'|format(node.used_pct) }}%"></i></div>
       </div>

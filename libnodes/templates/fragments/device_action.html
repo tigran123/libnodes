@@ -20,7 +20,11 @@
             {# Close AFTER the response lands. Removing the dialog in onclick tears the
                triggering element out of the DOM mid-flight, and htmx abandons the
                request. #}
-            {% if act.close %}hx-on::after-request="document.getElementById('device-menu')?.remove()"{% endif %}
+            {% if act.close %}hx-on::after-request="document.getElementById('device-menu')?.remove()"
+            {# Same slot, for an action that has something else to do once the reply is
+               in — the extras dialog re-requests itself so it comes back knowing a scan
+               is running. Same reason it is not `onclick`. #}
+            {% elif act.after %}hx-on::after-request="{{ act.after }}"{% endif %}
     >{{ act.label }}</button>
     <span class="action-note">{{ act.note }}</span>
   </div>

@@ -84,6 +84,33 @@ class ManifestRow:
     source: str
 
 
+@dataclass(frozen=True)
+class Extras:
+    """What a device holds that the library does not — and whether we know at all.
+
+    `scanned_at is None` is the state the old three-tuple could not express. A device
+    nobody has ever listed produces an empty set difference, exactly like a device that
+    genuinely holds nothing extra, and the dialog rendered that emptiness as a claim:
+    BK502 was told it "holds exactly what the library has, and no more" while carrying 36
+    files, none of them from the library and not one of them ever recorded here.
+    """
+
+    rows: list[dict]
+    total: int
+    duplicates: int
+    listed_bytes: int
+    #: When the listing this is derived from was taken. None: never listed.
+    scanned_at: float | None
+
+    @property
+    def known(self) -> bool:
+        return self.scanned_at is not None
+
+    @classmethod
+    def unknown(cls) -> "Extras":
+        return cls(rows=[], total=0, duplicates=0, listed_bytes=0, scanned_at=None)
+
+
 class Manifests:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -215,6 +242,21 @@ class Manifests:
     def last_sync(self, device_id: str) -> float | None:
         return self.summary(device_id)[2]
 
+    def scanned_at(self, device_id: str) -> float | None:
+        """When this device was last listed, or None if it never has been.
+
+        The `scans` row is written only by a completed `replace_scan`, so this is the one
+        honest answer to "has anyone ever asked the device what it holds".
+        """
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT scanned_at FROM scans WHERE device_id = ?", (device_id,)
+            ).fetchone()
+        finally:
+            conn.close()
+        return row[0] if row else None
+
     def presence(
         self, entries: Sequence[Entry], device_ids: Sequence[str]
     ) -> dict[str, list[DeviceState]]:
@@ -324,18 +366,27 @@ class Manifests:
         finally:
             conn.close()
 
-    def extras(self, device_id: str, library_paths: set[str], limit: int = 500):
+    def extras(self, device_id: str, library_paths: set[str], limit: int = 500) -> Extras:
         """Files on the device that the library does not have.
 
         Orphans accumulate: books deleted from the library, and — as found on a real
         device — copies whose names were mangled by whatever wrote them, so the same
         book sits there twice under two encodings of one filename.
 
-        Returns ``(rows, total, duplicates)`` where each row carries the decoded name
-        when one can be recovered, and whether that name is in the library — which is
-        what makes it safe to delete.
+        **Only a scan can answer this.** The comparison runs over scan-sourced rows
+        alone, because a push manifest records what LibNodes *sent*: by construction it
+        cannot contain a file LibNodes did not send, so subtracting the library from it
+        always yields nothing whatever the device holds. note10 carried 20,782 push rows
+        and no scan, and reported a clean bill of health it had no way to have checked.
+
+        Each row carries the decoded name when one can be recovered, and whether that
+        name is in the library — which is what makes it safe to delete.
         """
         from .scan import demangle
+
+        scanned = self.scanned_at(device_id)
+        if scanned is None:
+            return Extras.unknown()
 
         conn = self._connect()
         try:
@@ -343,7 +394,7 @@ class Manifests:
                 r[0]: r[1]
                 for r in conn.execute(
                     "SELECT path, size FROM manifest "
-                    "WHERE device_id = ? AND is_dir = 0",
+                    "WHERE device_id = ? AND is_dir = 0 AND source = 'scan'",
                     (device_id,),
                 )
             }
@@ -351,7 +402,7 @@ class Manifests:
             conn.close()
 
         found = sorted(set(sizes) - library_paths)
-        rows = []
+        rows: list[dict] = []
         duplicates = 0
         for path in found:
             real = demangle(path)
@@ -367,7 +418,15 @@ class Manifests:
                         "duplicate": is_dup,
                     }
                 )
-        return rows, len(found), duplicates
+        return Extras(
+            rows=rows,
+            total=len(found),
+            duplicates=duplicates,
+            # The bytes of what is *listed*, not of everything found: the dialog prints
+            # this beside "showing first 500 of N", where a total would not match.
+            listed_bytes=sum(r["size"] for r in rows),
+            scanned_at=scanned,
+        )
 
     def rows_for(self, device_id: str, limit: int = 5000) -> list[ManifestRow]:
         conn = self._connect()
@@ -409,4 +468,4 @@ def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-__all__ = ["DeviceState", "ManifestRow", "Manifests", "Presence"]
+__all__ = ["DeviceState", "Extras", "ManifestRow", "Manifests", "Presence"]

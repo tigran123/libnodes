@@ -26,13 +26,16 @@
     <div>
       <div class="stat" style="line-height:1.4">
         <span>{{ node.last_sync|reltime }}</span>
-        <b title="{{ node.free|hsize }} free of {{ node.capacity|hsize }}">
-          {%- if node.free is not none -%}
-            {{ node.free|hsize_short }}{% if node.capacity %} / {{ node.capacity|hsize_short }}{% endif %}
+        {# used / total and `.track`, both matching device_row.html: same datum, same
+           reading, same colour. The card used `.disk-bar`, whose fill is --faint, beside
+           a table drawing the identical number in --accent. #}
+        <b{% if node.used is not none %} title="{{ node.used|hsize }} used · {{ node.free|hsize }} free of {{ node.capacity|hsize }}"{% endif %}>
+          {%- if node.used is not none -%}
+            {{ node.used|hsize_short }}{% if node.capacity %} / {{ node.capacity|hsize_short }}{% endif %}
           {%- else -%}—{%- endif -%}
         </b>
       </div>
-      <div class="disk-bar" style="height:3px">
+      <div class="track track-2" style="margin-top:7px">
         <i style="width:{{ '%.1f'|format(node.used_pct) }}%"></i>
       </div>
     </div>
