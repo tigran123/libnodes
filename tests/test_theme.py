@@ -155,3 +155,8 @@ def test_schema_migration_adds_hold_to_an_old_database(tmp_path):
     store = JobStore(db)          # must migrate, not explode
     job = store.recent()[0]
     assert job.hold is False
+    # files_sent/entries_* arrived the same way. The old files_done column is left where
+    # it is: its rows hold entry counts, and relabelling those as transfers would invent
+    # history rather than migrate it.
+    assert job.files_sent == 0
+    assert job.entries_total == 0

@@ -61,6 +61,35 @@ def test_directory_shows_partial_until_complete(settings, index):
     assert states[physics.path][0].presence == "ok"
 
 
+def test_every_view_counts_files_the_same_way(settings, index, app):
+    """One directory, one file count, wherever it is displayed.
+
+    The tree, the PRESENT ON fraction and the job estimate must all mean "files". rsync
+    disagrees on purpose — its file list counts directories, so a directory of 234 files
+    with 9 subdirectories is 244 entries to it — and letting that number leak into a
+    view that says "files" is how the same directory came to read 234 in one place and
+    244 in another.
+    """
+    manifests = Manifests(settings.manifests_db)
+    science = index.entry("Science")
+    files = [e for e in _descend(index, "Science") if not e.is_dir]
+
+    manifests.record_entries("kobo", files)
+    detail = manifests.presence([science], ["kobo"])[science.path][0].detail
+    estimated_files, _ = app.state.lib.jobs._estimate(["Science"])
+
+    assert science.files == len(files)
+    assert detail == f"{len(files)}/{science.files}"
+    assert estimated_files == science.files
+
+
+def _descend(index, path):
+    for child in index.children(path, limit=1000):
+        yield child
+        if child.is_dir:
+            yield from _descend(index, child.path)
+
+
 def test_scan_replaces_previous_scan_rows(settings, index):
     manifests = Manifests(settings.manifests_db)
     manifests.replace_scan("kobo", [("Fiction/Old.pdf", None, 10, 0)])

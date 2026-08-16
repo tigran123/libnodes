@@ -204,6 +204,23 @@ async def test_picker_pre_checks_nothing(client):
     assert "checked" not in r.text
 
 
+async def test_library_row_offers_a_dry_run(client):
+    """PRESENT ON answers "what is on the device", never "what would this push move".
+
+    A push that repairs a handful of files already present is indistinguishable from one
+    that re-sends the directory unless the dry run is one click from the row.
+    """
+    r = await client.get("/lib/list", params={"path": "Science"})
+    assert "/jobs/picker?dry_run=true&amp;path=" in r.text
+
+
+async def test_dry_run_picker_posts_to_the_dry_run_endpoint(client):
+    r = await client.get(
+        "/jobs/picker", params={"path": "Science/Physics", "dry_run": "true"}
+    )
+    assert 'hx-post="/jobs/dry-run"' in r.text
+
+
 async def test_dry_run_accepts_several_devices(client, app):
     r = await client.post(
         "/jobs/dry-run",

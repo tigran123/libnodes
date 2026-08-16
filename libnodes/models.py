@@ -49,6 +49,9 @@ class FsProfile(BaseModel):
     perms: bool = True
     #: Largest single file, if the filesystem imposes one. FAT32 stops at 4 GiB - 1.
     max_file: int | None = None
+    #: Seconds of mtime slack to allow, for filesystems that cannot store the timestamp
+    #: they were handed. 0 means compare exactly. See the FAT entries below.
+    modify_window: int = 0
     note: str = ""
 
 
@@ -61,13 +64,29 @@ FS_PROFILES: dict[str, FsProfile] = {
     "btrfs": FsProfile(),
     "zfs": FsProfile(),
     "f2fs": FsProfile(),
-    # FAT and friends. Note that FAT's 2-second mtime granularity, which would otherwise
-    # want --modify-window, did NOT show up on the tested Android device: an odd-second
-    # timestamp round-tripped exactly. So it is deliberately not compensated for here.
-    "vfat": FsProfile(perms=False, max_file=4 * 1024**3 - 1, note="FAT32"),
-    "fat32": FsProfile(perms=False, max_file=4 * 1024**3 - 1, note="FAT32"),
-    "msdos": FsProfile(perms=False, max_file=4 * 1024**3 - 1, note="FAT"),
-    "exfat": FsProfile(perms=False, note="exFAT"),
+    # FAT and friends. modify_window=1 is not caution, it is a measurement: on the FAT32
+    # SD card in a real Android phone (466 GB, 32 KB clusters), mtimes come back rounded
+    # down to an even second — 75-ores.mp3 was written at 09:37:25 and reads back
+    # 09:37:24 — and rsync 3.1.3 compares them exactly. 8,786 of 24,620 files therefore
+    # wanted re-sending on every single push, for ever; with the window, 0 did. This is
+    # textbook FAT: the on-disk format stores the seconds field in units of two. An
+    # earlier note here claimed the granularity "did not show up on the tested Android
+    # device" on the strength of one odd-second timestamp appearing to round-trip. One
+    # timestamp is not a sample.
+    #
+    # 1 second, not 2: rounding to an even second moves a timestamp by at most 1, and
+    # rsync's window is symmetric. Keep it as tight as the hardware allows — this is the
+    # check that notices a book edited in place.
+    "vfat": FsProfile(perms=False, max_file=4 * 1024**3 - 1, modify_window=1, note="FAT32"),
+    "fat32": FsProfile(perms=False, max_file=4 * 1024**3 - 1, modify_window=1, note="FAT32"),
+    "msdos": FsProfile(perms=False, max_file=4 * 1024**3 - 1, modify_window=1, note="FAT"),
+    # exFAT's format has a 10 ms field, so in principle it needs no slack — but drivers
+    # that ignore it and fall back to FAT's two seconds are common, and the cost of the
+    # window is far smaller than the cost of re-sending a library. Inferred, not
+    # measured: the phone above is vfat.
+    "exfat": FsProfile(perms=False, modify_window=1, note="exFAT"),
+    # NTFS stores 100 ns and HFS+ whole seconds; neither needs slack, and both keep the
+    # exact comparison.
     "ntfs": FsProfile(perms=False, note="NTFS"),
     "hfsplus": FsProfile(perms=False, note="HFS+"),
     # Anything unrecognised: assume it behaves, and let a failing sync say otherwise.

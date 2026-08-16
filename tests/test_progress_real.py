@@ -55,8 +55,11 @@ def test_final_progress_line_gives_real_totals():
     assert job.pct == 100
     assert job.bytes_done == parse_size_token("51.61M")
     assert job.bytes_done > 50_000_000  # not 0, which is what the bug produced
-    assert job.files_total == 16
-    assert job.files_done == 16
+    assert job.entries_total == 16
+    assert job.entries_done == 16
+    # 16 entries walked, 14 files actually transferred — this capture is an adopt run,
+    # where the whole point is that most of the list is skipped.
+    assert job.files_sent == 14
 
 
 def test_summary_lines_are_not_mistaken_for_progress():

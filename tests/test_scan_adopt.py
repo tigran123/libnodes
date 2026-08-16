@@ -589,3 +589,47 @@ def test_adopt_does_not_force_no_perms_on_a_real_filesystem(app, settings):
     assert "--size-only" in fat and "--size-only" in ext
     assert "--no-perms" in fat
     assert "--no-perms" not in ext
+
+
+def test_fat_gets_a_modify_window_and_ext4_does_not(settings):
+    """FAT stores the seconds field in units of two.
+
+    A timestamp rsync writes reads back up to a second earlier, rsync compares exactly,
+    and the file is re-sent — for ever. Measured against a real FAT32 SD card: 8,786 of
+    24,620 files wanted re-sending on every push, 0 with the window. It is per-filesystem
+    because on ext4 the timestamps are exact, and an exact comparison is what notices a
+    book edited in place.
+    """
+    from libnodes.models import parse_devices
+    from libnodes.jobs import build_argv
+
+    cfg, _ = parse_devices(
+        "devices:\n  - id: fat\n    name: F\n    type: termux\n    host: h\n"
+        "    target: /sd\n    fs: vfat\n"
+        "  - id: ext\n    name: E\n    type: linux\n    host: h\n"
+        "    target: /srv\n    fs: ext4\n"
+    )
+    fat = build_argv(cfg.by_id["fat"], cfg, ["S"], settings)
+    ext = build_argv(cfg.by_id["ext"], cfg, ["S"], settings)
+
+    assert "--modify-window=1" in fat
+    assert not any(a.startswith("--modify-window") for a in ext)
+
+
+def test_a_termux_device_without_fs_still_gets_the_window(settings):
+    """`fs:` is optional in the schema, so the fallback has to carry the fix too.
+
+    The real fleet does set it — all three devices say `fs: vfat` — but `Device.fs` is
+    `None`-able and `effective_fs` (`models.py`) then guesses vfat for anything that is
+    not `type: linux`. A device that inherits the guess is on the same FAT card as one
+    that declares it, and must get the same window.
+    """
+    from libnodes.models import parse_devices
+    from libnodes.jobs import build_argv
+
+    cfg, _ = parse_devices(
+        "devices:\n  - id: lg\n    name: LG\n    type: termux\n    host: h\n"
+        "    target: /sdcard/Books\n"
+    )
+    argv = build_argv(cfg.by_id["lg"], cfg, ["Audio"], settings)
+    assert "--modify-window=1" in argv

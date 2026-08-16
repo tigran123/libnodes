@@ -16,13 +16,22 @@
       {{ library_root }}/{{ job.label }}{{ ' (full)' if job.sources|length > 3 else '' }}
     </div>
 
-    <div class="cell-r mono" data-label="Files">
-      {% if job.files_total %}{{ job.files_done }}/{{ job.files_total }}{% else %}—{% endif %}
+    {# Files sent out of files selected. Both are files-only counts from the index, so
+       this agrees with the Library tree and the PRESENT ON fraction; rsync's own total
+       would count directories and disagree with all three. #}
+    <div class="cell-r mono" data-label="Files"
+         title="{% if job.entries_total %}{{ job.entries_done }}/{{ job.entries_total }} file-list entries checked, directories included{% endif %}">
+      {% if job.files_total %}{{ job.files_sent }}/{{ job.files_total }}{% else %}—{% endif %}
     </div>
 
-    <div class="cell-r mono" data-label="Bytes">
+    {# Finished jobs report what the link carried, which delta-matching makes far smaller
+       than the size of the files involved — 6.7 MB for 4.4 GB of files, measured. #}
+    <div class="cell-r mono" data-label="Bytes"
+         title="{{ job.bytes_done|hsize }} of files handled, out of {{ job.bytes_total|hsize }} selected">
       {% if job.state == 'running' %}
         {{ job.bytes_done|hsize_short }}/{{ job.bytes_total|hsize_short }}
+      {% elif job.bytes_wire %}
+        {{ job.bytes_wire|hsize_short }}
       {% else %}
         {{ job.bytes_total|hsize }}
       {% endif %}

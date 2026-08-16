@@ -67,16 +67,42 @@ itself because it depends on the exact behaviour of the flags:
 | `--info=progress2,flist0,misc0,stats1` | one aggregate progress line; no chatter we would only have to filter |
 | `-O` | otherwise rsync stamps every directory's mtime and reports each as touched |
 | `--no-perms` | **only** where the target filesystem cannot store them |
+| `--modify-window=1` | **only** on FAT, whose seconds field counts in twos |
 
-That last one is why devices declare `fs:` (vfat, exfat, ext4, …) rather than a flag
+Those last two are why devices declare `fs:` (vfat, exfat, ext4, …) rather than a flag
 list: the filesystem is the actual constraint, and device type is only a proxy for it.
 A Linux host with an exFAT disk gets FAT treatment; an ext4 target keeps full archive
 semantics. See `FS_PROFILES` in `models.py`.
 
 Deliberately absent: `-h` (we format numbers ourselves), `%i` in the out-format (it
 makes rsync log every unchanged file on a FAT target — 24,616 lines around 4 real
-transfers, measured), and `--modify-window` (FAT's 2-second mtime granularity did not
-materialise on the tested hardware).
+transfers, measured), and `--size-only`, which belongs to Adopt alone — see below.
+
+### Why FAT needs a modify window
+
+FAT stores the seconds field of an mtime in units of two, so a timestamp rsync writes
+reads back up to a second early: `75-ores.mp3` went out at 09:37:25 and comes back
+09:37:24. rsync 3.1.3 compares mtimes exactly, calls the file changed, and re-sends it —
+on every push, for ever. Measured on the FAT32 card in a real Android phone: **8,786 of
+24,620 files** wanted re-sending, and `--modify-window=1` took that to **0**. One second,
+not two, because rounding to an even second moves a timestamp by at most one and rsync's
+window is symmetric.
+
+The window is per-filesystem, not global, because on ext4 the timestamps are exact and
+the exact comparison is what notices a book edited in place.
+
+### Why a push is not `--size-only`
+
+Every other size-and-mtime mismatch is real, so a push keeps rsync's default check.
+Measured on the same device: a dry run over the whole 266 GB library named 4 files out of
+24,620, `speedup 272,845` — exactly the four the `PRESENT ON` badge counted as missing.
+`--size-only` would match on size and skip a book whose content changed underneath us,
+which is the silent divergence the blob-hash manifest exists to catch.
+
+Note that a re-send is cheaper than it looks even when it happens: rsync's delta
+algorithm reconstructs the file from the copy the device already holds. One measured push
+reported 98 files and 4.38 GB while putting **6.7 MB** on the wire, `speedup 1,482`. The
+dock shows both numbers, because only one of them is what your WiFi carried.
 
 ## Adopting a device that already has the library
 
@@ -132,7 +158,7 @@ them) so the machine works on an isolated LAN.
 
 ## Testing notes
 
-263 tests, no network required. Two fixtures encode lessons that cost real debugging:
+275 tests, no network required. Two fixtures encode lessons that cost real debugging:
 
 - `tests/data_rsync_human.log` — verbatim output from a real transfer. `-avhP` includes
   `-h`, so rsync reported `734.38K` rather than `1,234,567`, and a parser tested only

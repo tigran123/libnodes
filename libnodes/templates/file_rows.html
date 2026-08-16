@@ -66,6 +66,14 @@
                 title="Push to {{ dev.name }}">→ {{ dev.display_abbr }}</button>
       {% endfor %}
       {% if devices %}
+        {# PRESENT ON is a cached count and answers "what is there", not "what would
+           move". A push that repairs files already present looks identical to one that
+           sends everything, so the dry run has to be reachable from the row itself. #}
+        <button class="btn btn-push btn-icon" type="button"
+                hx-get="/jobs/picker?dry_run=true&amp;path={{ row.path|urlencode }}"
+                hx-target="#notices"
+                hx-swap="beforeend"
+                title="Dry run — list exactly what a push would send">?</button>
         <button class="btn btn-push btn-icon" type="button"
                 hx-get="/jobs/picker?path={{ row.path|urlencode }}"
                 hx-target="#notices"

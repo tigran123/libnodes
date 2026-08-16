@@ -27,8 +27,8 @@
     {% with rows = tree %}{% include "tree_rows.html" %}{% endwith %}
   </div>
 
-  <div class="tree-foot">
-    Tree served from a SQLite index, not a live <span class="mono">stat()</span> walk.<br>
-    <span class="mono">▸</span> toggles · the name opens the directory
-  </div>
+  {# No footer caption. It explained that ▸ toggles and the name opens the directory,
+     which a caret and a link already say, and announced the SQLite index — an
+     implementation detail that belongs in the comment at the top of this file, not in
+     the pane. `tree-body` is flex:1, so deleting it simply gives the tree more height. #}
 </aside>

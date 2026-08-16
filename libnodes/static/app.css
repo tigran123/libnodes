@@ -1257,14 +1257,6 @@ button.tree-caret:hover {
   white-space: nowrap;
 }
 
-.tree-foot {
-  border-top: 1px solid var(--line);
-  padding: 10px 12px;
-  font-size: 10.5px;
-  color: var(--dim);
-  line-height: 1.5;
-}
-
 .lib-main {
   flex: 1;
   min-width: 0;
@@ -1552,6 +1544,19 @@ button.tree-caret:hover {
 .dock-line .r {
   margin-left: auto;
   white-space: nowrap;
+}
+
+/* The denominators, one step back from the sent/received line above them. They are
+   context — what was selected, how far rsync has walked — and reading at the same
+   weight as the transfer itself is how they came to be mistaken for it. */
+.dock-line.is-sub {
+  margin-top: -3px;
+  font-size: 10px;
+}
+
+.dock-line.is-sub .grow,
+.dock-line.is-sub .r {
+  color: var(--faint);
 }
 
 .dock-bar {

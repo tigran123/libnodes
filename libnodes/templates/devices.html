@@ -72,14 +72,13 @@
     </div>
   {% endif %}
 
-  {# No checkboxes in this table, so no selection to report. The design's blueprint
-     carried a "selected 0 · shift-click ranges" line here; it described the Library's
-     file table, not this one. #}
-  <div class="statusline">
-    <span><b>Actions</b> per device: full sync, scan, adopt, test — each shows its command</span>
-    <span>|</span>
-    <span>polling <b>{{ settings.probe_interval|int }}s</b> · hx-get <b>/devices/rows</b></span>
-  </div>
+  {# No status line here. The design's blueprint carried a "selected 0 · shift-click
+     ranges" line, which described the Library's file table and not this one, and what
+     replaced it said nothing the page does not: it listed the actions already visible in
+     every row's menu, and quoted settings.probe_interval as the refresh cadence when the
+     refresh above is a hardcoded `every 10s` — two independent numbers that happen to
+     both be 10 today and would silently disagree the moment one changed. Compare
+     lib_pane.html, whose status line reports a live match count. #}
 
 </div>
 {% endblock %}

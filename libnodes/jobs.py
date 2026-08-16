@@ -52,10 +52,15 @@ CREATE TABLE IF NOT EXISTS jobs (
   created_at  REAL,
   started_at  REAL,
   finished_at REAL,
-  files_done  INTEGER DEFAULT 0,
-  files_total INTEGER DEFAULT 0,
+  -- files_sent counts completed transfers; entries_* count what rsync walked past,
+  -- directories included. Keeping them apart is the whole point: see _apply_progress.
+  files_sent    INTEGER DEFAULT 0,
+  files_total   INTEGER DEFAULT 0,
+  entries_done  INTEGER DEFAULT 0,
+  entries_total INTEGER DEFAULT 0,
   bytes_done  INTEGER DEFAULT 0,
   bytes_total INTEGER DEFAULT 0,
+  bytes_wire  INTEGER DEFAULT 0,
   pct         REAL DEFAULT 0,
   exit_code   INTEGER,
   error       TEXT,
@@ -77,6 +82,15 @@ PROGRESS_RE = re.compile(
     r"^\s*([\d,]+(?:\.\d+)?[KMGTP]?)\s+(\d+)%\s+(\S+)\s+(\d+:\d\d:\d\d)"
     r"(?:\s+\(xfr#(\d+),\s+(?:ir-chk|to-chk)=(\d+)/(\d+)\))?"
 )
+
+# The closing line `stats1` buys us, and the only place rsync says what actually crossed
+# the network:
+#   `sent 2,491,047 bytes  received 4,203,364 bytes  25,997.71 bytes/sec`
+# The progress counter above is the *logical* size of the files rsync handled; when the
+# delta algorithm matches an existing copy, the two differ by orders of magnitude. A real
+# push of 98 files reported 4,379,115,438 bytes against 6.7 MB on the wire — `speedup is
+# 1,482.40`. Both numbers are true and only one of them is what the link carried.
+SUMMARY_RE = re.compile(r"^sent ([\d,]+) bytes\s+received ([\d,]+) bytes")
 
 _MULT = {"": 1, "K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4, "P": 1024**5}
 _SIZE_TOKEN_RE = re.compile(r"^([\d,]+(?:\.\d+)?)([KMGTP]?)$")
@@ -119,6 +133,11 @@ INFO_FLAGS = "progress2,flist0,misc0,stats1"
 #: actually mattered. Directory timestamps are meaningless on a FAT card anyway.
 BASE_FLAGS = ["-a", "-O", "--partial", "-L", "-R"]
 
+#: How many delivered filenames one job may hold in memory, so an interrupted push can
+#: still tell the manifest what landed (`_note_sent`). The whole library is 24,616 files;
+#: this clears that with room to spare, at ~60 bytes a path.
+SENT_CAP = 50_000
+
 
 def parse_size_token(token: str) -> int:
     """`734.38K` or `1,234,567` -> bytes."""
@@ -139,10 +158,29 @@ class Job:
     created_at: float = 0.0
     started_at: float | None = None
     finished_at: float | None = None
-    files_done: int = 0
+    #: Transfers rsync *completed*, from the highest `xfr#N` it reported. Not the count
+    #: of @-lines: rsync prints the name when it starts a file, so the last @-line of an
+    #: interrupted run names a file that never landed.
+    files_sent: int = 0
+    #: Files in the selection, from the index. Set once at submit and never overwritten,
+    #: so the denominator means the same thing in the dock, the tree and the manifest.
     files_total: int = 0
+    #: File-list entries rsync has walked past, directories included. `to-chk` counts
+    #: `Audio/` and its 9 subdirectories alongside its 234 files, which is why this is
+    #: 244 where files_total is 234 — and why the two must never share a widget.
+    entries_done: int = 0
+    entries_total: int = 0
+    #: Logical size of the files rsync has handled — progress2's counter, which is the
+    #: running sum of the @%l sizes (measured: 259,124,497 at xfr#14, byte-for-byte the
+    #: 14 preceding @ sizes). Skipped files contribute nothing. It is *not* what the
+    #: network carried: see bytes_wire.
     bytes_done: int = 0
     bytes_total: int = 0
+    #: What actually crossed the link, from rsync's closing `sent … received …` line, so
+    #: it only exists once the job has finished. Delta-matching makes this far smaller
+    #: than bytes_done whenever the device already holds a copy — 6.7 MB against
+    #: 4,379,115,438 on one measured push.
+    bytes_wire: int = 0
     pct: float = 0.0
     exit_code: int | None = None
     error: str | None = None
@@ -212,9 +250,18 @@ class JobStore:
             conn.executescript(SCHEMA)
             # Additive migrations for databases created by an earlier version. SQLite
             # has no ADD COLUMN IF NOT EXISTS, so ask first.
+            #
+            # files_sent/entries_* replaced a single files_done that conflated "files
+            # transferred" with "file-list entries examined". The old column is left
+            # alone rather than migrated: its rows hold the entry count, and quietly
+            # relabelling those as transfers is the exact confusion being fixed here.
             existing = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
             for column, ddl in (("hold", "INTEGER DEFAULT 0"),
-                                ("adopt", "INTEGER DEFAULT 0")):
+                                ("adopt", "INTEGER DEFAULT 0"),
+                                ("files_sent", "INTEGER DEFAULT 0"),
+                                ("entries_done", "INTEGER DEFAULT 0"),
+                                ("entries_total", "INTEGER DEFAULT 0"),
+                                ("bytes_wire", "INTEGER DEFAULT 0")):
                 if column not in existing:
                     with conn:
                         conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {ddl}")
@@ -263,17 +310,21 @@ class JobStore:
             with conn:
                 conn.execute(
                     "UPDATE jobs SET state=?, started_at=?, finished_at=?, "
-                    "files_done=?, files_total=?, bytes_done=?, bytes_total=?, pct=?, "
+                    "files_sent=?, files_total=?, entries_done=?, entries_total=?, "
+                    "bytes_done=?, bytes_total=?, bytes_wire=?, pct=?, "
                     "exit_code=?, error=?, argv=?, attempt=?, dest=?, hold=? "
                     "WHERE id=?",
                     (
                         job.state,
                         job.started_at,
                         job.finished_at,
-                        job.files_done,
+                        job.files_sent,
                         job.files_total,
+                        job.entries_done,
+                        job.entries_total,
                         job.bytes_done,
                         job.bytes_total,
+                        job.bytes_wire,
                         job.pct,
                         job.exit_code,
                         job.error,
@@ -351,10 +402,13 @@ def _job_from_row(row: sqlite3.Row) -> Job:
         created_at=row["created_at"] or 0.0,
         started_at=row["started_at"],
         finished_at=row["finished_at"],
-        files_done=row["files_done"] or 0,
+        files_sent=row["files_sent"] or 0,
         files_total=row["files_total"] or 0,
+        entries_done=row["entries_done"] or 0,
+        entries_total=row["entries_total"] or 0,
         bytes_done=row["bytes_done"] or 0,
         bytes_total=row["bytes_total"] or 0,
+        bytes_wire=row["bytes_wire"] or 0,
         pct=row["pct"] or 0.0,
         exit_code=row["exit_code"],
         error=row["error"],
@@ -396,6 +450,14 @@ def build_argv(
     # archive semantics, a FAT card does not get chmod attempts it can only fail.
     if not device.fs_profile.perms:
         argv.append("--no-perms")
+
+    # FAT stores the seconds field in units of two, so a timestamp rsync wrote reads back
+    # up to a second earlier and rsync's exact comparison calls the file changed. Left
+    # uncompensated this re-sent 8,786 of 24,620 files on every push to a real FAT32 SD
+    # card; --modify-window=1 took that to 0. It is per-filesystem for the same reason
+    # --no-perms is: on ext4 the timestamps are exact and worth comparing exactly.
+    if device.fs_profile.modify_window:
+        argv.append(f"--modify-window={device.fs_profile.modify_window}")
 
     if adopt:
         # Adoption: the device already holds the files, but they carry the mtimes of
@@ -478,6 +540,10 @@ class JobRunner:
         self._live: dict[int, Job] = {}
         self._terms: dict[int, deque[tuple[str, str]]] = {}
         self._procs: dict[int, asyncio.subprocess.Process] = {}
+        #: Names off the @-lines, in rsync's order, so a run that dies part-way can still
+        #: say which files it delivered. Bounded by SENT_CAP; `None` marks a job that
+        #: overflowed and whose list is therefore no longer a complete prefix.
+        self._sent: dict[int, list[str] | None] = {}
         self._queue: asyncio.Queue[int] = asyncio.Queue()
         self._workers: list[asyncio.Task] = []
         self._subs: set[asyncio.Queue] = set()
@@ -634,6 +700,7 @@ class JobRunner:
             self.store.save(job)
         self._live.pop(job_id, None)
         self._terms.pop(job_id, None)
+        self._sent.pop(job_id, None)
         self._emit(JobEvent("dock"))
 
     def start_now(self, job_id: int) -> Job | None:
@@ -666,6 +733,7 @@ class JobRunner:
                         break
             self._live.pop(job_id, None)
             self._terms.pop(job_id, None)
+            self._sent.pop(job_id, None)
 
         removed = self.store.delete(job_id)
         log = self.settings.logs_dir / f"{job_id}.log"
@@ -704,6 +772,11 @@ class JobRunner:
         job.state = "running"
         job.started_at = time.time()
         job.attempt += 1
+        # A retry restarts rsync from scratch, so both the xfr# counter and the list of
+        # delivered names start over with it. --partial means the retry is cheap, not
+        # that the previous attempt's tally still applies.
+        job.files_sent = 0
+        self._sent[job.id] = []
         self.store.save(job)
         self._emit(JobEvent("dock"))
 
@@ -760,11 +833,19 @@ class JobRunner:
                         name = event.group("name")
                         if not name.endswith("/"):
                             job.current_file = name
+                            self._note_sent(job, name)
                         size = event.group("size")
                         pretty = name
                         if size.isdigit() and not name.endswith("/"):
                             pretty = f"{name}  {int(size):,}"
                         self._append_line(job, pretty, "")
+                    elif summary := SUMMARY_RE.match(text):
+                        # rsync's closing tally, and the only figure here that is bytes
+                        # on the wire rather than bytes of file.
+                        job.bytes_wire = sum(
+                            int(g.replace(",", "")) for g in summary.groups()
+                        )
+                        self._append_line(job, text, "info")
                     else:
                         lowered = text.lower()
                         css = (
@@ -792,12 +873,17 @@ class JobRunner:
         elif code in (15, -15, 143, 20):
             job.state = "aborted"
             job.error = "aborted"
+            self._record_partial(job)
         else:
             job.state = "failed"
             job.error = f"rsync exited {code}"
             self._append_line(job, f"rsync error: exit {code}", "err")
             for hint in _hints(log_path, code):
                 self._append_line(job, f"hint: {hint}", "warn")
+            # Before the retry, not after it: each attempt starts rsync from scratch, so
+            # attempt 2 skips what attempt 1 delivered and never names those files again.
+            # Credit them now or lose them.
+            self._record_partial(job)
             retries = self._retries_for(job)
             if job.attempt <= retries:
                 # --partial is in the default flags, so the retry resumes byte-accurate.
@@ -822,6 +908,66 @@ class JobRunner:
         if device is None:
             return 0
         return device.retries_with(self.devices.config.defaults)
+
+    def _note_sent(self, job: Job, name: str) -> None:
+        """Remember a name off an @-line, for `_record_partial`.
+
+        Bounded because this is per-job memory, but generously: the whole library is
+        24,616 files, so SENT_CAP holds the worst real case at roughly 3 MB of strings.
+        Overflow sets the entry to None rather than dropping the oldest name — a
+        truncated list is no longer a prefix of what rsync sent, and a manifest is worth
+        nothing if it is only mostly right about which files exist.
+        """
+        sent = self._sent.get(job.id)
+        if sent is None:
+            return
+        if len(sent) >= SENT_CAP:
+            self._sent[job.id] = None
+            return
+        sent.append(name)
+
+    def _record_partial(self, job: Job) -> None:
+        """Credit an interrupted push with the files it did deliver.
+
+        Without this, aborting a transfer discards everything it achieved: a run that
+        placed 14 of 234 files left PRESENT ON reading the pre-push count, so the UI
+        described a device state that had not been true for hours.
+
+        Truncated to `files_sent` — the `xfr#` count — because rsync prints a file's name
+        when it *starts* sending it. The trailing @-line of an interrupted run names the
+        file that was in flight, which `--partial` may well have left on the device
+        truncated under its final name. Recording that one would be worse than recording
+        nothing: a size-mismatched row still reads as present.
+        """
+        if job.dry_run:
+            return
+        names = self._sent.get(job.id)
+        if names is None:
+            self._append_line(
+                job,
+                f"too many files to track ({SENT_CAP:,}+) · "
+                "manifest not updated, run a scan to resync PRESENT ON",
+                "warn",
+            )
+            return
+        delivered = names[: job.files_sent]
+        if not delivered:
+            return
+        recorded: list[tuple] = []
+        for path in delivered:
+            entry = self.index.entry(path)
+            if entry is None or entry.is_dir:
+                continue
+            # Blob and size come from the index, exactly as the clean-exit path takes
+            # them, so a partial row is as trustworthy as a whole-push row.
+            recorded.append((entry.path, entry.blob, entry.size, entry.mtime, 0))
+        if not recorded:
+            return
+        self.manifests.record(job.device_id, recorded, source="push")
+        self.probe.invalidate_space(job.device_id)
+        self._append_line(
+            job, f"✓ manifest credited with {len(recorded):,} delivered files", "prog"
+        )
 
     def _update_manifest(self, job: Job) -> None:
         """Record what the device now holds, so PRESENT ON reflects the push."""
@@ -982,39 +1128,73 @@ def _hints(log_path: Path, code: int) -> list[str]:
 
 
 def _apply_progress(job: Job, match: re.Match) -> None:
+    """Read one `--info=progress2` line into the job.
+
+    Three numbers, three different meanings, and the bug this function is the fix for
+    was reading them as one. Measured against a real aborted push of 234 files:
+
+    * `xfr#N` is the count of transfers rsync has **finished** — 14 when the log already
+      held 15 `@` lines, because the name is printed when a file starts.
+    * `to-chk=r/t` counts **file-list entries**, directories included and skipped files
+      included: 244 for a directory holding 234 files and 9 subdirectories. It walked
+      35 of them while sending 15, so reporting it as "35 files" was a straight
+      overstatement of the work done.
+    * the leading byte count is the running sum of the `@%l` sizes — 259,124,497 at
+      `xfr#14`, exactly the 14 preceding sizes added up. Skipped files contribute
+      nothing to it, so it needs no adjustment.
+
+    rsync's own percentage is bytes-sent over the size of the whole file list, so a
+    300 MB repair inside a 10 GB tree reads 3% and never advances. The bar tracks
+    entries instead, which is the one quantity that always reaches its total.
+    """
     raw_bytes, pct, rate, elapsed, xfr, remaining, total = match.groups()
     job.bytes_done = parse_size_token(raw_bytes)
-    job.pct = float(pct)
     job.rate = rate
+    if xfr:
+        # max() rather than assignment: _run zeroes the counter at the start of each
+        # attempt, and a progress line buffered from the previous rsync must not be able
+        # to drag the new attempt's count backwards.
+        job.files_sent = max(job.files_sent, int(xfr))
     if total and remaining:
-        job.files_total = int(total)
-        job.files_done = max(0, int(total) - int(remaining))
-    # progress2's percentage is against rsync's own view of the total, which is the
-    # honest denominator here -- our index estimate counts files rsync may skip.
-    if job.pct > 0:
-        job.bytes_total = int(job.bytes_done * 100 / job.pct)
-    job.eta = _eta(job, rate)
+        job.entries_total = int(total)
+        job.entries_done = max(0, int(total) - int(remaining))
+    if job.entries_total:
+        job.pct = min(100.0, job.entries_done * 100 / job.entries_total)
+    else:
+        job.pct = float(pct)
+    # files_total and bytes_total stay as _estimate set them, from the index. They are
+    # the size of what was *selected*, and the queued card, the dock and the jobs table
+    # all quote them; letting rsync redefine them mid-run is what made one directory
+    # read 234 files in the tree and 244 in the dock.
+    job.eta = _eta(job)
 
 
-def _eta(job: Job, rate: str) -> str:
-    per_sec = _rate_bytes(rate)
-    if not per_sec or job.bytes_total <= job.bytes_done:
+def _eta(job: Job) -> str:
+    """Time left, in the same currency as the bar: file-list entries.
+
+    Estimating from bytes needs a byte total, and the only honest one available mid-run
+    is the whole selection — which for a mostly-synced tree is orders of magnitude more
+    than will actually move (10 GB quoted for a 300 MB repair). Entries are what the bar
+    counts down, so the ETA counts the same thing down at the observed rate.
+    """
+    if not job.entries_total or job.started_at is None:
         return ""
-    remaining = (job.bytes_total - job.bytes_done) / per_sec
+    # Below ~5% the sample is a handful of directory entries consumed in milliseconds
+    # and the extrapolation is nonsense. Say nothing rather than something wrong.
+    if job.entries_done < max(1, job.entries_total // 20):
+        return ""
+    elapsed = time.time() - job.started_at
+    if elapsed <= 0:
+        return ""
+    per_sec = job.entries_done / elapsed
+    if per_sec <= 0:
+        return ""
+    remaining = (job.entries_total - job.entries_done) / per_sec
+    if remaining <= 0:
+        return ""
     h, rem = divmod(int(remaining), 3600)
     m, s = divmod(rem, 60)
     return f"{h}:{m:02d}:{s:02d}"
-
-
-_RATE_RE = re.compile(r"^([\d.]+)([kMGT]?)B/s$", re.IGNORECASE)
-_RATE_MULT = {"": 1, "K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
-
-
-def _rate_bytes(rate: str) -> float | None:
-    m = _RATE_RE.match(rate.strip())
-    if not m:
-        return None
-    return float(m.group(1)) * _RATE_MULT[m.group(2).upper()]
 
 
 async def _iter_lines(stream: asyncio.StreamReader):

@@ -1,9 +1,26 @@
 {# Destination, aggregate progress, current file. Replaced by `progress` at ~2 Hz. #}
+{# Sent leads, checked follows. They are different quantities and were once one number:
+   "35/244 files" for a run that had sent 15 files out of a 234-file directory, because
+   rsync's to-chk counts skipped files and directories as it walks past them. #}
 <div class="dock-line">
   <span class="grow">{{ job.dest }}</span>
   <span class="r">
-    {{ job.files_done }}/{{ job.files_total }} files ·
-    {{ job.bytes_done|hsize }} of {{ job.bytes_total|hsize }}
+    {{ job.files_sent|commafy }} files sent · {{ job.bytes_done|hsize }}
+  </span>
+</div>
+
+<div class="dock-line is-sub">
+  <span class="grow">
+    of {{ job.files_total|commafy }} files · {{ job.bytes_total|hsize }} selected
+    {# The bytes above are the size of the files rsync handled. What the link actually
+       carried is usually far less, because the delta algorithm matches the copy the
+       device already has: 6.7 MB against 4.4 GB on one measured push. Only rsync's
+       closing summary knows it, so it appears when the job ends. #}
+    {% if job.bytes_wire %} · {{ job.bytes_wire|hsize }} over the wire{% endif %}
+  </span>
+  {# "entries", never "files": the total counts directories too. #}
+  <span class="r">
+    {% if job.entries_total %}checked {{ job.entries_done|commafy }}/{{ job.entries_total|commafy }} entries{% endif %}
   </span>
 </div>
 
