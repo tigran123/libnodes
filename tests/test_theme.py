@@ -6,6 +6,25 @@ from __future__ import annotations
 # --------------------------------------------------------------------- theme --
 
 
+def test_btn_default_does_not_wear_the_hover_background():
+    """An emphasised button must not arrive already looking pressed.
+
+    `.btn-default` used to set `background: var(--hover)` -- the exact background
+    `.btn:hover` paints -- so it rendered permanently hovered and had no hover response
+    left. Invisible while a whole group wore it (the Actions dialog), obvious the moment
+    a plain `.btn` stood beside one (Test next to Actions on a device row).
+
+    Asserted against the stylesheet because there is no browser here to read a computed
+    style from; the rule is short enough that its text is the behaviour.
+    """
+    from pathlib import Path
+
+    css = Path(__file__).resolve().parent.parent / "libnodes" / "static" / "app.css"
+    block = css.read_text().split(".btn-default {")[1].split("}")[0]
+    assert "background" not in block
+    assert "border-color" in block          # still distinguishable from a plain .btn
+
+
 async def test_defaults_to_dark(client):
     r = await client.get("/devices")
     assert 'data-theme="light"' not in r.text

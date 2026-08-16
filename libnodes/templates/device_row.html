@@ -60,6 +60,18 @@
         <span class="mono t-warn nowrap">sshd asleep</span>
       {% endif %}
 
+      {# Test sits in the row rather than behind Actions because it is the only action
+         that changes nothing — df, rsync --version, test -w — so it needs no command
+         strip to read first. The tooltip carries the command anyway, and the result
+         echoes it. It stays enabled when the dot is red: a device that is not answering
+         is precisely when you want the test, and the result names a likely cause. #}
+      <button class="btn"
+              hx-post="/device/{{ node.device.id }}/test"
+              hx-target="#notices"
+              hx-swap="beforeend"
+              hx-disabled-elt="this"
+              title="{{ node.test_command }}">Test</button>
+
       {% if not node.online %}
         <button class="btn"
                 hx-post="/device/{{ node.device.id }}/probe"
@@ -69,7 +81,7 @@
         <button class="btn is-disabled" disabled
                 title="{{ node.device.name }} is not answering — Retry first">Actions</button>
       {% else %}
-        {# One entry point. Full Sync, Adopt, Scan and Test all live behind it, each
+        {# One entry point for everything that writes: Full Sync, Adopt and Scan, each
            showing the command it will run. #}
         <button class="btn btn-default"
                 hx-get="/device/{{ node.device.id }}/menu"

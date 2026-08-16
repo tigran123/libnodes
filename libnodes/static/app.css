@@ -736,9 +736,13 @@ ul {
   color: var(--ink);
 }
 
+/* The emphasised action button: a stronger border and full-strength text, and nothing
+   else. It used to carry `background: var(--hover)` -- the exact background .btn:hover
+   paints -- so it sat there looking permanently pressed and had no hover response left
+   to give. Harmless while every button in a group wore it (the Actions dialog), obvious
+   the moment a plain .btn stood next to one (Test beside Actions on a device row). */
 .btn-default {
   border-color: var(--border-hi);
-  background: var(--hover);
   color: var(--ink);
 }
 

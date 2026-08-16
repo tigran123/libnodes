@@ -1,0 +1,26 @@
+{# Connection test result. The test runs straight from the device row rather than from
+   behind Actions, because it is the one action that changes nothing: it reads df, the
+   rsync version and `test -w`, and creates no file. So the command is shown here, after
+   the fact, instead of in a strip you have to read before pressing anything. #}
+<div class="backdrop" id="test-result">
+  <div class="dialog" style="width:min(720px, 94vw)">
+
+    <div class="dialog-head">
+      <span class="dot {{ 'dot-ok' if code == 0 else 'dot-err' }}"></span>
+      {{ device.name }}
+      <span class="meta" style="margin-left:6px">
+        {{ device.host }}:{{ device.effective_port }} · {{ device.display_target }}
+      </span>
+    </div>
+
+    <div class="dialog-body">
+      {% include "fragments/test_strip.html" %}
+    </div>
+
+    <div class="dialog-foot">
+      <button class="btn" type="button"
+              onclick="document.getElementById('test-result').remove()">Close</button>
+    </div>
+
+  </div>
+</div>

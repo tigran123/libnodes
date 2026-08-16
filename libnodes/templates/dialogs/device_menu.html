@@ -66,15 +66,10 @@
       } %}
       {% include "fragments/device_action.html" %}
 
-      {% set act = {
-        'label': 'Test connection',
-        'note': 'ssh in and report free space, rsync version and whether the target is writable',
-        'cmd': commands.test,
-        'method': 'post', 'url': '/device/' ~ device.id ~ '/test',
-        'target': '#test-result-' ~ device.id, 'swap': 'innerHTML',
-      } %}
-      {% include "fragments/device_action.html" %}
-      <div id="test-result-{{ device.id }}"></div>
+      {# Test is not here. It lives on the device row as its own button, because it is
+         the only action that writes nothing and so needs no command read beforehand —
+         and because it is most useful when the device is offline, which is exactly when
+         this dialog is unreachable. #}
 
       {% set act = {
         'label': "What is on it that we don't have",

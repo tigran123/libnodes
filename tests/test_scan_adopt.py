@@ -383,10 +383,10 @@ async def test_actions_menu_shows_the_command_each_action_runs(client):
     assert "--no-perms" in r.text
     # The scan command.
     assert "--list-only" in r.text
-    # The connection test.
-    assert "df -Pk" in r.text
     # And -L, the flag that makes a CAS library transfer real files.
     assert "-L" in r.text
+    # Test is not in this dialog any more; it is a button on the row.
+    assert "df -Pk" not in r.text
 
 
 async def test_actions_menu_commands_are_copyable(client):
@@ -488,20 +488,46 @@ async def test_closing_the_dialog_does_not_cancel_the_request(client):
     assert "hx-on::after-request" in r.text
 
 
-async def test_test_connection_renders_inside_the_dialog(client):
-    r = await client.get("/device/kobo/menu")
-    assert 'id="test-result-kobo"' in r.text
-    assert 'hx-target="#test-result-kobo"' in r.text
+async def test_test_is_a_row_button_carrying_the_command_it_runs(client):
+    """The one action that writes nothing gets to live in the row.
+
+    It is also the action you most want when a device is offline — which is exactly when
+    the Actions dialog is not offered. With no command strip out there, the tooltip keeps
+    the house rule, and it must carry the command that actually runs: the dialog used to
+    advertise a bare `df -Pk <target>` while the handler ran a three-part script.
+
+    Asserted on the rendered row rather than by pressing it, so this costs no ssh.
+    """
+    rows = await client.get("/devices/rows")
+    assert 'hx-post="/device/kobo/test"' in rows.text
+    assert ">Test<" in rows.text
+    assert "Test connection" not in rows.text
+    assert "# rsync" in rows.text          # from _TEST_SCRIPT, via the tooltip
+    assert "test -w" in rows.text
+
+    menu = await client.get("/device/kobo/menu")
+    assert "/device/kobo/test" not in menu.text
+    assert "Test connection" not in menu.text
 
 
 async def test_connection_test_reports_failure_legibly(client, app):
-    """The fixture device is unreachable, so this exercises the failure path."""
+    """The fixture device is unreachable, so this exercises the failure path.
+
+    The only test that actually runs the probe, so the result's shape is asserted here
+    too rather than in a test of its own that would spawn a second ssh for nothing.
+    """
     r = await client.post("/device/kobo/test")
     assert r.status_code == 200
     assert "Connection test" in r.text
     assert "is-err" in r.text
     assert "$ ssh" in r.text          # the command is echoed
     assert "hint:" in r.text          # ...and a likely cause named
+    assert "# rsync" in r.text        # the echoed line is the one that ran, in full
+
+    # It arrives as a dialog of its own, dismissable, rather than as a strip that only
+    # made sense inside the Actions menu it no longer lives in.
+    assert 'id="test-result"' in r.text
+    assert "getElementById('test-result').remove()" in r.text
 
 
 async def test_no_action_is_styled_as_primary(client):

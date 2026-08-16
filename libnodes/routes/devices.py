@@ -30,6 +30,12 @@ class DeviceView:
     space: FreeSpace
     last_sync: float | None
     job: Job | None
+    #: The connection test as a shell line, for the row button's tooltip. The test is the
+    #: one action safe enough to run straight from the row, so it does not get the
+    #: dialog's command strip — but "every action shows the command it will run" still
+    #: holds, and the result echoes the same line. Built by `_test_argv`, once, so the
+    #: two cannot disagree.
+    test_command: str = ""
 
     @property
     def state(self) -> str:
@@ -92,6 +98,7 @@ def device_views(app: AppState) -> list[DeviceView]:
                 space=app.probe.space(device.id),
                 last_sync=app.manifests.last_sync(device.id),
                 job=running.get(device.id),
+                test_command=_shell(_test_argv(device, app.settings)),
             )
         )
     return out
@@ -243,12 +250,6 @@ async def device_menu(request: Request, device_id: str):
                     build_argv(device, config, sources, app.settings, adopt=True)
                 ),
                 "scan": _shell(scan_argv(device, app.settings)),
-                "test": _shell(
-                    [
-                        *ssh_argv(device, app.settings),
-                        f"df -Pk {shlex.quote(device.target)}",
-                    ]
-                ),
             },
             "library_root": str(app.settings.library_root),
         }
@@ -270,20 +271,35 @@ _TEST_SCRIPT = (
 )
 
 
+def _test_argv(device: Device, settings) -> list[str]:
+    """The connection test as one argv, built in exactly one place.
+
+    The row's tooltip and the line echoed above the output both come from here, so they
+    cannot drift from what runs. They used to: the Actions dialog advertised a bare
+    `df -Pk <target>` while the handler ran this three-part script.
+    """
+    return [
+        *ssh_argv(device, settings),
+        _TEST_SCRIPT.format(t=shlex.quote(device.target)),
+    ]
+
+
 @router.post("/device/{device_id}/test", response_class=HTMLResponse)
 async def device_test(request: Request, device_id: str):
-    """ssh in and report back, in the dialog rather than silently.
+    """ssh in and report back in a dialog of its own.
 
-    The design calls for a connection-test strip: the echoed command, its output, and a
-    one-line verdict — with the failure case naming a likely cause.
+    Driven from the device row, not from behind Actions: it reads `df`, the rsync version
+    and `test -w`, writes nothing, and is therefore the one action that does not need its
+    command read before it is pressed. The result carries the echoed command, the output,
+    and a one-line verdict — with the failure case naming a likely cause, which is
+    exactly what you want from a device that is not answering.
     """
     app = state(request)
     device = app.devices.device(device_id)
     if device is None:
         return HTMLResponse("", status_code=404)
 
-    remote = _TEST_SCRIPT.format(t=shlex.quote(device.target))
-    argv = [*ssh_argv(device, app.settings), remote]
+    argv = _test_argv(device, app.settings)
     started = time.perf_counter()
     out = err = ""
     code: int | None = None
@@ -321,7 +337,7 @@ async def device_test(request: Request, device_id: str):
             "hints": hints_for_text(f"{out}\n{err}", code if code is not None else 255),
         }
     )
-    return templates.TemplateResponse(request, "fragments/test_strip.html", ctx)
+    return templates.TemplateResponse(request, "dialogs/test_result.html", ctx)
 
 
 def _test_summary(out: str) -> list[str]:
