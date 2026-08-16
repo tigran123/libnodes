@@ -59,7 +59,10 @@
       {% for dev in push_devices %}
         <button class="btn btn-push" type="button"
                 hx-post="/jobs"
-                hx-vals='{"device": "{{ dev.id }}", "path": "{{ row.path|e }}"}'
+                {# tojson, not |e: |e writes &#34; for a quote, the parser decodes it back
+                   to " inside this single-quoted attribute, and the JSON is broken for
+                   any book whose name contains one. tojson supplies its own quotes. #}
+                hx-vals='{"device": {{ dev.id|tojson }}, "path": {{ row.path|tojson }}}'
                 hx-target="#notices"
                 hx-swap="beforeend"
                 hx-disabled-elt="this"

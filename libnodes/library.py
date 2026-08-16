@@ -321,6 +321,47 @@ class LibraryIndex:
             conn.close()
         return (row[0], row[1])
 
+    def max_file_size(self, paths: Sequence[str]) -> int:
+        """Largest single *file* at or under any of `paths`.
+
+        For the FAT32 warning, which is about one file exceeding 4 GiB. `Entry.size`
+        cannot answer it: on a directory that column holds the recursive total, so a
+        selection of the 17 top-level directories reported its largest file as 68.7 GB —
+        the size of `Science` entire — against a library whose biggest actual file is
+        786 MB. Every directory push therefore carried a red FAT32 warning that was
+        arithmetic on the wrong number.
+
+        `is_dir = 0` is the whole point of the query; do not drop it.
+        """
+        if not paths:
+            return 0
+        conn = self._connect()
+        if conn is None:
+            return 0
+        clauses = []
+        params: list[object] = []
+        for raw in paths:
+            path = normalise(raw)
+            if not path:
+                # The library root is selected: every file is under it, so the prefix
+                # clauses would only narrow what is already the whole table.
+                clauses = []
+                params = []
+                break
+            clauses.append("(path = ? OR path LIKE ? ESCAPE '\\')")
+            params += [path, f"{_escape_like(path)}/%"]
+
+        sql = "SELECT COALESCE(MAX(size), 0) FROM entries WHERE is_dir = 0"
+        if clauses:
+            sql += " AND (" + " OR ".join(clauses) + ")"
+        try:
+            row = conn.execute(sql, params).fetchone()
+        except sqlite3.Error:
+            return 0
+        finally:
+            conn.close()
+        return int(row[0] or 0)
+
     def ancestors(self, path: str) -> list[Entry]:
         """Root-first chain for the breadcrumb, excluding `path` itself."""
         out: list[Entry] = []

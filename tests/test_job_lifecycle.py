@@ -6,6 +6,9 @@ Every test here corresponds to something that actually went wrong in use.
 from __future__ import annotations
 
 import asyncio
+import json
+import re
+import time
 
 import pytest
 
@@ -91,6 +94,26 @@ async def test_delete_returns_the_refreshed_table(client, app):
 async def test_deleting_a_nonexistent_job_is_harmless(client):
     r = await client.request("DELETE", "/jobs/424242")
     assert r.status_code == 200
+
+
+async def test_clear_finished_is_not_swallowed_by_the_job_id_route(client, app):
+    """`/jobs/finished` and `/jobs/{job_id}` share a shape, and FastAPI matches in
+    declaration order — so the literal has to be declared first or every Clear finished
+    is a 422 on int("finished"), with the button appearing to do nothing."""
+    lib = app.state.lib
+    await client.post(
+        "/jobs",
+        data={"device": "kobo", "path": "Science/Physics", "confirmed": "yes"},
+    )
+    done = lib.jobs.recent()[0]
+    done.state = "done"
+    done.finished_at = time.time()
+    lib.store.save(done)
+
+    r = await client.request("DELETE", "/jobs/finished")
+    assert r.status_code == 200
+    assert lib.jobs.recent() == []
+    assert lib.store.get(done.id) is None
 
 
 async def test_every_job_row_offers_a_way_out(client, app):
@@ -210,8 +233,58 @@ async def test_library_row_offers_a_dry_run(client):
     A push that repairs a handful of files already present is indistinguishable from one
     that re-sends the directory unless the dry run is one click from the row.
     """
-    r = await client.get("/lib/list", params={"path": "Science"})
+    r = await client.get("/lib/list", params={"p": "Science"})
     assert "/jobs/picker?dry_run=true&amp;path=" in r.text
+
+
+def test_a_row_push_survives_a_quote_in_the_book_name(app):
+    """`hx-vals` is JSON inside a single-quoted attribute, so `|e` is the wrong escape:
+    it writes `&#34;`, the parser hands htmx back a bare `"`, and the object no longer
+    parses — that row's push buttons go dead. Rendered here rather than through the
+    fixture library, whose file counts several other tests assert on.
+    """
+    from libnodes.library import Entry
+    from libnodes.templating import templates
+
+    row = Entry(
+        path='Fiction/He said "hi".epub',
+        parent="Fiction",
+        name='He said "hi".epub',
+        is_dir=False,
+        fmt="epub",
+        size=1024,
+        mtime=0,
+        files=None,
+        blob=None,
+        title=None,
+        author=None,
+    )
+    device = app.state.lib.devices.config.devices[0]
+    html = templates.env.get_template("file_rows.html").render(
+        rows=[row],
+        presence={},
+        by_id={},
+        devices=[device],
+        push_devices=[device],
+        q="",
+        path="",
+        oob=False,
+    )
+
+    vals = re.findall(r"hx-vals='([^']*)'", html)
+    assert vals, "the row rendered no push button at all"
+    assert json.loads(vals[0])["path"] == 'Fiction/He said "hi".epub'
+
+
+async def test_the_selection_bar_asks_the_picker_for_a_dry_run(client):
+    """The bulk button is the other way in, and it used to send `?from=selection`.
+
+    Nothing reads `from`, so the picker rendered as an ordinary push dialog: a button
+    labelled "Dry run…" that opened "Push to…" and would have queued a real transfer.
+    """
+    r = await client.get("/lib/selection", params={"path": ["Science/Physics"]})
+    assert "/jobs/picker?dry_run=true" in r.text
+    assert "from=selection" not in r.text
 
 
 async def test_dry_run_picker_posts_to_the_dry_run_endpoint(client):
@@ -219,6 +292,23 @@ async def test_dry_run_picker_posts_to_the_dry_run_endpoint(client):
         "/jobs/picker", params={"path": "Science/Physics", "dry_run": "true"}
     )
     assert 'hx-post="/jobs/dry-run"' in r.text
+
+
+async def test_the_picker_closes_only_after_its_request(client):
+    """See test_no_button_removes_itself_while_asking_for_something in test_routes.py —
+    closing in `onclick` detaches the button and htmx abandons the push in silence."""
+    r = await client.get("/jobs/picker", params={"path": "Science/Physics"})
+    assert "hx-on::after-request" in r.text
+
+
+async def test_the_offline_dialog_closes_only_after_its_request(client):
+    """Same defect, one step further along: both fixture devices are unreachable, so a
+    push lands here, and its Queue push button was dead for the same reason."""
+    r = await client.post(
+        "/jobs", data={"device": "kobo", "path": "Science/Physics"}
+    )
+    assert "is unreachable" in r.text
+    assert "hx-on::after-request" in r.text
 
 
 async def test_dry_run_accepts_several_devices(client, app):
@@ -231,6 +321,72 @@ async def test_dry_run_accepts_several_devices(client, app):
     assert len(jobs) == 2
     assert all(j.dry_run for j in jobs)
     assert all("-n" in j.argv for j in jobs)
+
+
+def _source_cell(html: str) -> str:
+    """The SOURCE column's text for the first job row, badges and markup stripped."""
+    cell = re.search(r'data-label="Source"[^>]*>(.*?)</div>', html, re.S)
+    assert cell, "no Source cell in the jobs table"
+    return " ".join(re.sub(r"<[^>]*>", " ", cell.group(1)).split())
+
+
+async def test_a_whole_library_push_is_named_for_the_library(client, settings):
+    """Selecting every top-level directory is the library, and the SOURCE column should
+    say so. It used to read `/Books/Art +16 (full)`: `Art` only because it sorts first,
+    and `(full)` because `len(sources) > 3` — which called any four directories the whole
+    library, and still named one of them at random when it really was."""
+    from libnodes.jobs import full_sync_sources
+
+    everything = full_sync_sources(settings)
+    assert len(everything) > 1, "fixture has too few top-level directories to be a test"
+
+    await client.post(
+        "/jobs", data={"device": "kobo", "path": everything, "confirmed": "yes"}
+    )
+    rows = await client.get("/jobs/rows")
+    assert _source_cell(rows.text) == str(settings.library_root)
+
+
+async def test_a_partial_push_still_names_what_it_sends(client, settings):
+    """The counterpart: naming the library for anything less would be a lie."""
+    await client.post(
+        "/jobs",
+        data={
+            "device": "kobo",
+            "path": ["Science/Physics", "Fiction"],
+            "confirmed": "yes",
+        },
+    )
+    rows = await client.get("/jobs/rows")
+    cell = _source_cell(rows.text)
+    assert cell.startswith(f"{settings.library_root}/")
+    assert cell.endswith("+1")
+    assert str(settings.library_root) != cell
+
+
+async def test_a_single_directory_push_names_it_plainly(client, settings):
+    await client.post(
+        "/jobs", data={"device": "kobo", "path": "Science/Physics", "confirmed": "yes"}
+    )
+    rows = await client.get("/jobs/rows")
+    assert _source_cell(rows.text) == f"{settings.library_root}/Science/Physics"
+
+
+async def test_a_full_sync_source_cell_is_a_path_not_a_caption(client, settings):
+    """Full Sync sets label="(full library)", which the cell used to print as
+    `/Books/(full library)` — a caption pasted where a path belongs."""
+    await client.post("/device/kobo/full-sync")
+    rows = await client.get("/jobs/rows")
+    assert _source_cell(rows.text) == str(settings.library_root)
+
+
+async def test_a_queued_toast_names_the_device_not_its_yaml_id(client):
+    """queued.html looks the device up in `by_id`, which base_context did not supply, so
+    every push and dry run announced itself with the raw id from devices.yaml."""
+    r = await client.post(
+        "/jobs/dry-run", data={"device": "kobo", "path": "Science/Physics"}
+    )
+    assert "Test Kobo" in r.text
 
 
 async def test_dry_run_never_asks_about_reachability(client, app):

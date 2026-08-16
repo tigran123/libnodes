@@ -204,6 +204,48 @@
     if (row) row.classList.toggle("is-selected", box.checked);
   }
 
+  /* Row boxes only. The header's select-all is a control, not a selection, and counting
+     it would make "all rows checked" impossible to reach. */
+  function rowBoxes(scope) {
+    return Array.prototype.slice.call(scope.querySelectorAll(".trow input.check"));
+  }
+
+  /* Indeterminate whenever the rows disagree with the header, so a part-selection never
+     reads as "nothing selected". */
+  function syncSelectAll(scope) {
+    var all = scope.querySelector("[data-select-all]");
+    if (!all) return;
+    var boxes = rowBoxes(scope);
+    var on = boxes.filter(function (b) { return b.checked; }).length;
+    all.checked = boxes.length > 0 && on === boxes.length;
+    all.indeterminate = on > 0 && on < boxes.length;
+  }
+
+  function syncEverySelectAll() {
+    document.querySelectorAll("[data-selectable]").forEach(syncSelectAll);
+  }
+
+  /* Select-all lives on `click`, not on `change`, and the difference is load-bearing.
+     #sel-form has hx-trigger="change", and a change event reaches the form on its way up
+     to a document listener — so htmx would serialise the form before this code had ticked
+     anything, and the selection bar would report the previous state. click fires first,
+     and a checkbox is already toggled by the time a click handler sees it, so the boxes
+     are set before the change that follows reaches htmx. */
+  document.addEventListener("click", function (e) {
+    var all = e.target.closest("[data-select-all]");
+    if (!all) return;
+    var scope = all.closest("[data-selectable]");
+    if (!scope) return;
+    rowBoxes(scope).forEach(function (box) {
+      box.checked = all.checked;
+      mark(box);
+    });
+    all.indeterminate = false;
+    // The shift-click anchor belonged to the old selection; keeping it would extend a
+    // range from a row the user never touched.
+    lastChecked = null;
+  });
+
   document.addEventListener("click", function (e) {
     // Real controls inside the row keep their own behaviour: push buttons, links,
     // the format select. Only the inert parts of the row toggle selection.
@@ -220,7 +262,9 @@
     if (e.target !== box) box.checked = !box.checked;
     mark(box);
 
-    var boxes = Array.prototype.slice.call(scope.querySelectorAll("input.check"));
+    // rowBoxes, not every input.check in the scope: the header's select-all is one too,
+    // and including it would put a control inside the shift-click range.
+    var boxes = rowBoxes(scope);
     if (e.shiftKey && lastChecked && boxes.indexOf(lastChecked) !== -1) {
       var a = boxes.indexOf(lastChecked);
       var b = boxes.indexOf(box);
@@ -237,7 +281,16 @@
   });
 
   document.addEventListener("change", function (e) {
-    var box = e.target.closest("input.check");
-    if (box) mark(box);
+    var box = e.target.closest && e.target.closest("input.check");
+    if (!box) return;
+    mark(box);
+    var scope = box.closest("[data-selectable]");
+    if (scope) syncSelectAll(scope);
   });
+
+  /* A filter keystroke swaps #file-rows for a fresh, wholly unselected set while the
+     header box is left standing outside it — so without this it stays ticked over rows
+     that are not. */
+  document.body.addEventListener("htmx:afterSwap", syncEverySelectAll);
+  document.addEventListener("DOMContentLoaded", syncEverySelectAll);
 })();

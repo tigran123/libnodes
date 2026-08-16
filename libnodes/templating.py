@@ -13,6 +13,7 @@ from pathlib import Path
 from fastapi.templating import Jinja2Templates
 
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 _UNITS = ["B", "KB", "MB", "GB", "TB", "PB"]
 _SHORT_UNITS = ["B", "K", "M", "G", "T", "P"]
@@ -116,6 +117,30 @@ def isodate(ts: float | None) -> str:
     return time.strftime("%Y-%m-%d", time.localtime(ts))
 
 
+def asset(name: str) -> str:
+    """`/static/app.js?v=1a2b3c` — the stamp is the file's mtime, so a deploy changes the
+    URL and the browser has no cached copy to serve.
+
+    Without it a deployed CSS or JS change is simply invisible for a while. StaticFiles
+    sends an ETag and a Last-Modified but no Cache-Control, so the browser falls back to
+    heuristic freshness — around 10% of the file's age — and serves its copy *without
+    revalidating*. Measured: an app.js last modified 23:36 the previous day was still
+    being used at 12:34, over an hour after the deploy that replaced it, because 10% of
+    its twelve-hour age is 74 minutes. The page HTML is dynamic and never cached, so the
+    symptom is markup from the new version driven by script from the old one — which
+    reads exactly like a fix that did not work.
+
+    Stat per call rather than once at import: it costs microseconds against five small
+    files, and it means `--reload` picks up an edited stylesheet without a restart.
+    """
+    try:
+        stamp = int((STATIC_DIR / name).stat().st_mtime)
+    except OSError:
+        # A missing file is the mount's problem to report, not this helper's.
+        return f"/static/{name}"
+    return f"/static/{name}?v={stamp:x}"
+
+
 def build_templates() -> Jinja2Templates:
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     env = templates.env
@@ -131,6 +156,9 @@ def build_templates() -> Jinja2Templates:
         clock=clock,
         isodate=isodate,
     )
+    # A global, not a filter: it is a URL builder, not a formatter, and base.html calls it
+    # as asset('app.js').
+    env.globals["asset"] = asset
     return templates
 
 
@@ -140,6 +168,7 @@ templates = build_templates()
 __all__ = [
     "templates",
     "build_templates",
+    "asset",
     "hsize",
     "hsize_short",
     "commafy",

@@ -5,8 +5,11 @@
   <span class="mono t-dim">{{ sel_bytes|hsize }} · {{ sel_files|commafy }} files</span>
 
   <div class="selbar-actions">
+    {# dry_run=true is what makes this a dry run: the picker reads it, titles itself
+       accordingly and points its button at /jobs/dry-run. Without it this button opened
+       an ordinary push dialog and would have queued a real transfer. #}
     <button class="btn" type="button"
-            hx-get="/jobs/picker?from=selection"
+            hx-get="/jobs/picker?dry_run=true"
             hx-include="#sel-form"
             hx-target="#notices"
             hx-swap="beforeend">Dry run…</button>

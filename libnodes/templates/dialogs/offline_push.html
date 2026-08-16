@@ -49,12 +49,15 @@
       {# Cancel is purely client-side: there is nothing on the server to undo. #}
       <button class="btn" type="button"
               onclick="document.getElementById('offline-dialog').remove()">Cancel</button>
+      {# Close AFTER the response lands — see the note on the same button in picker.html.
+         In onclick this detaches the button before htmx's listener runs, and htmx 2 drops
+         the request in silence. #}
       <button class="btn btn-primary" type="button"
               hx-post="/jobs"
               hx-include="#offline-form"
               hx-target="#notices" hx-swap="beforeend"
               hx-disabled-elt="this"
-              onclick="document.getElementById('offline-dialog').remove()">Queue push</button>
+              hx-on::after-request="this.closest('.backdrop').remove()">Queue push</button>
     </div>
 
   </div>

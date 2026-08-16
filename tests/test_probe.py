@@ -269,6 +269,62 @@ def test_df_line_wrapped_device_name_is_skipped():
     assert _parse_df(text) == (30408704 * 1024, 7969472 * 1024, 22439232 * 1024)
 
 
+# --------------------------------------------- the row reports, not guesses --
+
+
+def _row(html: str, device_id: str) -> str:
+    """One row's markup: from its id up to the start of the next row."""
+    parts = html.split('id="node-')
+    return next(p for p in parts if p.startswith(device_id + '"'))
+
+
+async def test_a_sleeping_row_prints_the_error_it_actually_got(client, app):
+    """The row used to print a fixed "sshd asleep" for every sleeping device, throwing
+    the measurement away — so a refused connection on port 2222 was reported as a state
+    the probe never established. `sleeping` means only "the connect failed and it
+    answered within sleeping_window"; the error is the only thing that says why."""
+    lib = app.state.lib
+    lib.probe._slot("kobo").reach = Reachability(
+        state="sleeping",
+        last_ok=time.time(),
+        checked_at=time.time(),
+        error="connection refused",
+    )
+    row = _row((await client.get("/devices/rows")).text, "kobo")
+    assert "connection refused" in row
+    assert "sshd asleep" not in row
+    # The reading survives, as a reading: in the tooltip, not asserted as the state.
+    assert "Termux&#39;s sshd stops" in row or "Termux's sshd stops" in row
+
+
+async def test_a_sleeping_timeout_does_not_blame_sshd(client, app):
+    """The case the fixed string got wrong. A refused connection means the host is up
+    with nothing on the port; a timeout means nothing answered at all, so the device is
+    gone rather than its sshd — and "sshd asleep" sent you looking in the wrong place."""
+    lib = app.state.lib
+    lib.probe._slot("kobo").reach = Reachability(
+        state="sleeping",
+        last_ok=time.time(),
+        checked_at=time.time(),
+        error="timed out",
+    )
+    row = _row((await client.get("/devices/rows")).text, "kobo")
+    assert "timed out" in row
+    assert "sshd" not in row
+    assert "nothing answered at all" in row
+
+
+async def test_an_offline_row_still_prints_its_error(client, app):
+    """The offline branch already did this; the fix must not have cost it."""
+    lib = app.state.lib
+    lib.probe._slot("kobo").reach = Reachability(
+        state="offline", checked_at=time.time(), error="no route to host"
+    )
+    row = _row((await client.get("/devices/rows")).text, "kobo")
+    assert "no route to host" in row
+    assert "t-err" in row
+
+
 # ------------------------------------------------ actions follow the dot --
 
 

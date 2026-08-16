@@ -529,6 +529,12 @@ async def test_connection_test_reports_failure_legibly(client, app):
     assert 'id="test-result"' in r.text
     assert "getElementById('test-result').remove()" in r.text
 
+    # The handler re-probes on the way here, so the row rides along out of band. Without
+    # it the STORAGE column behind the dialog keeps the figure from the last poll for up
+    # to 10s, contradicting the df the dialog is showing.
+    assert 'hx-swap-oob="true"' in r.text
+    assert 'id="node-kobo"' in r.text
+
 
 async def test_no_action_is_styled_as_primary(client):
     """Full Sync moves 250 GB; it should not be the most inviting button on screen."""

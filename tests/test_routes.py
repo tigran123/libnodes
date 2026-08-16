@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
+
+from libnodes.templating import TEMPLATES_DIR
 
 FRAGMENTS = [
     "/devices/rows",
@@ -46,6 +50,31 @@ async def test_fragments_render_standalone(client, path):
     assert r.status_code == 200
     assert "<html" not in r.text.lower()
     assert "<!doctype" not in r.text.lower()
+
+
+#: The five verbs that make htmx issue a request. `hx-on`, `hx-target` and friends do not.
+HX_REQUEST_ATTRS = ("hx-get=", "hx-post=", "hx-put=", "hx-patch=", "hx-delete=")
+
+
+def test_no_button_removes_itself_while_asking_for_something():
+    """A button may not both issue a request and tear its own dialog out in `onclick`.
+
+    An inline handler is registered when the fragment is parsed and htmx's when it
+    processes the node, so `onclick` always runs first. htmx 2 then drops the request
+    without a sound — `getRootNode() === document` is false for a detached element, and it
+    is checked both in the trigger handler and again in issueAjaxRequest. The picker's
+    Push button did nothing at all: no request, no error, the dialog just vanished. Close
+    with `hx-on::after-request` instead, which is also the only order under which the
+    reply is visible (.backdrop is z-index 60, .notices 50).
+    """
+    offenders = []
+    for template in sorted(TEMPLATES_DIR.rglob("*.html")):
+        for tag in re.findall(r"<button\b[^>]*>", template.read_text(encoding="utf-8")):
+            if "onclick=" not in tag or "remove(" not in tag:
+                continue
+            if any(attr in tag for attr in HX_REQUEST_ATTRS):
+                offenders.append(f"{template.relative_to(TEMPLATES_DIR)}: {tag}")
+    assert not offenders, "\n".join(offenders)
 
 
 async def test_devices_view_lists_configured_devices(client):
@@ -92,6 +121,56 @@ async def test_selection_bar_appears_only_with_a_selection(client):
         "/lib/selection", params={"path": ["Science/Physics/Landau.pdf"]}
     )
     assert "1 item selected" in picked.text
+
+
+@pytest.mark.parametrize("name", ["app.js", "app.css", "htmx.min.js", "fonts.css"])
+async def test_static_urls_change_when_the_file_does(client, name):
+    """StaticFiles sends no Cache-Control, so a browser caches these by heuristic
+    freshness — ~10% of the file's age — and does not revalidate. A select-all deployed
+    at 12:26 was still running the previous day's app.js at 12:34: new markup, old
+    script, indistinguishable from a fix that did not work."""
+    r = await client.get("/library")
+    assert f"/static/{name}?v=" in r.text, f"{name} is linked without a cache stamp"
+
+
+async def test_the_asset_stamp_follows_the_file(tmp_path, monkeypatch):
+    """The stamp has to be derived from the file, or it is decoration."""
+    from libnodes import templating
+
+    target = tmp_path / "app.js"
+    target.write_text("//")
+    monkeypatch.setattr(templating, "STATIC_DIR", tmp_path)
+
+    first = templating.asset("app.js")
+    import os
+
+    os.utime(target, (0, 0))
+    assert templating.asset("app.js") != first
+
+
+async def test_the_header_offers_a_select_all(client):
+    """Dry-running the whole library meant ticking all 18 top-level directories by hand."""
+    r = await client.get("/lib/pane")
+    head = r.text.split('<div id="file-rows">')[0]
+    assert "data-select-all" in head, "no select-all in the table header"
+
+
+async def test_the_select_all_box_is_not_part_of_the_selection(client):
+    """It sits inside #sel-form, and the selection bar is only an hx-include of the
+    checked boxes there — a name on it would post a phantom path with every push."""
+    r = await client.get("/lib/pane")
+    head = r.text.split('<div id="file-rows">')[0]
+    box = head[head.index("data-select-all") - 200 : head.index("data-select-all") + 200]
+    assert "name=" not in box, f"select-all is serialised into the selection: {box}"
+
+
+async def test_select_all_is_wired_to_the_rows_the_table_is_showing(client):
+    """The JS pairs `[data-select-all]` with the `.trow input.check` boxes inside the
+    enclosing `[data-selectable]`. All three have to be present for it to do anything."""
+    r = await client.get("/lib/pane")
+    assert "data-selectable" in r.text
+    assert 'class="trow file-grid"' in r.text
+    assert 'class="check" type="checkbox" name="path"' in r.text
 
 
 async def test_any_format_can_be_pushed_to_any_device(client):

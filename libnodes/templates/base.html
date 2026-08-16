@@ -6,12 +6,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}LibNodes{% endblock %}</title>
-<link rel="stylesheet" href="/static/fonts.css">
-<link rel="stylesheet" href="/static/app.css">
+{# asset() stamps each URL with the file's mtime. Plain /static/app.css is cached by
+   heuristic freshness — no Cache-Control is sent — so a deployed change stays invisible
+   for ~10% of the file's age. See the docstring in templating.py. #}
+<link rel="stylesheet" href="{{ asset('fonts.css') }}">
+<link rel="stylesheet" href="{{ asset('app.css') }}">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%239a8ce6'/></svg>">
-<script src="/static/htmx.min.js" defer></script>
-<script src="/static/htmx-ext-sse.js" defer></script>
-<script src="/static/app.js" defer></script>
+<script src="{{ asset('htmx.min.js') }}" defer></script>
+<script src="{{ asset('htmx-ext-sse.js') }}" defer></script>
+<script src="{{ asset('app.js') }}" defer></script>
 </head>
 <body>
 <div class="shell" id="shell">

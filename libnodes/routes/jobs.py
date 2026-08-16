@@ -10,7 +10,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from ..deps import base_context, short_path, state
 from ..host import host_stats
-from ..jobs import JobEvent
+from ..jobs import JobEvent, full_sync_sources
 from ..state import AppState
 from ..templating import templates
 
@@ -37,6 +37,33 @@ def dock_context(app: AppState) -> dict:
     }
 
 
+def source_label(app: AppState):
+    """Build the Jobs table's SOURCE renderer.
+
+    A selection covering every top-level directory *is* the library, and saying `/Books`
+    beats naming one arbitrary member and counting the rest. The cell used to read
+    `/Books/Art +16 (full)`, where `Art` was only alphabetically first and `(full)` was
+    `len(sources) > 3` — a heuristic that called any four directories the whole library
+    and, on a genuine full push, still printed a directory name it had picked at random.
+
+    Returns a closure so the one scandir behind `full_sync_sources` happens per render
+    rather than per row. It is a single level of the root, not a library walk.
+    """
+    root = str(app.settings.library_root)
+    whole = set(full_sync_sources(app.settings))
+
+    def render(job) -> str:
+        sources = [s for s in job.sources if s]
+        # No sources, or every top-level directory: either way, the library itself.
+        if not sources or (whole and set(sources) >= whole):
+            return root
+        if len(sources) == 1:
+            return f"{root}/{sources[0]}"
+        return f"{root}/{sources[0]} +{len(sources) - 1}"
+
+    return render
+
+
 def jobs_context(request: Request) -> dict:
     app = state(request)
     running, pending = app.jobs.counts()
@@ -50,6 +77,7 @@ def jobs_context(request: Request) -> dict:
             "host": host_stats(app.settings.library_root),
             "concurrency": app.settings.concurrency,
             "defaults": app.devices.config.defaults,
+            "source_label": source_label(app),
         }
     )
     return ctx
@@ -228,12 +256,12 @@ async def picker(
             total += entry.size
 
     # FAT32 cannot hold a file of 4 GiB or more. Say so before the transfer fails
-    # halfway rather than after.
-    biggest = 0
-    for raw in wanted:
-        entry = app.index.entry(raw)
-        if entry is not None:
-            biggest = max(biggest, entry.size)
+    # halfway rather than after. Asked of the index rather than summed from the entries
+    # above, because `Entry.size` on a directory is its recursive total: selecting the
+    # library's 17 top-level directories claimed a largest file of 68.7 GB — `Science`
+    # whole — and warned about a 4 GiB limit the biggest real file (786 MB) is nowhere
+    # near.
+    biggest = app.index.max_file_size(wanted)
 
     ctx.update(
         {
@@ -271,6 +299,17 @@ async def start_job(request: Request, job_id: int):
     """Run a held job now, regardless of whether the node has answered yet."""
     app = state(request)
     app.jobs.start_now(job_id)
+    return templates.TemplateResponse(request, "job_rows.html", jobs_context(request))
+
+
+# Must stay above `/jobs/{job_id}`: FastAPI matches routes in declaration order, so below
+# it this literal is swallowed by the parameterised one and every Clear finished is a 422
+# on int("finished") -- a button that silently does nothing.
+@router.delete("/jobs/finished", response_class=HTMLResponse)
+async def clear_finished(request: Request):
+    app = state(request)
+    app.jobs.dismiss_finished()
+    app.store.clear_finished()
     return templates.TemplateResponse(request, "job_rows.html", jobs_context(request))
 
 
@@ -344,14 +383,6 @@ async def job_log(request: Request, job_id: int):
     if not path.exists():
         return PlainTextResponse(f"no log for job {job_id}", status_code=404)
     return PlainTextResponse(path.read_text(encoding="utf-8", errors="replace"))
-
-
-@router.delete("/jobs/finished", response_class=HTMLResponse)
-async def clear_finished(request: Request):
-    app = state(request)
-    app.jobs.dismiss_finished()
-    app.store.clear_finished()
-    return templates.TemplateResponse(request, "job_rows.html", jobs_context(request))
 
 
 # ---------------------------------------------------------------------- SSE --

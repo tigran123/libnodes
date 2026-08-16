@@ -37,6 +37,10 @@ def base_context(request: Request, active: str) -> dict:
         "library_root": str(app.settings.library_root),
         "settings": app.settings,
         "devices": app.devices.config.devices,
+        # Beside `devices` because every toast needs it: fragments/queued.html looks a
+        # job's device up by id, and without this it fell back to the raw yaml id — a
+        # dry run to "OLD LG G4 (Android 6)" announced itself as `lg2`.
+        "by_id": app.devices.config.by_id,
     }
     # Namespaced under `dock` rather than merged: the Jobs page has its own `jobs`
     # variable (the whole history table), which would otherwise clobber the dock's

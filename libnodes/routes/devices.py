@@ -17,9 +17,33 @@ from ..scan import scan_argv
 from ..jobs import Job, build_argv, full_sync_sources, hints_for_text
 from ..models import Device
 from ..state import AppState
-from ..templating import templates
+from ..templating import reltime, templates
 
 router = APIRouter()
+
+
+#: What a failed connect implies, keyed on the string `_describe` produced. `sleeping`
+#: says only "the connect failed and the node answered within sleeping_window" — it
+#: carries no diagnosis of its own, so any reading of one has to come from the error.
+#: Mirrors the `connection refused` entry in jobs.py's `_HINTS`, which is what the
+#: connection-test dialog shows for the same failure.
+_REACH_NOTES: list[tuple[str, str]] = [
+    (
+        "connection refused",
+        "the host answered but nothing is listening on that port — Termux's sshd stops "
+        "when the device sleeps",
+    ),
+    (
+        "timed out",
+        "nothing answered at all — the device is off, off this network, or asleep below "
+        "the network layer",
+    ),
+    (
+        "no route to host",
+        "the host is not on this network; a DHCP lease may have moved it",
+    ),
+    ("network unreachable", "this host has no route to that network"),
+]
 
 
 @dataclass
@@ -70,6 +94,23 @@ class DeviceView:
         """Green. Every device action needs this — offering them otherwise just
         produces a failure the user could have been spared."""
         return self.state == "online"
+
+    @property
+    def reach_note(self) -> str:
+        """The tooltip behind a failed row: a reading of the error, and when it last
+        answered. A reading, not the fact — the fact is the error itself, which the row
+        prints. Here rather than in the template because it interprets, and templates
+        only format."""
+        if self.online or not self.reach.error:
+            return ""
+        error = self.reach.error.lower()
+        note = next((n for needle, n in _REACH_NOTES if needle in error), "")
+        seen = (
+            f"last answered {reltime(self.reach.last_ok)}"
+            if self.reach.last_ok
+            else "has never answered"
+        )
+        return f"{note} · {seen}" if note else seen
 
     @property
     def capacity(self) -> int | None:
@@ -337,6 +378,10 @@ async def device_test(request: Request, device_id: str):
             "elapsed": elapsed,
             "summary": _test_summary(out) if code == 0 else None,
             "hints": hints_for_text(f"{out}\n{err}", code if code is not None else 255),
+            # Built after the re-probe above, so the row the dialog carries out of band
+            # shows the storage this test just measured rather than the last poll's.
+            "node": _one(request, device_id),
+            "oob": True,
         }
     )
     return templates.TemplateResponse(request, "dialogs/test_result.html", ctx)

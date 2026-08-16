@@ -13,7 +13,9 @@
 
     <div data-label="Source" class="mono nowrap" title="{{ job.sources|join(', ') }}">
       {% if job.adopt %}<span class="badge">ADOPT</span> {% endif %}{% if job.dry_run %}<span class="badge badge-warn">DRY RUN</span> {% endif %}
-      {{ library_root }}/{{ job.label }}{{ ' (full)' if job.sources|length > 3 else '' }}
+      {# source_label, not job.label: the label is a caption ("(full library)", "Art +16")
+         and this column is the source path. The full list is in the cell's title. #}
+      {{ source_label(job) }}
     </div>
 
     {# Files sent out of files selected. Both are files-only counts from the index, so

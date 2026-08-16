@@ -1390,6 +1390,18 @@ button.tree-caret:hover {
   border-color: var(--accent);
 }
 
+/* Some rows selected, not all — the header box only. appearance:none leaves the native
+   indeterminate mark undrawn, and without one a part-selection is indistinguishable from
+   an empty one. A dash rather than the checked state's solid fill, so the two read apart
+   at 11px. */
+.check:indeterminate {
+  border-color: var(--accent);
+  background-image: linear-gradient(var(--accent), var(--accent));
+  background-size: 5px 1px;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
 /* display:block is load-bearing: text-overflow:ellipsis has no effect on an inline box,
    so without it a long filename overflows its cell and prints over the FORMAT column. */
 .file-name {

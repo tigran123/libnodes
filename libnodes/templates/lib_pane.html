@@ -73,7 +73,16 @@
             hx-include="#lib-params">
         <div class="panel">
           <div class="thead file-grid">
-            <div></div>
+            {# Deliberately unnamed: it sits inside #sel-form, and the selection bar is
+               nothing but an hx-include of the checked boxes — a name here would post a
+               phantom `path=on` alongside the real ones. It owns the rows currently in
+               the table, so with a filter active it selects the filtered set: what you
+               can see, which is the only set it can honestly claim. #}
+            <div class="cell-check">
+              <input class="check" type="checkbox" data-select-all
+                     aria-label="Select every row below"
+                     title="Select every row below">
+            </div>
             <div>Name</div>
             <div>Format</div>
             <div class="cell-r">Size</div>

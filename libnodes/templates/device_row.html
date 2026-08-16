@@ -1,7 +1,12 @@
-{# One device row. Renders standalone: /device/{id}/row swaps it as outerHTML. #}
+{# One device row. Renders standalone: /device/{id}/row swaps it as outerHTML.
+
+   `oob` lets a response whose real payload is something else — the Test dialog — carry a
+   refreshed row along with it, matching the flag file_rows.html uses for its counter.
+   Undefined in the row loops, and an undefined name is falsy, so they are unaffected. #}
 <div class="trow device-grid {{ node.row_class }}"
      id="node-{{ node.device.id }}"
-     data-node="{{ node.device.id }}">
+     data-node="{{ node.device.id }}"
+     {% if oob %}hx-swap-oob="true"{% endif %}>
 
   <div data-label="Device">
     <span class="node-name">
@@ -54,10 +59,16 @@
     {% else %}
       {# Every action behind this menu needs the device to answer, so it is offered
          only when the dot is green. Retry re-probes and brings it back. #}
-      {% if node.offline %}
-        <span class="mono t-err nowrap">{{ node.reach.error or 'unreachable' }}</span>
-      {% elif node.sleeping %}
-        <span class="mono t-warn nowrap">sshd asleep</span>
+      {# Print what the connect actually reported, in both states. `sleeping` means only
+         "it failed and this node answered within the last half hour" — it carries no
+         diagnosis, so the old fixed "sshd asleep" invented one: fair for a refused
+         connection (the host is up, Termux's sshd stops with the screen), plainly wrong
+         for a timeout, where nothing answered at all and it is the device that is gone,
+         not its sshd. The dot and the colour already say which state this is; the text
+         says what happened, and the tooltip carries the reading. #}
+      {% if node.offline or node.sleeping %}
+        <span class="mono {{ 't-err' if node.offline else 't-warn' }} nowrap"
+              title="{{ node.reach_note }}">{{ node.reach.error or 'unreachable' }}</span>
       {% endif %}
 
       {# Test sits in the row rather than behind Actions because it is the only action

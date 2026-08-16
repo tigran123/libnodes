@@ -48,12 +48,20 @@
     <div class="dialog-foot">
       <button class="btn" type="button"
               onclick="document.getElementById('device-picker').remove()">Cancel</button>
+      {# Close AFTER the response lands, never in onclick. An inline handler is registered
+         when the fragment is parsed and htmx's when it processes the node, so onclick runs
+         first and detaches this button along with #push-form — and htmx 2 silently drops a
+         request whose element has left the document (`getRootNode() === document`). No
+         request, no console error: the dialog just vanished. Closing first is wrong for the
+         reply too — .backdrop is z-index 60 over .notices' 50, so the toast would land
+         behind it. `closest` rather than the id: the row's ? and ⋯ can each put a
+         #device-picker in #notices, and an id lookup would close the wrong one. #}
       <button class="btn btn-primary" type="button"
               hx-post="{{ '/jobs/dry-run' if dry_run else '/jobs' }}"
               hx-include="#push-form"
               hx-target="#notices" hx-swap="beforeend"
               hx-disabled-elt="this"
-              onclick="document.getElementById('device-picker').remove()">
+              hx-on::after-request="this.closest('.backdrop').remove()">
         {{ 'Dry run' if dry_run else 'Push' }}
       </button>
     </div>

@@ -9,10 +9,12 @@
       <span class="card-title">{{ node.device.name }}</span>
       {% if node.state == 'syncing' %}
         <span class="badge badge-accent">{{ '%.0f'|format(node.job.pct) }}%</span>
+      {# The badge names the state, which is all it can honestly do in this space; the
+         card has no room for the error, so it goes in the tooltip rather than nowhere. #}
       {% elif node.offline %}
-        <span class="badge badge-err">OFFLINE</span>
+        <span class="badge badge-err" title="{{ node.reach.error }}: {{ node.reach_note }}">OFFLINE</span>
       {% elif node.sleeping %}
-        <span class="badge badge-warn">ASLEEP</span>
+        <span class="badge badge-warn" title="{{ node.reach.error }}: {{ node.reach_note }}">ASLEEP</span>
       {% else %}
         <span class="badge">{{ node.device.type|upper }}</span>
       {% endif %}

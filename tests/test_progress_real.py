@@ -268,3 +268,67 @@ async def test_fat32_size_limit_is_flagged_before_pushing(client, app, index, se
 async def test_no_size_warning_for_a_filesystem_without_a_limit(client, app):
     r = await client.get("/jobs/picker", params={"path": "Science/Physics"})
     assert "cannot hold a file over" not in r.text
+
+
+async def test_a_directory_selection_is_measured_by_its_largest_file(
+    client, app, settings
+):
+    """The regression: `Entry.size` on a directory is its recursive total, so pushing
+    directories warned about FAT32 using the size of the whole subtree.
+
+    On the real library that read "the largest here is 68.7 GB" — `Science` entire —
+    against a biggest actual file of 786 MB. Selecting whole directories is the normal
+    case, so the warning was permanently, confidently wrong.
+
+    Two 3 GiB files is the shape that separates the two readings: the directory totals
+    6 GiB, over FAT32's limit, while no single file comes near it. Sparse, so this costs
+    no disk.
+    """
+    import os
+
+    big = settings.library_root / "Fiction" / "Bulky"
+    big.mkdir()
+    for name in ("a.bin", "b.bin"):
+        path = big / name
+        path.write_bytes(b"")
+        os.truncate(path, 3 * 1024**3)
+    app.state.lib.index.reindex()
+
+    entry = app.state.lib.index.entry("Fiction/Bulky")
+    assert entry.size > 4 * 1024**3, "fixture does not reproduce the bug's precondition"
+
+    r = await client.get("/jobs/picker", params={"path": "Fiction/Bulky"})
+    assert r.status_code == 200
+    assert "cannot hold a file over" not in r.text, "warned on the directory's total"
+
+    # ...and the warning still fires for a file that genuinely cannot land.
+    os.truncate(big / "a.bin", 5 * 1024**3)
+    app.state.lib.index.reindex()
+    r = await client.get("/jobs/picker", params={"path": "Fiction/Bulky"})
+    assert "cannot hold a file over" in r.text, "lost the warning it exists to give"
+
+
+async def test_the_index_measures_the_largest_file_not_the_subtree(index):
+    """The arithmetic itself, away from the dialog: the largest file anywhere under
+    `Science`, including its subdirectories, and never the subtree's total."""
+    def every_file(path):
+        for entry in index.children(path, sort="name"):
+            if entry.is_dir:
+                yield from every_file(entry.path)
+            else:
+                yield entry.size
+
+    expected = max(every_file("Science"))
+
+    assert index.max_file_size(["Science"]) == expected
+    assert index.max_file_size(["Science"]) < index.entry("Science").size
+
+
+async def test_the_largest_file_query_spans_every_selected_path(index):
+    """One job per device, but one warning for the whole selection — so the query has to
+    consider all of the chosen paths, not just the first."""
+    physics = index.max_file_size(["Science/Physics"])
+    chess = index.max_file_size(["Science/Chess"])
+    both = index.max_file_size(["Science/Chess", "Science/Physics"])
+    assert both == max(physics, chess)
+    assert index.max_file_size([]) == 0

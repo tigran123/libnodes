@@ -24,3 +24,9 @@
 
   </div>
 </div>
+
+{# The handler re-probed on the way here, so the row's df figures are fresh — but the row
+   is on the page behind this dialog and would otherwise wait up to 10s for the table's
+   own poll, showing the old free space beside a dialog that has just contradicted it.
+   Top-level, because htmx only scans the response's own children for hx-swap-oob. #}
+{% if node %}{% include "device_row.html" %}{% endif %}
