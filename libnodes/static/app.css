@@ -1105,7 +1105,13 @@ ul {
     minmax(96px, 200px)
     minmax(92px, 120px)
     minmax(56px, 132px)
-    minmax(200px, 1fr);
+    /* 320px, not 200: the floor has to clear this cell's widest content on one line --
+       "connection refused" (~120px) plus Test, Retry and Actions plus gaps, ~295px -- or
+       the buttons wrap onto a second line while the columns to their left still have
+       slack they cannot give up, a grid track being capped at its own max. Measured, the
+       track hit the old 200px floor at 1450px of viewport and started wrapping around
+       1550px. Everything above the floor is still 1fr, so a wide screen is unchanged. */
+    minmax(320px, 1fr);
 }
 
 .node-name {
@@ -2252,7 +2258,7 @@ button.tree-caret:hover {
 /* Each table stacks into cards at its own width, because each has a different amount of
    room. The Library keeps a 300px tree beside its table, so at the same viewport its panel
    is ~300px narrower than the Devices one and it runs out first: measured, Library clips
-   its PUSH column at 1200px while Devices is still clean at 1160px.
+   its PUSH column at 1200px while Devices is still clean at 1200px.
 
    Below these widths the row was simply wider than .panel, and .panel's overflow: hidden
    ate whatever hung off the right -- at 1200px of viewport the Devices table lost LAST
@@ -2305,7 +2311,7 @@ button.tree-caret:hover {
   }
 }
 
-@media (max-width: 1150px) {
+@media (max-width: 1200px) {
   .thead.device-grid, .thead.jobs-grid {
     display: none;
   }
