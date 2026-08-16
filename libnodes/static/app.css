@@ -1046,7 +1046,20 @@ ul {
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  /* So the reachability message drops onto its own line rather than pushing the buttons
+     out of the cell when the column is tight. */
+  flex-wrap: wrap;
   gap: 6px;
+}
+
+/* The reachability message is short and diagnostic -- "connection refused" is the whole
+   of it -- so it must not be the thing that gives way, and it was: as the only shrinkable
+   item in the cell it absorbed every pixel of squeeze. Measured at a 1500px viewport,
+   with the panel 95px wider than its content needed, "timed out" was still being given
+   43px of the 62px it wanted and elided to "time…"; by 1300px it was down to zero. The
+   buttons are fixed-width text, so pinning this one makes the wrap above do the work. */
+.cell-actions .nowrap {
+  flex-shrink: 0;
 }
 
 /* Same reason as .file-name: ellipsis needs a block-level box. */
@@ -1074,8 +1087,25 @@ ul {
 
 /* --------------------------------------------------------------- devices -- */
 
+/* minmax, not bare px. A fixed track cannot compress, so the row simply grew wider than
+   .panel and .panel's overflow: hidden swallowed whatever hung off the right -- STORAGE,
+   LAST SYNC and ACTIONS disappeared with nothing on screen to say they existed, and the
+   table looked like it had four columns. Measured: the row needed 1005px, and from 1250px
+   of viewport down to the 972px stacking breakpoint it did not get it, so there was a
+   ~280px band where the page quietly lied.
+
+   The max of each track is the design's original width, so a wide screen is unchanged.
+   The min is where the column stops shrinking; below the sum of them the stacked layout
+   takes over, which is why that breakpoint and these numbers have to move together. */
 .device-grid {
-  grid-template-columns: 210px 96px 176px 200px 120px 132px 1fr;
+  grid-template-columns:
+    minmax(150px, 210px)
+    minmax(64px, 96px)
+    minmax(118px, 176px)
+    minmax(96px, 200px)
+    minmax(92px, 120px)
+    minmax(56px, 132px)
+    minmax(200px, 1fr);
 }
 
 .node-name {
@@ -1394,8 +1424,17 @@ button.tree-caret:hover {
 
 /* File table -------------------------------------------------------------- */
 
+/* minmax for the same reason as .device-grid. The checkbox column stays fixed: it holds
+   an 11px box and has nothing to give. */
 .file-grid {
-  grid-template-columns: 26px 1fr 76px 84px 108px 150px 190px;
+  grid-template-columns:
+    26px
+    minmax(140px, 1fr)
+    minmax(60px, 76px)
+    minmax(64px, 84px)
+    minmax(84px, 108px)
+    minmax(100px, 150px)
+    minmax(140px, 190px);
 }
 
 .file-grid > * {
@@ -1496,8 +1535,17 @@ button.tree-caret:hover {
 
 /* ------------------------------------------------------------------ jobs -- */
 
+/* minmax for the same reason as .device-grid: fixed tracks cannot compress, so the row
+   overflowed .panel and the overflow was clipped away in silence. */
 .jobs-grid {
-  grid-template-columns: 76px 168px 1fr 100px 108px 128px 132px;
+  grid-template-columns:
+    minmax(56px, 76px)
+    minmax(110px, 168px)
+    minmax(140px, 1fr)
+    minmax(70px, 100px)
+    minmax(72px, 108px)
+    minmax(80px, 128px)
+    minmax(100px, 132px);
 }
 
 .job-id {
@@ -2201,6 +2249,103 @@ button.tree-caret:hover {
   display: none;
 }
 
+/* Each table stacks into cards at its own width, because each has a different amount of
+   room. The Library keeps a 300px tree beside its table, so at the same viewport its panel
+   is ~300px narrower than the Devices one and it runs out first: measured, Library clips
+   its PUSH column at 1200px while Devices is still clean at 1160px.
+
+   Below these widths the row was simply wider than .panel, and .panel's overflow: hidden
+   ate whatever hung off the right -- at 1200px of viewport the Devices table lost LAST
+   SYNC and ACTIONS, at 1100px STORAGE went too, and nothing on screen said so. The table
+   just looked as though it had four columns.
+
+   The numbers are where each grid's minima stop fitting its panel, found with a headless
+   browser, so they must be re-measured if a column's min changes. Only one of these
+   tables is ever on screen at a time, which is why scoping by grid class is enough and
+   the three can differ. */
+
+@media (max-width: 1280px) {
+  .thead.file-grid {
+    display: none;
+  }
+
+  .trow.file-grid {
+    grid-template-columns: 1fr;
+    padding: 4px 0 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .trow.file-grid > * {
+    padding: 5px 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 0;
+  }
+
+  .trow.file-grid > [data-label]::before {
+    content: attr(data-label);
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--muted);
+    width: 92px;
+    flex-shrink: 0;
+  }
+
+  .trow.file-grid .cell-r, .trow.file-grid .cell-actions, .trow.file-grid .push-cell {
+    justify-content: flex-start;
+    text-align: left;
+  }
+
+  .trow.file-grid .push-cell {
+    opacity: 1;
+  }
+}
+
+@media (max-width: 1150px) {
+  .thead.device-grid, .thead.jobs-grid {
+    display: none;
+  }
+
+  .trow.device-grid, .trow.jobs-grid {
+    grid-template-columns: 1fr;
+    padding: 4px 0 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .trow.device-grid > *, .trow.jobs-grid > * {
+    padding: 5px 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 0;
+  }
+
+  .trow.device-grid > [data-label]::before, .trow.jobs-grid > [data-label]::before {
+    content: attr(data-label);
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--muted);
+    width: 92px;
+    flex-shrink: 0;
+  }
+
+  .trow.device-grid .cell-r, .trow.device-grid .cell-actions, .trow.device-grid .push-cell, .trow.jobs-grid .cell-r, .trow.jobs-grid .cell-actions, .trow.jobs-grid .push-cell {
+    justify-content: flex-start;
+    text-align: left;
+  }
+
+  .trow.device-grid .push-cell, .trow.jobs-grid .push-cell {
+    opacity: 1;
+  }
+}
+
 /* 972px = the design's 900px breakpoint x --scale. A media query is matched against the
    real viewport and cannot read a custom property, so this one does not follow --scale by
    itself: zoomed content runs out of room at a *wider* viewport than before, and left at
@@ -2228,51 +2373,6 @@ button.tree-caret:hover {
     font-size: 15px;
     color: var(--ink-3);
     padding: 4px 8px;
-  }
-
-  /* Tables become stacked cards: labels move in front of values. */
-  .thead {
-    display: none;
-  }
-
-  .trow,
-  .file-grid,
-  .device-grid,
-  .jobs-grid {
-    grid-template-columns: 1fr;
-    padding: 4px 0 8px;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .trow > * {
-    padding: 5px 12px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-height: 0;
-  }
-
-  .trow > [data-label]::before {
-    content: attr(data-label);
-    font-family: var(--font-mono);
-    font-size: 9.5px;
-    font-weight: 600;
-    letter-spacing: 0.11em;
-    text-transform: uppercase;
-    color: var(--muted);
-    width: 92px;
-    flex-shrink: 0;
-  }
-
-  .cell-r,
-  .cell-actions {
-    justify-content: flex-start;
-    text-align: left;
-  }
-
-  .push-cell {
-    opacity: 1;
-    justify-content: flex-start;
   }
 
   .cards {
