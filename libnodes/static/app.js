@@ -25,7 +25,9 @@
     document.cookie =
       "libnodes_theme=" + (light ? "light" : "dark") + ";path=/;max-age=31536000;samesite=lax";
     document.querySelectorAll("[data-theme-toggle]").forEach(function (btn) {
-      btn.textContent = light ? "◐" : "◑";
+      // The glyph names the mode the next press gives you, so it is the opposite of the
+      // one just applied -- and it must match base.html, which renders the same pair.
+      btn.textContent = light ? "☾" : "☼";
       btn.title = "Switch to " + (light ? "dark" : "light") + " theme";
     });
   });

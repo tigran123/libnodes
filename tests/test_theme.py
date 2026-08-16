@@ -42,6 +42,41 @@ async def test_toggle_is_present_on_every_page(client):
         assert "data-theme-toggle" in r.text, path
 
 
+def test_the_theme_toggle_outranks_btn_on_the_cascade():
+    """`.theme-toggle` and `.btn` have identical specificity, so whichever is written
+    later wins. The toggle's block used to sit ~140 lines *above* `.btn`, which meant its
+    font-size never applied and the button rendered at `.btn`'s 11px -- verified in a real
+    browser before this was fixed. Order is the whole mechanism, so order is what is
+    pinned here."""
+    from pathlib import Path
+
+    css = (
+        Path(__file__).resolve().parent.parent / "libnodes" / "static" / "app.css"
+    ).read_text()
+    btn = css.index("\n.btn {")
+    hover = css.index("\n.btn:hover {")
+    toggle = css.index("\n.theme-toggle {")
+    assert toggle > btn, ".theme-toggle is back above .btn and is inert again"
+    assert css.index("\n.theme-toggle:hover {") > hover
+
+
+def test_the_theme_icon_names_the_mode_you_get():
+    """The glyph is the affordance: in dark you are offered the sun, in light the moon.
+    Rendered server-side and swapped again in app.js, so the two have to agree."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent / "libnodes"
+    base = (root / "templates" / "base.html").read_text()
+    js = (root / "static" / "app.js").read_text()
+
+    assert "'☾' if theme == 'light' else '☼'" in base
+    # Same pair in the client-side swap, and the opposite of the theme just applied.
+    assert 'light ? "☾" : "☼"' in js
+    # Neither glyph has an emoji presentation; U+2600 does, and would have gone colour
+    # on Android without a variation selector.
+    assert "☀" not in base and "☀" not in js
+
+
 async def test_unknown_cookie_value_falls_back_to_dark(client):
     r = await client.get("/devices", cookies={"libnodes_theme": "banana"})
     assert 'data-theme="light"' not in r.text

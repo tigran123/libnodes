@@ -596,11 +596,10 @@ ul {
   border: 0;
 }
 
-.theme-toggle {
-  font-size: 13px;
-  line-height: 1;
-  padding: 5px 8px;
-}
+/* .theme-toggle is styled down with the other .btn variants, not here. A block at this
+   point in the file loses to .btn on the cascade -- same specificity, and .btn comes
+   later -- which is exactly what happened to the font-size: 13px that used to sit here:
+   it never applied, and the button rendered at .btn's 11px like everything else. */
 
 .chip {
   display: inline-flex;
@@ -806,6 +805,30 @@ ul {
 
 .btn-icon {
   padding: 5px 8px;
+}
+
+/* The theme toggle earns more weight than the buttons around it: it is the only control
+   in the topbar whose effect cannot be guessed from its surroundings, and at .btn's 11px
+   inside a border it read as chrome and went unfound. Borderless so the glyph itself is
+   the target, and half again the size of the text beside it so it carries.
+ *
+ * Must stay AFTER .btn and .btn:hover. An identical block higher up the file lost the
+ * cascade to .btn on both count and order, so its font-size was inert for as long as it
+ * existed -- see the note where it used to be.
+ *
+ * ☾ / ☼ rather than ◐ / ◑ because the icon should name the mode you get, not the one you
+ * are in, and because neither has an emoji presentation: U+2600 would have rendered as a
+ * colour emoji on Android without a variation selector to suppress it. */
+.theme-toggle {
+  font-size: 17px;
+  line-height: 1;
+  padding: 1px 7px;
+  border-color: transparent;
+  color: var(--ink-2);
+}
+
+.theme-toggle:hover {
+  color: var(--accent-hi);
 }
 
 /* Segmented control ------------------------------------------------------- */
@@ -2282,12 +2305,41 @@ button.tree-caret:hover {
     gap: 8px;
   }
 
+
+  /* .topbar-right is flex-shrink: 0 at every width, so on a phone it overflowed the bar
+     rather than squeezing, and the bar clipped its last child -- the theme toggle, which
+     was therefore unreachable on mobile with no sign it existed. Measured on a 412px
+     viewport: the toggle ended 3px past the bar's right edge, and 35px past it once the
+     UI was scaled up, which is what made a long-standing 3px clip obvious.
+     The chips are the informational part and give way; the controls never do. */
+  .topbar-right {
+    flex-shrink: 1;
+    min-width: 0;
+  }
+
+  .topbar-right .btn {
+    flex-shrink: 0;
+  }
+
+  /* inline-block rather than the desktop inline-flex: text-overflow does nothing to the
+     text of a flex container, so once these actually started truncating they clipped
+     mid-word -- "last sca" -- instead of eliding. The dot must be told to be inline-block
+     to survive the switch: it is a bare span sized by width/height, which only works at
+     all because a flex parent blockifies it. */
   .topbar-right .chip {
+    display: inline-block;
     /* Unscaled viewport unit -- see --scale. */
     max-width: calc(40vw / var(--scale));
+    min-width: 0;
+    flex-shrink: 1;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .topbar-right .chip .dot {
+    display: inline-block;
+    vertical-align: middle;
   }
 
   /* Tree collapses to a breadcrumb; the content pane owns the width. */
@@ -2376,5 +2428,17 @@ button.tree-caret:hover {
 
   .tree-row {
     min-height: 44px;
+  }
+}
+
+/* Phone, not merely narrow. Above this the topbar has room for everything and the 972px
+   block's shrink rules never bind; below it the status chips squeeze down to "sshd …",
+   which says nothing at all. The crumb is what gives way, because it repeats what the
+   page states immediately below it -- "devices / all" over a "Devices" heading,
+   "library / X" over the pathline. The rail toggle beside it stays: at this width it is
+   the only way back to the nav. */
+@media (max-width: 640px) {
+  .crumb {
+    display: none;
   }
 }
