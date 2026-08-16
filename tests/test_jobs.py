@@ -370,6 +370,38 @@ async def test_dock_separates_files_sent_from_entries_checked(
         assert "5 files" not in r.text
 
 
+async def test_stop_does_not_return_while_rsync_is_still_running(
+    app, tmp_path, monkeypatch
+):
+    """Shutdown used to terminate() the transfer and return in the same breath.
+
+    Two consequences, one visible and one not: an rsync left writing to a device after
+    the service had gone, and a subprocess transport collected after the event loop had
+    closed — which asyncio reports as `RuntimeError: Event loop is closed` from a
+    `__del__`, naming nothing that spawned anything.
+    """
+    lib = app.state.lib
+    slow = tmp_path / "slow-rsync"
+    slow.write_text("#!/bin/sh\nsleep 30\n")
+    slow.chmod(0o755)
+
+    async with app.router.lifespan_context(app):
+        monkeypatch.setattr("libnodes.jobs.build_argv", lambda *a, **k: [str(slow)])
+        job = lib.jobs.submit(_device(app), ["Fiction"])
+
+        proc = None
+        for _ in range(100):
+            proc = lib.jobs._procs.get(job.id)
+            if proc is not None:
+                break
+            await asyncio.sleep(0.05)
+        assert proc is not None and proc.returncode is None, "rsync never started"
+
+        await lib.jobs.stop()
+        assert proc.returncode is not None, "stop() returned with rsync still alive"
+        assert proc._transport.is_closing(), "the pipes outlived the process"
+
+
 async def test_failed_job_is_recorded_with_exit_code(app, tmp_path, monkeypatch):
     lib = app.state.lib
     failing = tmp_path / "failing-rsync"

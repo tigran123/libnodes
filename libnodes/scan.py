@@ -25,6 +25,7 @@ from typing import Iterator
 
 from .models import Device
 from .probe import ssh_argv
+from .procs import reap
 
 #   -rwxr-x---     21,669,813 2026/08/11 08:32:40 Art/Complete-Book-of-Drawing.pdf
 #   drwxr-x---         32,768 2026/08/11 14:22:20 Art
@@ -135,6 +136,10 @@ class Scanner:
         self._results: dict[str, ScanResult] = {}
         self._running: set[str] = set()
         self._tasks: set[asyncio.Task] = set()
+        #: The live rsync per device, so `stop` can reap it. Cancelling the task alone
+        #: leaves the listing running against the device and its transport open — see
+        #: procs.reap.
+        self._procs: dict[str, asyncio.subprocess.Process] = {}
 
     def result(self, device_id: str) -> ScanResult | None:
         return self._results.get(device_id)
@@ -163,6 +168,7 @@ class Scanner:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
+            self._procs[device.id] = proc
             assert proc.stdout is not None
             async for raw in proc.stdout:
                 parsed = parse_line(raw.decode("utf-8", errors="replace"))
@@ -196,9 +202,14 @@ class Scanner:
             result.finished_at = time.time()
             self._results[device.id] = result
             self._running.discard(device.id)
+            self._procs.pop(device.id, None)
         return result
 
     async def stop(self) -> None:
+        # Cancel the readers, then reap: a scan sits in `async for raw in proc.stdout`,
+        # and cancelling that alone leaves rsync listing a device nobody is listening to,
+        # with its transport open for a garbage collector that runs after the loop has
+        # closed. See procs.reap.
         for task in list(self._tasks):
             task.cancel()
         for task in list(self._tasks):
@@ -206,6 +217,8 @@ class Scanner:
                 await task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
+        await reap(list(self._procs.values()))
+        self._procs.clear()
         self._tasks.clear()
         self._running.clear()
 

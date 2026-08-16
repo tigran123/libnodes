@@ -20,6 +20,7 @@ from typing import Literal
 
 from .config import DevicesStore, Settings
 from .models import Device, parse_size
+from .procs import reap
 
 State = Literal["online", "sleeping", "offline", "unknown"]
 
@@ -99,6 +100,9 @@ class DeviceProbe:
         self._task: asyncio.Task | None = None
         self._rescan: asyncio.Task | None = None
         self._background: set[asyncio.Task] = set()
+        #: Live `df` subprocesses. A space probe runs in a background task, so cancelling
+        #: that task on shutdown abandons the ssh underneath it — see procs.reap.
+        self._procs: set[asyncio.subprocess.Process] = set()
         self._listeners: set[asyncio.Queue] = set()
 
     # --- accessors --------------------------------------------------------
@@ -248,12 +252,17 @@ class DeviceProbe:
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
+                self._procs.add(proc)
                 try:
                     out, err = await asyncio.wait_for(proc.communicate(), timeout=15)
                 except asyncio.TimeoutError:
-                    proc.kill()
+                    # kill() alone only asks; the transport stays open until something
+                    # waits for the child. See procs.reap.
+                    await reap([proc])
                     slot.space = FreeSpace(checked_at=time.time(), error="df timed out")
                     return slot.space
+                finally:
+                    self._procs.discard(proc)
 
                 stderr_tail = err.decode(errors="replace").strip().splitlines()
                 if stderr_tail:
@@ -333,6 +342,10 @@ class DeviceProbe:
                     await task
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
+        # After the tasks, not before: reap() drains the pipes, and a cancelled task is
+        # one that has stopped reading them. See procs.reap.
+        await reap(list(self._procs))
+        self._procs.clear()
         self._task = None
         self._rescan = None
         self._background.clear()

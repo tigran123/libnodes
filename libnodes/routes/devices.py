@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse
 
 from ..deps import base_context, state
 from ..probe import FreeSpace, Reachability, ssh_argv
+from ..procs import reap
 from ..scan import scan_argv
 from ..jobs import Job, build_argv, full_sync_sources, hints_for_text
 from ..models import Device
@@ -315,7 +316,8 @@ async def device_test(request: Request, device_id: str):
             err = stderr.decode(errors="replace")
             code = proc.returncode
         except asyncio.TimeoutError:
-            proc.kill()
+            # kill() only asks; reap waits, so the ssh is gone before we answer.
+            await reap([proc])
             err = "timed out after 20s"
     except OSError as exc:
         err = str(exc)

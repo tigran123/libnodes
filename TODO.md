@@ -29,12 +29,6 @@ what is left, with pointers into the code. Keep the two from contradicting each 
 
 ## Engineering hygiene
 
-- [ ] **Silence the tracebacks after a pytest run.** All 275 tests pass, then the run ends
-      with two `RuntimeError: Event loop is closed` tracebacks from
-      `BaseSubprocessTransport.__del__` — a `fake_rsync` subprocess transport
-      (`tests/conftest.py:143`, `tests/test_jobs.py`) still unreaped when the loop closes.
-      Harmless, but a green suite should not end in something that reads as a failure.
-
 - [ ] **Add ruff (lint + format).** No `pyproject.toml` or `ruff.toml` exists, yet the code
       already carries `# noqa: BLE001` (`libnodes/state.py:62`) — a linter was assumed and
       never wired up. Add the config, add ruff to `requirements-dev.in`, recompile.

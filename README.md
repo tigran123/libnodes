@@ -130,6 +130,7 @@ infer from its label is a bad action.
 | `library.py` | SQLite index: the walk, the queries, the path guard |
 | `probe.py` | cached reachability and free-space probes, with backoff |
 | `jobs.py` | job store, rsync runner, progress parser, failure hints |
+| `procs.py` | subprocess teardown: terminate, wait, release the pipes |
 | `manifests.py` | what each device holds; `PRESENT ON` and staleness |
 | `scan.py` | remote listing, and recovery of mangled filenames |
 | `watch.py` | inotify on `devices.yaml`, so edits appear without polling |
@@ -158,7 +159,7 @@ them) so the machine works on an isolated LAN.
 
 ## Testing notes
 
-275 tests, no network required. Two fixtures encode lessons that cost real debugging:
+283 tests, no network required. Two fixtures encode lessons that cost real debugging:
 
 - `tests/data_rsync_human.log` — verbatim output from a real transfer. `-avhP` includes
   `-h`, so rsync reported `734.38K` rather than `1,234,567`, and a parser tested only

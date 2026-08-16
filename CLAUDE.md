@@ -12,7 +12,7 @@ variable. This file is what neither of those says: how to work in the tree.
 ```bash
 uv pip sync requirements-dev.txt                    # uv, not pip. /usr/local/bin/uv here
 uv run uvicorn libnodes.main:app --reload           # http://127.0.0.1:8000/devices
-uv run pytest                                       # 275 tests, ~10s, no network
+uv run pytest                                       # 283 tests, ~13s, no network
 uv run pytest tests/test_jobs.py::test_name -x
 ./deploy/deploy.sh [--no-restart]                   # sync to pi, uv pip sync, restart, poll /healthz
 ```
@@ -78,6 +78,13 @@ are listed.
   `Recommended/` is a pseudo-directory of duplicate symlinks that `-L` would expand into a
   second full copy of every recommended book; `.data/` must stay unbrowsable while
   remaining the target rsync dereferences into. The docstring there explains each one.
+- **Cancelling a task that owns a subprocess does not stop the subprocess.** Every
+  `stop()` must cancel its readers and then `await procs.reap(...)`
+  (`libnodes/procs.py`); `terminate()` alone only asks. Get it wrong and an rsync keeps
+  writing to a device after the service has gone, while the abandoned transport is
+  collected after the loop has closed — surfacing as `RuntimeError: Event loop is closed`
+  from a `__del__` that names nothing, minutes away from the cause. The order matters:
+  reap *after* the cancels, never before.
 - **rsync and ssh are argv lists, never shell strings** (`build_argv`,
   `ssh_argv` at `libnodes/probe.py:341`, `scan_argv` at `libnodes/scan.py:112`).
   `BatchMode=yes` throughout, so a missing key fails fast instead of hanging on a prompt.

@@ -33,6 +33,7 @@ from typing import Literal, Sequence
 
 from .config import SKIP_TOPLEVEL, Settings
 from .probe import DeviceProbe
+from .procs import reap
 from .library import LibraryIndex
 from .manifests import Manifests
 from .models import Device, DevicesFile
@@ -1067,9 +1068,11 @@ class JobRunner:
                     pass
         self._workers.clear()
         self._watcher = None
-        for proc in list(self._procs.values()):
-            if proc.returncode is None:
-                proc.terminate()
+        # Readers first, rsync second. This used to call terminate() and return, which
+        # only asks the child to go and leaves its transport open for a garbage collector
+        # that runs after the loop has closed. See procs.reap.
+        await reap(self._procs.values())
+        self._procs.clear()
 
 
 # rsync's own diagnostics are accurate but rarely name the actual cause. These are the
