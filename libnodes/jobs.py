@@ -867,10 +867,21 @@ class JobRunner:
         if code == 0:
             job.state = "done"
             job.pct = 100.0
-            if not job.dry_run:
+            if job.dry_run:
+                # This line used to sit outside the guard, so a dry run signed off with
+                # "manifest updated" having updated nothing — the one job that cannot
+                # change a device claiming it had recorded one. PRESENT ON then stayed
+                # put, which reads as the manifest being broken rather than untouched.
+                self._append_line(
+                    job, "dry run · nothing sent, manifest unchanged", "prog"
+                )
+            else:
                 self._update_manifest(job)
                 self.probe.invalidate_space(job.device_id)
-            self._append_line(job, "✓ manifest updated · index re-scanned", "prog")
+                # "· index re-scanned" was in this line too and nothing ever re-scanned
+                # it: the library index is rebuilt on its own schedule (library.py) and
+                # never by a job. A push records what the device now holds; that is all.
+                self._append_line(job, "✓ manifest updated", "prog")
         elif code in (15, -15, 143, 20):
             job.state = "aborted"
             job.error = "aborted"

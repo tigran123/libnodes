@@ -54,6 +54,19 @@
   /* Text that sits on an --accent fill. */
   --on-accent: #0c0d10;
 
+  /* Global size. Every length in this file is px, mirroring the design bundle's Tailwind
+     scale 1:1 -- so scaling by rewriting 412 values would break the correspondence
+     CLAUDE.md asks be kept, and scaling only the fonts would leave rows, gutters and
+     icons behind and just look wrong. `zoom` scales layout and type together and still
+     reflows, which transform: scale() does not. One number, so it is easy to change or
+     undo.
+
+     Viewport units are the exception: vh/vw resolve against the real viewport and are
+     NOT divided by the zoom, so 100vh would render 100 * --scale tall and put a scrollbar
+     on a shell that is meant to fill the screen exactly. The three that exist are divided
+     back out at their use sites, each marked. */
+  --scale: 1.08;
+
   /* Native widgets -- select popups, form controls, scrollbars -- are drawn by the
      browser, not by this stylesheet. Without this they render light-on-light. */
   color-scheme: dark;
@@ -226,6 +239,11 @@
   box-sizing: border-box;
 }
 
+html {
+  /* See --scale. On the root so every length below it scales together. */
+  zoom: var(--scale);
+}
+
 html,
 body {
   height: 100%;
@@ -317,7 +335,9 @@ ul {
 
 .shell {
   display: flex;
-  height: 100vh;
+  /* Divided by --scale because zoom does not scale viewport units: a bare 100vh would
+     come out 100 * --scale tall and hand a full-height shell a scrollbar. */
+  height: calc(100vh / var(--scale));
   overflow: hidden;
 }
 
@@ -1474,7 +1494,9 @@ button.tree-caret:hover {
   right: 20px;
   bottom: 20px;
   width: var(--dock);
-  max-width: calc(100vw - 40px);
+  /* 100vw is unscaled by zoom -- see --scale -- so divide before subtracting the margin,
+     which is in scaled px like everything else here. */
+  max-width: calc((100vw / var(--scale)) - 40px);
   background: var(--chrome);
   border: 1px solid var(--border-hi);
   border-radius: var(--r-dock);
@@ -2156,7 +2178,11 @@ button.tree-caret:hover {
   display: none;
 }
 
-@media (max-width: 900px) {
+/* 972px = the design's 900px breakpoint x --scale. A media query is matched against the
+   real viewport and cannot read a custom property, so this one does not follow --scale by
+   itself: zoomed content runs out of room at a *wider* viewport than before, and left at
+   900 the rail would overlap the tree for the 72px in between. Change the two together. */
+@media (max-width: 972px) {
   body {
     font-size: 12.5px;
   }
@@ -2257,7 +2283,8 @@ button.tree-caret:hover {
   }
 
   .topbar-right .chip {
-    max-width: 40vw;
+    /* Unscaled viewport unit -- see --scale. */
+    max-width: calc(40vw / var(--scale));
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

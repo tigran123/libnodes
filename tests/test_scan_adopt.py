@@ -536,6 +536,34 @@ async def test_connection_test_reports_failure_legibly(client, app):
     assert 'id="node-kobo"' in r.text
 
 
+async def test_a_dry_run_does_not_claim_to_have_updated_the_manifest(
+    app, fake_rsync, monkeypatch
+):
+    """The sign-off line sat outside the `if not job.dry_run` guard, so the one job that
+    cannot change a device finished by announcing "manifest updated · index re-scanned".
+    Neither half was true: nothing was recorded, and nothing re-scans the index at all —
+    which is exactly the line a user reads before asking why PRESENT ON has not moved."""
+    lib = app.state.lib
+    async with app.router.lifespan_context(app):
+        monkeypatch.setattr(
+            "libnodes.jobs.build_argv", lambda *a, **k: [str(fake_rsync)]
+        )
+        device = lib.devices.config.by_id["kobo"]
+        job = lib.jobs.submit(device, ["Fiction"], dry_run=True)
+        for _ in range(100):
+            if lib.jobs.get(job.id).finished:
+                break
+            await asyncio.sleep(0.05)
+
+        assert lib.jobs.get(job.id).state == "done"
+        text = "\n".join(line for _css, line in lib.jobs.terminal(job.id))
+        assert "manifest updated" not in text
+        assert "index re-scanned" not in text
+        assert "manifest unchanged" in text
+        # ...and the claim it declined to make is the true one: nothing was recorded.
+        assert lib.manifests.summary("kobo")[0] == 0
+
+
 async def test_no_action_is_styled_as_primary(client):
     """Full Sync moves 250 GB; it should not be the most inviting button on screen."""
     r = await client.get("/device/kobo/menu")
