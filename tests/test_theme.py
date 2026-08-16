@@ -214,3 +214,78 @@ def test_schema_migration_adds_hold_to_an_old_database(tmp_path):
     # history rather than migrate it.
     assert job.files_sent == 0
     assert job.entries_total == 0
+
+
+# ---------------------------------------------------------------------- mark --
+
+
+def test_the_mark_is_literally_the_same_file_as_the_favicon():
+    """One identity, one file. The tab, the rail and the login card all point at
+    static/icon.svg, so there is no second copy of the drawing to fall out of step.
+
+    This replaced an inline SVG that tinted itself from var(--accent), which is exactly
+    how the tab and the rail came to show different-coloured books at the same time.
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent / "libnodes"
+    mark = (root / "templates" / "brand_mark.html").read_text()
+    assert "asset('icon.svg')" in mark
+    assert "<svg" not in mark, "the drawing is back in the template; it belongs in the file"
+
+    for page in ("base.html", "login.html"):
+        text = (root / "templates" / page).read_text()
+        assert '{% include "brand_mark.html" %}' in text, page
+        assert "asset('icon.svg')" in text, page      # the favicon link
+
+
+def test_the_mark_does_not_follow_the_theme():
+    """It is a logo, and it is the same everywhere on purpose.
+
+    Tracking var(--accent) cannot work: white books on the dark theme's accent (#9a8ce6)
+    measure 2.89:1, under the 3:1 floor for a graphical object, so an accent-following
+    mark has to restyle its books per theme -- which is what put dark books in the tab
+    beside white ones in the rail. #7159dd carries white books at 5.03:1 and still holds
+    an edge against both the dark rail (3.89:1) and the light one (4.41:1).
+    """
+    from pathlib import Path
+
+    icon = (Path(__file__).resolve().parent.parent
+            / "libnodes" / "static" / "icon.svg").read_text()
+    svg = icon[icon.index("<svg"):]
+    assert 'fill="#7159dd"' in svg          # the tile
+    assert 'fill="#ffffff"' in svg          # the books, painted the same everywhere
+    assert "var(--" not in svg              # a file cannot read the page's tokens
+    assert "<mask" not in svg               # painted, not knocked out: see below
+
+
+def test_the_books_are_painted_not_knocked_out():
+    """As holes they would take the colour of whatever is behind them, which for a
+    favicon is a tab strip of unknown colour -- and on a dark one the icon degrades to a
+    featureless purple blob."""
+    from pathlib import Path
+
+    icon = (Path(__file__).resolve().parent.parent
+            / "libnodes" / "static" / "icon.svg").read_text()
+    svg = icon[icon.index("<svg"):]
+    assert "fill-opacity" not in svg and 'fill="none"' not in svg
+    assert svg.count("<rect") == 5          # tile, three books, shelf
+
+
+def test_the_favicon_is_well_formed_xml():
+    """An .svg file is parsed as XML, not HTML, and XML forbids a double hyphen inside a
+    comment.
+
+    The first version of this file explained itself using the accent token's real name,
+    which begins with two hyphens. That made the document ill formed, so the browser
+    dropped it and went on showing the previous favicon -- with a 200 in the network tab
+    and nothing anywhere to say why. The inline mark in brand_mark.html cannot hit this,
+    because the HTML parser tolerates what XML rejects, so only the file needs the guard.
+    """
+    import xml.dom.minidom
+    from pathlib import Path
+
+    icon = Path(__file__).resolve().parent.parent / "libnodes" / "static" / "icon.svg"
+    doc = xml.dom.minidom.parse(str(icon))          # raises if not well formed
+    assert doc.documentElement.tagName == "svg"
+    assert len(doc.getElementsByTagName("rect")) == 5

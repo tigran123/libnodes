@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -9,8 +10,10 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from .auth import AuthMiddleware
 from .config import get_devices, get_settings
 from .library import PathError
+from .routes import auth as auth_routes
 from .routes import config_view as config_routes
 from .routes import devices as devices_routes
 from .routes import jobs as jobs_routes
@@ -36,6 +39,29 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="LibNodes", lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.lib = lib
+
+    # Middleware, not `dependencies=` on the include_router calls below. A router
+    # dependency would cover the four route modules and leave /, /healthz, the /fleet
+    # and /node redirects and the /static mount open, and every route added later would
+    # be a fresh chance to forget one -- the same failure mode as the FRAGMENTS list in
+    # tests/test_routes.py. This covers everything by construction; auth.OPEN_PATHS is
+    # then the single, readable list of what is deliberately not covered.
+    app.add_middleware(AuthMiddleware)
+
+    if not settings.auth_enabled:
+        # Fail-open is the deliberate default -- it is what leaves a dev server and the
+        # test suite untouched -- so this warning is the only thing standing between a
+        # Pi that lost its LIBNODES_PASSWORD and a fleet anyone on the LAN can drive.
+        #
+        # The app configures no logging at all, so this reaches stderr through
+        # logging.lastResort, which has no formatter and prints the bare message. Hence
+        # the literal "WARNING:" and the padding: without them the line lands in the
+        # journal looking like a stray print, indistinguishable from chatter, next to
+        # uvicorn's own "INFO:     " column.
+        logging.getLogger("libnodes").warning(
+            "WARNING:  no LIBNODES_PASSWORD set - the UI is open to every host that "
+            "can reach this port. See deploy/README.md section Access."
+        )
 
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
@@ -101,6 +127,7 @@ def create_app() -> FastAPI:
     app.include_router(library_routes.router)
     app.include_router(jobs_routes.router)
     app.include_router(config_routes.router)
+    app.include_router(auth_routes.router)
     return app
 
 

@@ -11,7 +11,7 @@
    for ~10% of the file's age. See the docstring in templating.py. #}
 <link rel="stylesheet" href="{{ asset('fonts.css') }}">
 <link rel="stylesheet" href="{{ asset('app.css') }}">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%239a8ce6'/></svg>">
+<link rel="icon" href="{{ asset('icon.svg') }}" type="image/svg+xml">
 <script src="{{ asset('htmx.min.js') }}" defer></script>
 <script src="{{ asset('htmx-ext-sse.js') }}" defer></script>
 <script src="{{ asset('app.js') }}" defer></script>
@@ -21,7 +21,7 @@
 
   <aside class="rail">
     <div class="rail-brand">
-      <div class="rail-mark"></div>
+      {% include "brand_mark.html" %}
       <span>LibNodes</span>
     </div>
 
@@ -73,6 +73,15 @@
       </div>
       <div class="topbar-right">
         {% block topbar_right %}{% endblock %}
+        {# Outside the block above, beside the theme toggle, for the same reason it is:
+           page templates override topbar_right (devices_yaml.html does), and anything
+           inside it disappears on those pages. A plain form, so logging out does not
+           depend on htmx or on script at all. #}
+        {% if auth_enabled %}
+        <form method="post" action="/logout" style="display:contents">
+          <button class="btn btn-icon" type="submit" title="Log out">Log out</button>
+        </form>
+        {% endif %}
         <button class="btn btn-icon theme-toggle" type="button"
                 data-theme-toggle
                 title="Switch to {{ 'dark' if theme == 'light' else 'light' }} theme"

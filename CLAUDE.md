@@ -12,7 +12,7 @@ variable. This file is what neither of those says: how to work in the tree.
 ```bash
 uv pip sync requirements-dev.txt                    # uv, not pip. /usr/local/bin/uv here
 uv run uvicorn libnodes.main:app --reload           # http://127.0.0.1:8000/devices
-uv run pytest                                       # 317 tests, ~13s, no network
+uv run pytest                                       # 360 tests, ~15s, no network
 uv run pytest tests/test_jobs.py::test_name -x
 ./deploy/deploy.sh [--no-restart]                   # sync to pi, uv pip sync, restart, poll /healthz
 ```
@@ -85,6 +85,23 @@ are listed.
   collected after the loop has closed — surfacing as `RuntimeError: Event loop is closed`
   from a `__del__` that names nothing, minutes away from the cause. The order matters:
   reap *after* the cancels, never before.
+- **Auth is off whenever `LIBNODES_PASSWORD` is unset, and that is deliberate.** It is
+  what leaves the dev server and the suite untouched (`libnodes/auth.py`), and it is
+  fail-open: the startup warning in `create_app` is the only thing between a Pi that lost
+  its env var and a fleet the whole LAN can drive. Pinned by
+  `tests/test_auth.py::test_no_password_means_no_lock`. The password is `SecretStr`
+  because `base_context` puts all of `settings` into every template context.
+- **An unauthenticated fragment gets `HX-Redirect` and an empty body, never a page.** A
+  login page returned to an `hx-get` is swapped into a table row — the thing
+  `test_fragments_render_standalone` exists to forbid. The 401 is honoured because htmx
+  acts on `HX-Redirect` *before* it consults the status code (verified in the vendored
+  2.0.4). `/static` and `/healthz` are open on purpose — the login page would be unstyled
+  without the first, and `deploy.sh:60` gates every deploy on the second. The list is
+  `auth.OPEN_PATHS`.
+- **`AuthMiddleware` is pure ASGI, not `BaseHTTPMiddleware`.** The latter buffers the
+  response body, which breaks `EventSourceResponse` — the dock would arrive in lumps,
+  exactly as it does when nginx buffers `/jobs/stream`. It reads `scope` only and never
+  wraps `send`.
 - **rsync and ssh are argv lists, never shell strings** (`build_argv`,
   `ssh_argv` at `libnodes/probe.py:341`, `scan_argv` at `libnodes/scan.py:112`).
   `BatchMode=yes` throughout, so a missing key fails fast instead of hanging on a prompt.

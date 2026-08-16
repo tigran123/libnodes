@@ -262,7 +262,17 @@ class DeviceProbe:
                     slot.space = FreeSpace(checked_at=time.time(), error="df timed out")
                     return slot.space
                 finally:
-                    self._procs.discard(proc)
+                    # Deregister only a child that has actually exited. On shutdown the
+                    # await above raises CancelledError, and an unconditional discard
+                    # here hands the proc back a moment before stop() reaps
+                    # self._procs -- so the one process that needs reaping is the one
+                    # missing from the set. Its transport then waits on an EOF nobody
+                    # will read and is collected after the loop has closed, which is the
+                    # nameless `RuntimeError: Event loop is closed` procs.py exists to
+                    # prevent. Reproduced at roughly one run in three by exercising ~18
+                    # app lifecycles in one suite.
+                    if proc.returncode is not None:
+                        self._procs.discard(proc)
 
                 stderr_tail = err.decode(errors="replace").strip().splitlines()
                 if stderr_tail:

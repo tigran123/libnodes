@@ -133,6 +133,7 @@ infer from its label is a bad action.
 | `procs.py` | subprocess teardown: terminate, wait, release the pipes |
 | `manifests.py` | what each device holds; `PRESENT ON` and staleness |
 | `scan.py` | remote listing, and recovery of mangled filenames |
+| `auth.py` | the shared-password lock: signed cookie, middleware, what stays open |
 | `watch.py` | inotify on `devices.yaml`, so edits appear without polling |
 | `host.py` | `/proc` telemetry for the rail footer |
 | `yamlview.py` | token colouring for the read-only config view |
@@ -157,9 +158,22 @@ them) so the machine works on an isolated LAN.
 - **Every template except `base.html` and the page templates must render standalone.**
   That is the HTMX contract; `test_fragments_render_standalone` enforces it.
 
+## Locking it
+
+LibNodes binds `0.0.0.0` and every button on it drives real hardware, so set
+`LIBNODES_PASSWORD` and it asks for one shared password, once per browser, and keeps a
+signed cookie. Leave it unset and there is no login at all — convenient for a dev server,
+and the service says so at startup rather than pretending.
+
+The cookie is signed with a key derived from the password, so changing the password logs
+everyone out and there is no session store to keep. `/static` and `/healthz` stay open
+deliberately: the login page needs the first, and `deploy.sh` polls the second.
+`deploy/README.md` §Access says where to put the password on the Pi — not in `.env`, which
+a deploy deletes.
+
 ## Testing notes
 
-283 tests, no network required. Two fixtures encode lessons that cost real debugging:
+360 tests, no network required. Two fixtures encode lessons that cost real debugging:
 
 - `tests/data_rsync_human.log` — verbatim output from a real transfer. `-avhP` includes
   `-h`, so rsync reported `734.38K` rather than `1,234,567`, and a parser tested only
@@ -177,7 +191,7 @@ When a change is visual, assert on computed style or a screenshot. Asserting tha
 Working: devices with live reachability, library explorer with instant filter, pushes to
 one or many devices, live SSE progress dock, job history with logs, scan/adopt, dry runs,
 read-only `devices.yaml` view with inotify refresh, light and dark themes, responsive
-layout for tablets.
+layout for tablets, optional shared-password login.
 
 Not built yet: the device configuration drawer (edit `devices.yaml` by hand for now —
 changes take effect immediately), presets, wake-on-LAN.

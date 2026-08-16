@@ -1,0 +1,75 @@
+<!doctype html>
+{# The one full page that does not extend base.html. See routes/auth.py for why: the
+   shell would assemble the rail, the dock, host telemetry and the device list, and none
+   of that may be built for someone who has not logged in.
+
+   data-theme is stamped server-side from the existing theme cookie, exactly as
+   base.html:4 does, so the login screen is already in the right palette on first paint. #}
+<html lang="en"{% if theme == 'light' %} data-theme="light"{% endif %}>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LibNodes</title>
+<link rel="stylesheet" href="{{ asset('fonts.css') }}">
+<link rel="stylesheet" href="{{ asset('app.css') }}">
+<link rel="icon" href="{{ asset('icon.svg') }}" type="image/svg+xml">
+{# app.js only, and only for the reveal eye -- no htmx, nothing to swap. The form itself
+   is a plain post, so the lock still works with scripting off; the eye simply does not
+   appear (see .pw-reveal in app.css). Loading it here also warms the cache for the page
+   you land on a moment later. #}
+<script src="{{ asset('app.js') }}" defer></script>
+</head>
+<body>
+
+<main class="login">
+  <form class="login-card" method="post" action="/login">
+    <div class="login-brand">
+      {% include "brand_mark.html" %}
+      <span>LibNodes</span>
+    </div>
+
+    <p class="login-lede">This fleet pushes books to real devices. Sign in to drive it.</p>
+
+    <label class="login-label" for="password">Password</label>
+    <div class="field">
+      {# autofocus so the only control on the page already has the caret. #}
+      <input type="password" id="password" name="password" autocomplete="current-password"
+             autofocus required>
+      {# type="button" is load-bearing: a bare <button> inside a form defaults to submit,
+         so without it pressing the eye posts the half-typed password instead of showing
+         it. Drawn as SVG rather than a glyph because there is no eye character without
+         an emoji presentation -- the same trap the theme toggle documents. #}
+      <button class="pw-reveal" type="button" data-pw-reveal aria-controls="password"
+              aria-pressed="false" aria-label="Show password" title="Show password">
+        <svg class="pw-show" viewBox="0 0 16 16" width="15" height="15" fill="none"
+             stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+          <path d="M1 8s2.6-4.4 7-4.4 7 4.4 7 4.4-2.6 4.4-7 4.4S1 8 1 8z"/>
+          <circle cx="8" cy="8" r="1.9"/>
+        </svg>
+        <svg class="pw-hide" viewBox="0 0 16 16" width="15" height="15" fill="none"
+             stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+          <path d="M1 8s2.6-4.4 7-4.4 7 4.4 7 4.4-2.6 4.4-7 4.4S1 8 1 8z"/>
+          <circle cx="8" cy="8" r="1.9"/>
+          <path d="M2.6 13.4 13.4 2.6"/>
+        </svg>
+      </button>
+    </div>
+
+    <label class="login-remember">
+      <input class="check" type="checkbox" name="remember" value="1" checked>
+      <span>Stay signed in on this device</span>
+    </label>
+
+    <button class="btn btn-primary login-submit" type="submit">Unlock</button>
+
+    {# Reserved height, so the card does not jump when the error appears. #}
+    <div class="login-error">
+      {% if error %}<span class="t-err">{{ error }}</span>{% endif %}
+    </div>
+
+    <input type="hidden" name="next" value="{{ next }}">
+  </form>
+</main>
+
+</body>
+</html>

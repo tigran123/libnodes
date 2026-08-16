@@ -11,6 +11,7 @@ import threading
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .models import DevicesFile, ValidationIssue, parse_devices
@@ -93,6 +94,23 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     # 8080 is already nginx's on the Pi (urantia-library).
     port: int = 8090
+
+    # --- access ---------------------------------------------------------------
+    #: The single shared password. Empty means no login at all, which is what keeps a
+    #: dev server and the test suite working unchanged -- and it is fail-open, so
+    #: create_app() warns loudly at startup when it is unset.
+    #:
+    #: SecretStr rather than str because base_context puts this whole object into every
+    #: template context (deps.py:38). A stray {{ settings }} in any template would
+    #: otherwise print the password into the page; SecretStr renders `**********`.
+    password: SecretStr = SecretStr("")
+    #: How long "stay signed in" lasts. Long by design: the point is to be asked once per
+    #: browser, not to expire people out of a household tool.
+    session_days: float = 30.0
+
+    @property
+    def auth_enabled(self) -> bool:
+        return bool(self.password.get_secret_value())
 
     @property
     def resolved_devices_file(self) -> Path:

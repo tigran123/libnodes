@@ -1,0 +1,15 @@
+{# The brand mark, beside the wordmark in the rail and on the login card.
+
+   The same file the favicon links, rather than a copy of the drawing: one identity, in
+   one place, and no way for the tab and the rail to drift apart. It was briefly an
+   inline SVG that tinted itself from the theme's accent, which meant the mark was a
+   different colour in the tab from the rail beside it -- and could not be fixed by
+   painting the books white, because white on the dark theme's accent measures 2.89:1.
+   See the note in static/icon.svg.
+
+   Costs nothing: the browser is fetching this exact URL for the favicon anyway, so the
+   second reference is a cache hit.
+
+   alt is empty on purpose. The wordmark "LibNodes" sits immediately beside it, so
+   announcing the logo as well would just say the name twice. #}
+<img class="rail-mark" src="{{ asset('icon.svg') }}" alt="" width="17" height="17">

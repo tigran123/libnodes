@@ -32,6 +32,37 @@
     });
   });
 
+  /* --- password reveal ----------------------------------------------------- */
+
+  /* Marks the document as scripted, so CSS can show controls that only work once this
+     file has run. The eye on the login form is one: that page is otherwise scriptless on
+     purpose (see routes/auth.py), and an eye that does nothing is worse than no eye. */
+  document.documentElement.setAttribute("data-js", "");
+
+  document.addEventListener("click", function (e) {
+    var eye = e.target.closest("[data-pw-reveal]");
+    if (!eye) return;
+    var field = document.getElementById(eye.getAttribute("aria-controls"));
+    if (!field) return;
+
+    var showing = field.type === "text";
+    /* Changing `type` drops the selection, and landing the caret back at 0 loses your
+       place mid-password -- which is the whole complaint the eye exists to answer. */
+    var start = field.selectionStart;
+    var end = field.selectionEnd;
+
+    field.type = showing ? "password" : "text";
+    eye.setAttribute("aria-pressed", showing ? "false" : "true");
+    var label = showing ? "Show password" : "Hide password";
+    eye.setAttribute("aria-label", label);
+    eye.title = label;
+
+    field.focus();
+    if (start !== null) {
+      field.setSelectionRange(start, end);
+    }
+  });
+
   /* --- copy to clipboard -------------------------------------------------- */
 
   /* navigator.clipboard exists only in a secure context, and LibNodes is normally

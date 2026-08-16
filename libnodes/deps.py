@@ -32,6 +32,9 @@ def base_context(request: Request, active: str) -> dict:
         "library_bytes": index_meta.total_bytes,
         "index_meta": index_meta,
         "theme": "light" if request.cookies.get("libnodes_theme") == "light" else "dark",
+        # Drives the Log out control in base.html. Without it the topbar would offer to
+        # log out of a session that does not exist on an unlocked dev server.
+        "auth_enabled": app.settings.auth_enabled,
         "job_count": running + pending,
         "host": host_stats(app.settings.library_root),
         "library_root": str(app.settings.library_root),

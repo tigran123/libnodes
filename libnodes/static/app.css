@@ -377,11 +377,14 @@ ul {
   flex-shrink: 0;
 }
 
+/* The mark is static/icon.svg, the same file the favicon links, so the shape and the
+   colours live there and this only sizes it. `display: block` because an inline image
+   sits on the text baseline and leaves a few pixels of descender gap under it, which
+   knocked the wordmark out of alignment with it. */
 .rail-mark {
-  width: 16px;
-  height: 16px;
-  border-radius: 3px;
-  background: var(--accent);
+  display: block;
+  width: 17px;
+  height: 17px;
   flex-shrink: 0;
 }
 
@@ -2547,4 +2550,136 @@ button.tree-caret:hover {
   .crumb {
     display: none;
   }
+}
+
+/* Login ------------------------------------------------------------------- *
+ *
+ * Appended at the end of the file deliberately. tests/test_theme.py pins the cascade by
+ * string index -- .theme-toggle must follow .btn -- so new rules go after everything,
+ * never between.
+ *
+ * The page has no shell: no rail, no dock, no topbar, because routes/auth.py must not
+ * build any of that for a visitor who has not logged in. So it needs its own centring
+ * rather than borrowing .shell's. */
+
+.login {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Divided by --scale for the same reason .shell divides: zoom does not scale viewport
+     units, so a bare 100vh comes out 100 * --scale tall and adds a scrollbar. */
+  min-height: calc(100vh / var(--scale));
+  padding: 24px;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 320px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-panel);
+  padding: 26px 24px 20px;
+}
+
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-weight: 600;
+  font-size: 13.5px;
+  letter-spacing: -0.01em;
+}
+
+.login-lede {
+  margin: 10px 0 20px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.login-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* The field is the whole point of the page, so it gets more room than the 6px the
+   toolbar variant uses. */
+.login-card .field {
+  padding: 8px 10px;
+}
+
+.login-remember {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  color: var(--ink-3);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.login-submit {
+  width: 100%;
+  justify-content: center;
+  margin-top: 18px;
+  padding: 8px 11px;
+}
+
+/* Reserved rather than conditional: an error that appears out of nothing moves the
+   button out from under the cursor that just pressed it. */
+.login-error {
+  min-height: 18px;
+  margin-top: 10px;
+  text-align: center;
+  font-size: 11.5px;
+}
+
+/* The reveal eye ---------------------------------------------------------- *
+ *
+ * display:none until app.js has set data-js on <html>. The login page works with
+ * scripting off -- a plain form post -- and an eye that cannot toggle anything is worse
+ * than no eye at all, so it only appears once the code that drives it has run.
+ *
+ * Not [hidden]: a display rule outranks the UA's [hidden] and the control would stay
+ * visible while looking like it had been hidden. That mistake is already recorded in
+ * CLAUDE.md; this is the same class of bug avoided. */
+
+.pw-reveal {
+  display: none;
+  flex-shrink: 0;
+  /* Padding, not a bare 15px glyph: this is a touch target on the phone that reaches the
+     login page, and 15px square is not one. */
+  padding: 4px;
+  margin: -2px -3px -2px 0;
+  border: none;
+  background: none;
+  color: var(--dim);
+  cursor: pointer;
+  line-height: 0;
+}
+
+[data-js] .pw-reveal {
+  display: block;
+}
+
+.pw-reveal:hover {
+  color: var(--ink-2);
+}
+
+.field:focus-within .pw-reveal {
+  color: var(--ink-3);
+}
+
+/* Which of the two eyes is drawn. aria-pressed is the state, so the styling cannot drift
+   away from what a screen reader is told. */
+.pw-reveal .pw-hide,
+.pw-reveal[aria-pressed="true"] .pw-show {
+  display: none;
+}
+
+.pw-reveal[aria-pressed="true"] .pw-hide {
+  display: block;
 }

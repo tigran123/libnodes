@@ -29,6 +29,16 @@ what is left, with pointers into the code. Keep the two from contradicting each 
 
 ## Engineering hygiene
 
+- [ ] **`Scanner` and `JobRunner` deregister a subprocess while being cancelled**, the same
+      way `DeviceProbe` did before it was fixed. `scan.py:205` (`self._procs.pop(...)` in a
+      `finally`) and `jobs.py:862` run on the `CancelledError` path too, so the proc leaves
+      the registry a moment before their `stop()` reaps it — and the one process that needs
+      reaping is the one missing from the set. The fixed form is at `probe.py:264`:
+      deregister only when `proc.returncode is not None`, and leave a still-running child
+      for `stop()`. Not currently observable — the probe is the only one of the three the
+      suite exercises hard enough — but it is the same `RuntimeError: Event loop is closed`
+      with an rsync or a scan behind it instead of a `df`.
+
 - [ ] **Add ruff (lint + format).** No `pyproject.toml` or `ruff.toml` exists, yet the code
       already carries `# noqa: BLE001` (`libnodes/state.py:62`) — a linter was assumed and
       never wired up. Add the config, add ruff to `requirements-dev.in`, recompile.

@@ -91,3 +91,37 @@ Every setting is a `LIBNODES_`-prefixed environment variable or a line in `.env`
 | `LIBNODES_PROBE_INTERVAL` | `10` | seconds between reachability sweeps |
 | `LIBNODES_REINDEX_INTERVAL` | `1800` | seconds; `0` disables the periodic rebuild |
 | `LIBNODES_LOG_RETENTION` | `200` | job logs kept on disk |
+| `LIBNODES_PASSWORD` | *(empty)* | the shared login password; **empty means no login at all** |
+| `LIBNODES_SESSION_DAYS` | `30` | how long "stay signed in" lasts |
+
+## Access
+
+LibNodes binds `0.0.0.0`, so without a password every host on the LAN can start transfers,
+abort them and delete history. Set one:
+
+```bash
+sudo install -m 600 /dev/null /etc/default/libnodes
+echo "LIBNODES_PASSWORD=your-password-here" | sudo tee /etc/default/libnodes >/dev/null
+sudo systemctl restart libnodes
+```
+
+`libnodes.service` reads that file through `EnvironmentFile=-/etc/default/libnodes`. The
+leading `-` makes it optional, so the unit still starts on a machine that has no such file.
+
+**Do not put the password in `.env`.** `deploy.sh` syncs with `--delete` and does not
+exclude it, so a `.env` written on the Pi is deleted by the next deploy and the lock
+silently disappears. `/etc/default/libnodes` is outside `$DEST`, so rsync cannot reach it,
+and it never enters git. Mode `600` keeps it off the file browser on `:8080` and away from
+any other user on the Pi.
+
+With no password set the service still starts and serves normally, and logs
+
+```
+WARNING:  no LIBNODES_PASSWORD set - the UI is open to every host that can reach this port.
+```
+
+That warning is the only guard: `journalctl -u libnodes | grep LIBNODES_PASSWORD` after a
+deploy is how you check the lock actually came back up.
+
+Changing the password and restarting logs everybody out — the cookie is signed with a key
+derived from the password, so old sessions stop verifying. There is nothing to clear.

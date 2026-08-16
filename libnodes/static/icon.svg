@@ -1,0 +1,38 @@
+<!--
+     The LibNodes mark: three books on a shelf, one leaning.
+
+     This file is the whole identity. The favicon links it and the in-app brand mark
+     (templates/brand_mark.html) is an img pointing at it, so the tab, the rail and the
+     login card cannot drift apart.
+
+     The lean is the design. Three upright bars of stepped height read as a bar chart at
+     16px, which is what a favicon mostly is; tilting the last one makes it unmistakably
+     books, and it survives all the way down (checked at 16, 24, 32, 48 and 96 on both
+     light and dark surfaces).
+
+     Fixed colours, deliberately, and it used to track the theme's accent instead. It
+     cannot: white books on the dark theme's accent (#9a8ce6) measure 2.89:1, under the
+     3:1 floor for a graphical object, so a mark that followed the accent had to change
+     the books along with it and then looked like two different logos side by side. The
+     tile is pinned to #7159dd, which carries white books at 5.03:1 while keeping a
+     visible edge against both the dark rail (3.89:1) and the light one (4.41:1). A
+     favicon cannot see the page theme anyway.
+
+     The books are painted rather than knocked out for the same reason: as holes they
+     would vanish into a dark tab strip and leave a purple blob.
+
+     NOTE: no double hyphen may appear anywhere in this comment. XML forbids it, an SVG
+     file is parsed as XML, and an earlier version of this comment named a CSS custom
+     property in full. That character pair alone made the document ill formed, so the
+     browser silently kept the previous favicon with a 200 in the network tab and nothing
+     to say why. Pinned by tests/test_theme.py::test_the_favicon_is_well_formed_xml.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <rect width="32" height="32" rx="7" fill="#7159dd"/>
+  <g fill="#ffffff">
+    <rect x="6.8" y="8.6" width="4.9" height="15.2" rx="1.2"/>
+    <rect x="12.9" y="6.4" width="4.9" height="17.4" rx="1.2"/>
+    <rect x="18.6" y="9" width="4.9" height="14.8" rx="1.2" transform="rotate(14 21.05 23.8)"/>
+    <rect x="5.6" y="24.2" width="20.8" height="2.9" rx="1.45"/>
+  </g>
+</svg>
