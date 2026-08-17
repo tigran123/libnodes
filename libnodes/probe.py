@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import json
 import logging
 import shlex
 import time
@@ -41,6 +42,13 @@ from .models import Device, parse_size
 from .procs import reap
 
 State = Literal["online", "sleeping", "offline", "unknown"]
+
+#: How long a connection may be *completely* silent before ssh asks the far end whether
+#: it is still there, and how many such questions may go unanswered before it gives up.
+#: 60 x 3 = 180 s. Shared by `ssh_argv` and `build_argv` so the probe and the transfer
+#: cannot disagree about the master they share. Reasoned about in ssh_argv's docstring.
+SERVER_ALIVE_INTERVAL = 60
+SERVER_ALIVE_COUNT_MAX = 3
 
 log = logging.getLogger(__name__)
 
@@ -326,8 +334,8 @@ class DeviceProbe:
             parsed = None
             last_error = "df failed"
             for command in (
-                _readings_script(f"df -Pk {target}", device.battery),
-                _readings_script(f"df {target}", device.battery),
+                _readings_script(device, f"df -Pk {target}"),
+                _readings_script(device, f"df {target}"),
             ):
                 proc = await asyncio.create_subprocess_exec(
                     *ssh_argv(device, self.settings),
@@ -364,8 +372,8 @@ class DeviceProbe:
                 # Recorded on every attempt, not only the one whose df parsed: a toybox
                 # node fails the first command and still reads its battery on it, and a
                 # node whose df never parses should not lose its battery figure too.
-                if device.battery:
-                    self._record_battery(device.id, _section(text, "battery"))
+                if device.battery or device.battery_cmd:
+                    self.adopt_battery(device.id, _section(text, "battery"))
                 parsed = _parse_df(_section(text, "df") or text)
                 if parsed is not None:
                     break
@@ -388,9 +396,14 @@ class DeviceProbe:
             slot.space_inflight = False
         return slot.space
 
-    def _record_battery(self, device_id: str, text: str) -> None:
-        """Store what the battery file said. Never raises — a device that cannot answer
-        this must not cost us the `df` that came back on the same ssh."""
+    def adopt_battery(self, device_id: str, text: str) -> None:
+        """Store what the battery source said. Never raises — a device that cannot answer
+        this must not cost us the `df` that came back on the same ssh.
+
+        Public and named to match `adopt_space`, because the connection test reads the
+        same two things over an ssh it has already opened and there is no reason for the
+        row behind it to keep an older figure for either.
+        """
         percent = _parse_battery(text)
         if percent is None:
             # Keep the last known figure rather than blanking the bar on one bad read;
@@ -399,7 +412,7 @@ class DeviceProbe:
             self._slot(device_id).battery = Battery(
                 percent=previous.percent,
                 checked_at=time.time(),
-                error=text.strip().splitlines()[-1] if text.strip() else "unreadable",
+                error=_battery_error(text),
             )
             return
         self._slot(device_id).battery = Battery(
@@ -410,6 +423,27 @@ class DeviceProbe:
         """Force the next space probe, e.g. right after a transfer landed."""
         slot = self._slot(device_id)
         slot.space = replace(slot.space, checked_at=None)
+
+    def refresh_all(self) -> None:
+        """Drop every cached reading, so the next sweep re-reads the whole fleet.
+
+        For a devices.yaml edit. The config hot-reloads within a tick, but the readings
+        are cached quite independently of it, so adding a `battery:` line changed what we
+        would ask for while `freespace_interval` kept us from asking for up to five more
+        minutes — the new column sitting empty with nothing on the page to say why. Note
+        that this is the flat 5-minute `df` cache and not the reachability backoff, two
+        different settings that both happen to default to 300s.
+
+        Invalidates and lets `_loop` pick it up on its next tick rather than probing from
+        here: the loop already spawns one task per device and `space_inflight` keeps them
+        from overlapping, whereas an editor that saves twice in a second — write, chmod,
+        rename is one save — would otherwise start two sweeps over the same devices.
+        Reachability is kicked directly because it is a 2s connect, and `rescan_soon`
+        already refuses to start a second sweep while one is running.
+        """
+        for device in self.devices.config.devices:
+            self.invalidate_space(device.id)
+        self.rescan_soon(force=True)
 
     def adopt_space(self, device_id: str, text: str) -> bool:
         """Take a `df` reading somebody else already paid for. True if it parsed.
@@ -517,6 +551,24 @@ def ssh_argv(device: Device, settings: Settings, timeout: int = 10) -> list[str]
 
     Built as an argv list, never a shell string. BatchMode guarantees a missing key
     fails immediately instead of blocking the event loop on a password prompt.
+
+    The keepalives are about ssh multiplexing, which the Pi's ~/.ssh/config turns on
+    (`ControlMaster auto`, `ControlPersist 3600`) and which this inherits, not passing
+    `-F none`. That is worth having: measured against the fleet, a fresh handshake to a
+    phone costs 680-850 ms and a multiplexed session 140-355 ms. The cost is that a
+    master outlives the connection under it — a phone that sleeps leaves one wedged, and
+    the next probe through it fails with `mux_client_request_session: read from master
+    failed: Broken pipe` rather than reconnecting.
+
+    ServerAlive is what makes the master notice. It only fires after `Interval` seconds
+    with *no data received at all*, so an active transfer resets it continuously and it
+    cannot kill a busy connection; 60 x 3 = 180 s of true silence. Under the 300 s
+    freespace_interval on purpose, so a woken device costs at most one failed reading
+    rather than three. Set explicitly rather than left to Debian's BatchMode default of
+    300 (x3 = 900 s, i.e. a quarter of an hour of stale storage and battery), and kept
+    well clear of values tight enough to drop a working link: at 5 x 1, five seconds of
+    ordinary jitter — rsync checksumming a large file, a stalled FAT write — is a
+    disconnect.
     """
     argv = ["ssh", "-p", str(device.effective_port)]
     if device.identity:
@@ -528,6 +580,10 @@ def ssh_argv(device: Device, settings: Settings, timeout: int = 10) -> list[str]
         f"ConnectTimeout={timeout}",
         "-o",
         "StrictHostKeyChecking=accept-new",
+        "-o",
+        f"ServerAliveInterval={SERVER_ALIVE_INTERVAL}",
+        "-o",
+        f"ServerAliveCountMax={SERVER_ALIVE_COUNT_MAX}",
     ]
     extra = device.effective_ssh_options
     if extra:
@@ -536,21 +592,41 @@ def ssh_argv(device: Device, settings: Settings, timeout: int = 10) -> list[str]
     return argv
 
 
-def _readings_script(df_command: str, battery: str | None) -> str:
+def battery_command(device: Device) -> str | None:
+    """The shell fragment that reads this device's charge, or None if it declares none.
+
+    One definition, because the quoting rule differs between the two forms and a second
+    copy of it would eventually get one wrong. `battery` is a path and is quoted as one.
+    `battery_cmd` is a command line and must *not* be: it is meant to be able to be a
+    pipeline, and quoting it would run the whole string as the name of one program.
+
+    That second case is a shell string built from config, which is exactly what
+    `build_argv` and `ssh_argv` refuse to do. The difference is that this value *is* a
+    command by declaration — written by whoever already has ssh to the device — rather
+    than a filename that ends up in one.
+
+    Shared by the background probe and the connection test, so the two cannot drift.
+    """
+    if device.battery:
+        return f"cat {shlex.quote(device.battery)} 2>&1"
+    if device.battery_cmd:
+        return f"{device.battery_cmd} 2>&1"
+    return None
+
+
+def _readings_script(device: Device, df_command: str) -> str:
     """One shell line that reads everything an ssh round trip can get us at once.
 
-    The battery file rides along with `df` rather than opening a second connection: on a
-    sleeping Termux node the connection *is* the cost, and two probes on their own
+    The battery reading rides along with `df` rather than opening a second connection: on
+    a sleeping Termux node the connection *is* the cost, and two probes on their own
     schedules would also drift out of step in the row that shows both. Marked sections
     rather than positional parsing, because `df` output is one line on some devices and
     two on others — see `_parse_df`.
     """
-    if not battery:
+    read = battery_command(device)
+    if read is None:
         return df_command
-    return (
-        f'echo "# df"; {df_command}; '
-        f'echo "# battery"; cat {shlex.quote(battery)} 2>&1'
-    )
+    return f'echo "# df"; {df_command}; echo "# battery"; {read}'
 
 
 def _section(text: str, name: str) -> str:
@@ -571,24 +647,83 @@ def _section(text: str, name: str) -> str:
     return "\n".join(lines[start:end])
 
 
-def _parse_battery(text: str) -> int | None:
-    """A battery sysfs file as a percentage, or None if it did not read like one.
+#: JSON keys that mean "percent charged", most specific first. termux-api says
+#: `percentage`; upower and several sysfs-scraping wrappers say `capacity`; Android's own
+#: battery intent calls it `level`. Matched exactly and case-insensitively rather than by
+#: substring, so `percentage_design` or `level_raw` cannot answer for the charge.
+_BATTERY_KEYS = ("percentage", "capacity", "level", "battery_level")
 
-    The file is conventionally a bare integer and nothing else, so anything that is not
-    one is treated as a failure rather than pattern-matched out of a longer message: a
-    `cat` of a missing node prints an error, and reading `2` out of "No such file or
-    directory (2)" would put a confident wrong number on the row.
+
+def _parse_battery(text: str) -> int | None:
+    """A battery reading as a percentage, or None if it did not read like one.
+
+    Two shapes, because the source is either a file or a program. A sysfs file is a bare
+    integer and nothing else. `termux-api BatteryStatus` prints a JSON object, which is
+    what Android 12 forces: /sys/class/power_supply is unreadable from Termux there, so
+    there is nothing to cat.
+
+    Anything else fails rather than being pattern-matched out of a longer message. A
+    `cat` of a missing node prints "No such file or directory (2)", and pulling the 2 out
+    of that would report 2% charge -- a plausible wrong number is worse than a blank.
     """
     stripped = text.strip()
     if not stripped:
         return None
+
     first = stripped.splitlines()[0].strip()
-    if not first.isdigit():
+    if first.isdigit():
+        return _as_percent(int(first))
+
+    if not stripped.startswith("{"):
         return None
-    value = int(first)
+    try:
+        blob = json.loads(stripped)
+    except ValueError:
+        return None
+    if not isinstance(blob, dict):
+        return None
+    lowered = {str(k).lower(): v for k, v in blob.items()}
+    for key in _BATTERY_KEYS:
+        if key in lowered:
+            value = lowered[key]
+            # bool is an int in Python, and `{"charging": true}` is not 1% charge.
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            found = _as_percent(value)
+            if found is not None:
+                return found
+    return None
+
+
+def _battery_error(text: str) -> str:
+    """Why a reading did not parse, in the few words a tooltip has room for.
+
+    A failed `cat` puts its complaint on the last line, which is the useful one. A JSON
+    object that simply lacks a charge key has `}` there instead, which says nothing — so
+    that case is named rather than quoted, with the keys we did see.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return "no output"
+    if stripped.startswith("{"):
+        try:
+            blob = json.loads(stripped)
+        except ValueError:
+            return "output is not valid JSON"
+        if isinstance(blob, dict):
+            keys = ", ".join(sorted(str(k) for k in blob)) or "nothing"
+            return f"no charge key in JSON (saw: {keys})"
+        return "JSON is not an object"
+    return stripped.splitlines()[-1].strip()
+
+
+def _as_percent(value: int | float) -> int | None:
+    """A number that is a percentage, rounded, or None. Rounded because a JSON source may
+    report a float; out-of-range is rejected rather than clamped, since a figure outside
+    0..100 means the key was not the charge after all."""
     if not 0 <= value <= 100:
         return None
-    return value
+    return int(round(value))
 
 
 def _df_field(token: str) -> int | None:

@@ -11,7 +11,15 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
 from ..deps import base_context, state
-from ..probe import Battery, FreeSpace, Reachability, _section, ssh_argv
+from ..probe import (
+    Battery,
+    FreeSpace,
+    Reachability,
+    _parse_battery,
+    _section,
+    battery_command,
+    ssh_argv,
+)
 from ..procs import reap
 from ..scan import scan_argv
 from ..jobs import Job, build_argv, full_sync_sources, hints_for_text
@@ -158,11 +166,17 @@ class DeviceView:
     def has_battery(self) -> bool:
         """Whether this device reports a battery at all.
 
-        Keyed on the declared path, not on the reading: a node with `battery:` set that
-        has not answered yet must render an empty cell rather than no cell, or the column
-        would appear and disappear under the poll.
+        Keyed on the declaration, not on the reading: a node with a battery source set
+        that has not answered yet must render an empty cell rather than no cell, or the
+        column would appear and disappear under the poll.
         """
-        return bool(self.device.battery)
+        return bool(self.device.battery or self.device.battery_cmd)
+
+    @property
+    def battery_source(self) -> str:
+        """The file or command the reading came from, for the tooltip — so a cell that is
+        empty or wrong names the thing to go and check."""
+        return self.device.battery or self.device.battery_cmd or ""
 
     @property
     def battery_pct(self) -> float:
@@ -194,9 +208,9 @@ class DeviceView:
                 if self.battery.checked_at
                 else "never read"
             )
-            return f"{self.device.battery}: {self.battery.error} · {stale}"
+            return f"{self.battery_source}: {self.battery.error} · {stale}"
         if self.battery.percent is None:
-            return f"{self.device.battery} — not read yet"
+            return f"{self.battery_source} — not read yet"
         return f"{self.battery.percent}% · read {reltime(self.battery.checked_at)}"
 
 
@@ -382,12 +396,31 @@ async def device_menu(request: Request, device_id: str):
 #: `df -Pk` is the portable form on GNU coreutils, but Android's toybox rejects the
 #: flags, prints its output anyway and exits non-zero — so a plain `a || b` runs df
 #: twice and prints the table twice. Capture first, fall back only on empty output.
-_TEST_SCRIPT = (
+_TEST_DF = (
     'echo "# df"; d=`df -Pk {t} 2>/dev/null`; '
     '[ -n "$d" ] || d=`df {t} 2>&1`; echo "$d"; '
+)
+_TEST_TAIL = (
     'echo "# rsync"; rsync --version 2>/dev/null | head -1 || echo "rsync: not found"; '
     'echo "# write"; if test -w {t}; then echo "writable"; else echo "NOT writable"; fi'
 )
+
+
+def _test_script(device: Device) -> str:
+    """The connection test, with a battery section for a device that declares one.
+
+    Built per device rather than as one constant, because the battery source is per
+    device — and read through `battery_command` so the quoting rule (a path is quoted, a
+    command line is not) lives in exactly one place and cannot drift from the background
+    probe's copy of the same decision.
+    """
+    target = shlex.quote(device.target)
+    read = battery_command(device)
+    # Each half formatted before the battery fragment is joined on, never after: a
+    # battery_cmd is free-form shell and may well contain braces -- `awk '{print $1}'` --
+    # which str.format would then try to read as a field name and raise on.
+    battery = f'echo "# battery"; {read}; ' if read else ""
+    return _TEST_DF.format(t=target) + battery + _TEST_TAIL.format(t=target)
 
 
 def _test_argv(device: Device, settings) -> list[str]:
@@ -399,7 +432,7 @@ def _test_argv(device: Device, settings) -> list[str]:
     """
     return [
         *ssh_argv(device, settings),
-        _TEST_SCRIPT.format(t=shlex.quote(device.target)),
+        _test_script(device),
     ]
 
 
@@ -449,6 +482,8 @@ async def device_test(request: Request, device_id: str):
     # the dialog printed from the same command. The reading is free: we have already
     # paid for the ssh.
     app.probe.adopt_space(device_id, _section(out, "df"))
+    if battery_command(device):
+        app.probe.adopt_battery(device_id, _section(out, "battery"))
 
     ctx = base_context(request, "devices")
     ctx.update(
@@ -476,6 +511,12 @@ def _test_summary(out: str) -> list[str]:
     bits = []
     if "# df" in out:
         bits.append("reachable")
+    # The charge, when the test read one. Parsed rather than echoed, so what the verdict
+    # claims is the same figure the row's bar draws — the raw JSON is right there in the
+    # transcript below for anyone who wants it.
+    charge = _parse_battery(_section(out, "battery"))
+    if charge is not None:
+        bits.append(f"battery {charge}%")
     for line in out.splitlines():
         if line.startswith("rsync  version") or line.startswith("rsync version"):
             bits.append(line.strip().split(" protocol")[0].strip())

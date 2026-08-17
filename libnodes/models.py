@@ -14,6 +14,7 @@ from pydantic import (
     StrictInt,
     ValidationError,
     field_validator,
+    model_validator,
 )
 
 # devices.yaml is hand-edited, and YAML already yields native ints and bools for
@@ -169,6 +170,18 @@ class Device(BaseModel):
     #:
     #: Read by the same ssh that runs `df`, so declaring it costs no extra round trip.
     battery: str | None = None
+    #: A command to run on the device instead, for a node whose charge is not a file.
+    #:
+    #: Android 12 does not let Termux read /sys/class/power_supply, so there is nothing to
+    #: cat and the answer has to come from `termux-api BatteryStatus`, which prints JSON.
+    #: A second field rather than a cleverer `battery`, because the two are not reliably
+    #: distinguishable by inspection -- that termux-api invocation is itself an absolute
+    #: path, with an argument -- and a wrong guess would report a wrong number rather than
+    #: failing. Setting both is an error, not a precedence rule.
+    #:
+    #: Run through the device's shell, so it may be a pipeline. Note that a non-interactive
+    #: ssh gets Termux's PATH but not its libexec, so `termux-api` needs its full path.
+    battery_cmd: str | None = None
     #: Accepted but ignored. The design proposed a per-device format whitelist; in
     #: practice LibNodes pushes whatever you point it at, and deciding what a device can
     #: open is the device's business. Kept in the schema only so an older devices.yaml
@@ -197,6 +210,23 @@ class Device(BaseModel):
         if v is not None and not (0 < v < 65536):
             raise ValueError("must be between 1 and 65535")
         return v
+
+    @model_validator(mode="after")
+    def _one_battery_source(self) -> "Device":
+        """Reject both battery sources rather than quietly preferring one.
+
+        A device declaring a file *and* a command is a half-finished edit -- someone
+        moving a node from sysfs to termux-api and not deleting the old line. Whichever
+        way a precedence rule fell it would be silently wrong half the time, and the row
+        would show a plausible number from the source the editor thought they had
+        replaced.
+        """
+        if self.battery and self.battery_cmd:
+            raise ValueError(
+                "set battery (a file to read) or battery_cmd (a command to run), "
+                "not both"
+            )
+        return self
 
     @field_validator("fs", mode="before")
     @classmethod

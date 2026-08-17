@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Literal, Sequence
 
 from .config import SKIP_TOPLEVEL, Settings
-from .probe import DeviceProbe
+from .probe import SERVER_ALIVE_COUNT_MAX, SERVER_ALIVE_INTERVAL, DeviceProbe
 from .procs import reap
 from .library import LibraryIndex
 from .manifests import Manifests
@@ -490,6 +490,15 @@ def build_argv(
         f"ConnectTimeout={min(timeout, 30)}",
         "-o",
         "StrictHostKeyChecking=accept-new",
+        # The same keepalives the probe uses, and for the same reason: both ride the one
+        # multiplexed master the Pi's ssh config creates per device, so a transfer that
+        # disagreed with the probe about it would either inherit the probe's settings
+        # anyway (whoever opened the master wins) or wedge behind a dead one. Only fires
+        # on total silence, which a running transfer never produces. See ssh_argv.
+        "-o",
+        f"ServerAliveInterval={SERVER_ALIVE_INTERVAL}",
+        "-o",
+        f"ServerAliveCountMax={SERVER_ALIVE_COUNT_MAX}",
     ]
     extra = device.effective_ssh_options
     if extra:

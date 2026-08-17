@@ -174,9 +174,22 @@ SEED_DEVICES_YAML = """\
 # battery: a file on the DEVICE holding the charge percentage, shown as a bar beside
 #       storage. A path, because there is no portable way to ask: Android keeps it under
 #       /sys/class/power_supply/ but the node name varies by vendor -- `battery` on an
-#       LG G4, `bms` or `battery_0` elsewhere. `cat` it over ssh to check first; unset
-#       simply leaves the column empty. Read by the same ssh that runs df, so it costs
-#       no extra round trip.
+#       LG G4, `BAT1` on a ThinkPad, `bms` or `battery_0` elsewhere. `cat` it over ssh to
+#       check first; unset simply leaves the column empty.
+#
+# battery_cmd: a command to run instead, for a device where the charge is not a file.
+#       Android 12 does not let Termux read /sys/class/power_supply at all, so there the
+#       answer comes from termux-api, which prints JSON:
+#
+#         battery_cmd: /data/data/com.termux/files/usr/libexec/termux-api BatteryStatus
+#
+#       A bare number or a JSON object is understood; in JSON the first of percentage,
+#       capacity, level or battery_level that holds a number in 0..100 is taken. Give the
+#       full path -- a non-interactive ssh gets Termux's PATH but not its libexec.
+#       Set battery or battery_cmd, never both.
+#
+#       Either way it is read by the same ssh that runs df, so it costs no extra round
+#       trip.
 #
 # The entries below are examples. Replace them.
 
