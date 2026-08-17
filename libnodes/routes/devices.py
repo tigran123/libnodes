@@ -20,9 +20,16 @@ from ..probe import (
     battery_command,
     ssh_argv,
 )
+from ..config import SKIP_TOPLEVEL
 from ..procs import reap
 from ..scan import scan_argv
-from ..jobs import Job, build_argv, full_sync_sources, hints_for_text
+from ..jobs import (
+    Job,
+    build_argv,
+    full_sync_sources,
+    hints_for_text,
+    mirror_sources,
+)
 from ..manifests import Extras
 from ..models import Device
 from ..state import AppState
@@ -347,6 +354,32 @@ def _shell(argv: list[str]) -> str:
     return " ".join(shlex.quote(a) for a in argv)
 
 
+def _preview(build) -> str:
+    """A command strip, or the reason there is no command to show.
+
+    `build_argv` refuses to compose a mirror push it cannot make safe — an empty source
+    list, a target at the root — because `--delete` turns either into data loss. The menu
+    is rendered from those same calls, so it has to survive the refusal: show why, rather
+    than 500 on a dialog whose whole job is to say what will run.
+    """
+    try:
+        return _shell(build())
+    except ValueError as exc:
+        return f"unavailable — {exc}"
+
+
+def _whole_root_sources(app: AppState, device: Device) -> list[str]:
+    """Everything this device's mode considers "the whole library".
+
+    Two different answers, and every whole-root action wants the one matching the device:
+    a reader gets the browsable categories, a mirror gets the entire root including the
+    vault it needs for its symlinks to resolve.
+    """
+    if device.is_mirror:
+        return mirror_sources(app.settings)
+    return full_sync_sources(app.settings)
+
+
 @router.get("/device/{device_id}/menu", response_class=HTMLResponse)
 async def device_menu(request: Request, device_id: str):
     """Every action for one device, each showing the command it will actually run.
@@ -360,7 +393,9 @@ async def device_menu(request: Request, device_id: str):
         return HTMLResponse("", status_code=404)
 
     config = app.devices.config
-    sources = full_sync_sources(app.settings)
+    # A mirror's every action is over the whole root including the vault, so the sources
+    # differ per mode rather than per action. build_argv reads the mode off the device.
+    sources = _whole_root_sources(app, device)
     files, total_bytes, _last = app.manifests.summary(device_id)
 
     ctx = base_context(request, "devices")
@@ -373,14 +408,22 @@ async def device_menu(request: Request, device_id: str):
             "scan": app.scanner.result(device_id),
             "scanning": app.scanner.is_running(device_id),
             "commands": {
-                "full_sync": _shell(
-                    build_argv(device, config, sources, app.settings)
+                # `full_sync` and `replicate` are the same argv; they are two keys because
+                # they are two different promises, and the dialog prints the promise beside
+                # the command. Full Sync never deletes; Replicate is defined by --delete.
+                "full_sync": _preview(
+                    lambda: build_argv(device, config, sources, app.settings)
                 ),
-                "dry_run": _shell(
-                    build_argv(device, config, sources, app.settings, dry_run=True)
+                "replicate": _preview(
+                    lambda: build_argv(device, config, sources, app.settings)
                 ),
-                "adopt": _shell(
-                    build_argv(device, config, sources, app.settings, adopt=True)
+                "dry_run": _preview(
+                    lambda: build_argv(
+                        device, config, sources, app.settings, dry_run=True
+                    )
+                ),
+                "adopt": _preview(
+                    lambda: build_argv(device, config, sources, app.settings, adopt=True)
                 ),
                 "scan": _shell(scan_argv(device, app.settings)),
             },
@@ -568,7 +611,13 @@ async def device_extras(request: Request, device_id: str):
     # which would report every file on a scanned device as an extra. Unknown, not 24,616.
     scanned = app.manifests.scanned_at(device_id)
     found = (
-        app.manifests.extras(device_id, app.index.all_file_paths())
+        app.manifests.extras(
+            device_id,
+            app.index.all_file_paths(),
+            # A mirror is deliberately sent the infrastructure the index does not hold, so
+            # on one of those these names are not orphans. See Manifests.extras.
+            expected_toplevel=SKIP_TOPLEVEL if device.is_mirror else frozenset(),
+        )
         if scanned is not None and app.index.meta().ready
         else Extras.unknown()
     )
@@ -615,7 +664,7 @@ async def device_adopt(request: Request, device_id: str):
     device = app.devices.device(device_id)
     if device is None:
         return HTMLResponse("", status_code=404)
-    sources = full_sync_sources(app.settings)
+    sources = _whole_root_sources(app, device)
     reachable = app.probe.status(device_id).online
     job = app.jobs.submit(
         device,
@@ -641,10 +690,13 @@ async def device_dry_run(request: Request, device_id: str):
     device = app.devices.device(device_id)
     if device is None:
         return HTMLResponse("", status_code=404)
+    label = (
+        "(dry run · whole root)" if device.is_mirror else "(dry run · full library)"
+    )
     job = app.jobs.submit(
         device,
-        full_sync_sources(app.settings),
-        label="(dry run · full library)",
+        _whole_root_sources(app, device),
+        label=label,
         dry_run=True,
     )
     ctx = base_context(request, "devices")
@@ -654,10 +706,15 @@ async def device_dry_run(request: Request, device_id: str):
 
 @router.post("/device/{device_id}/full-sync", response_class=HTMLResponse)
 async def device_full_sync(request: Request, device_id: str):
-    """Queue the whole library. Only offered for devices with `full_sync: true`."""
+    """Queue the whole library. Only offered for devices with `full_sync: true`.
+
+    Not for a mirror node: that one replicates, and the difference is `--delete`. Routing
+    it here would hand it Full Sync's "never deletes anything" promise under an action that
+    breaks it, so it 404s and `/replicate` is the way in.
+    """
     app = state(request)
     device = app.devices.device(device_id)
-    if device is None or not device.full_sync:
+    if device is None or not device.full_sync or device.is_mirror:
         return HTMLResponse("", status_code=404)
     sources = full_sync_sources(app.settings)
     reachable = app.probe.status(device_id).online
@@ -665,6 +722,40 @@ async def device_full_sync(request: Request, device_id: str):
         device, sources, label="(full library)", deferred=not reachable
     )
     ctx = base_context(request, "devices")
+    ctx["job"] = job
+    ctx["node"] = _one(request, device_id)
+    return templates.TemplateResponse(request, "fragments/queued.html", ctx)
+
+
+@router.post("/device/{device_id}/replicate", response_class=HTMLResponse)
+async def device_replicate(request: Request, device_id: str):
+    """Replicate the whole root verbatim. Only for `sync_mode: mirror`.
+
+    Not gated on `full_sync` as well, though it is the larger transfer of the two. That
+    flag says "this node can hold the whole library", and a node declared a mirror has
+    already said so more strongly — requiring both would let a one-word omission in
+    devices.yaml silently hide the only action a mirror node has.
+    """
+    app = state(request)
+    device = app.devices.device(device_id)
+    if device is None or not device.is_mirror:
+        return HTMLResponse("", status_code=404)
+    ctx = base_context(request, "devices")
+    reachable = app.probe.status(device_id).online
+    try:
+        job = app.jobs.submit(
+            device,
+            _whole_root_sources(app, device),
+            label="(replicate · whole root)",
+            deferred=not reachable,
+        )
+    except ValueError as exc:
+        # build_argv refused: no sources, or a target at the root. Both are only unsafe
+        # because this run carries --delete, so say so instead of queueing it.
+        ctx["message"] = str(exc)
+        return templates.TemplateResponse(
+            request, "fragments/error_toast.html", ctx, status_code=409
+        )
     ctx["job"] = job
     ctx["node"] = _one(request, device_id)
     return templates.TemplateResponse(request, "fragments/queued.html", ctx)

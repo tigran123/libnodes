@@ -10,7 +10,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from ..deps import base_context, short_path, state
 from ..host import host_stats
-from ..jobs import JobEvent, full_sync_sources
+from ..jobs import JobEvent, full_sync_sources, mirror_sources
 from ..state import AppState
 from ..templating import templates
 
@@ -137,6 +137,31 @@ def _queue(app: AppState, device_id: str, paths: list[str], dry_run: bool = Fals
     device = app.devices.config.by_id.get(device_id)
     if device is None:
         return None, "unknown device"
+    if device.is_mirror:
+        # `_resolve` filters against the index, which by design holds no `.data/` — so a
+        # mirror push arriving here would be stripped down to the browsable categories
+        # while `build_argv` still added `--delete`, leaving preserved symlinks pointing at
+        # a vault that was never sent. Retry is the live route into this: it replays a
+        # stored job's sources. Re-derive the whole root instead of narrowing it.
+        try:
+            return (
+                app.jobs.submit(
+                    device,
+                    mirror_sources(app.settings),
+                    # Not `_submit`'s label: that names the first path and a count, which
+                    # for a whole-root replica reads as ".data +4".
+                    label=(
+                        "(dry run · whole root)"
+                        if dry_run
+                        else "(replicate · whole root)"
+                    ),
+                    deferred=not app.probe.status(device.id).online and not dry_run,
+                    dry_run=dry_run,
+                ),
+                None,
+            )
+        except ValueError as exc:
+            return None, str(exc)
     wanted = _resolve(app, paths)
     if not wanted:
         return None, "nothing selected"
@@ -171,6 +196,14 @@ async def create_job(
     ctx = base_context(request, "library")
 
     targets = [d for d in (app.devices.config.by_id.get(x) for x in device) if d]
+    # The picker does not offer mirror nodes, but a hidden button is not a guard: this is
+    # a form post. A mirror takes the whole root from its own Replicate action, never a
+    # selection — see the note in `_queue`.
+    mirrors = [d for d in targets if d.is_mirror]
+    if mirrors:
+        names = ", ".join(d.name for d in mirrors)
+        ctx["message"] = f"{names}: a mirror node replicates the whole root — use Replicate"
+        return templates.TemplateResponse(request, "fragments/error_toast.html", ctx)
     if not targets:
         ctx["message"] = "no device selected"
         return templates.TemplateResponse(request, "fragments/error_toast.html", ctx)
@@ -268,7 +301,15 @@ async def picker(
             "paths": wanted,
             "total_bytes": total,
             "biggest": biggest,
-            "devices": app.devices.config.devices,
+            # Mirror nodes are not offered: they take the whole root or nothing, and a
+            # subtree of preserved symlinks has no vault to resolve against. See
+            # library_context, which drops them from the row buttons for the same reason.
+            "devices": [d for d in app.devices.config.devices if not d.is_mirror],
+            # So the empty case can say *why* it is empty. "No devices configured" would be
+            # a lie on a fleet that is all mirrors.
+            "hidden_mirrors": sum(
+                1 for d in app.devices.config.devices if d.is_mirror
+            ),
             "dry_run": dry_run,
             "status": app.probe.status,
         }
@@ -329,7 +370,10 @@ async def retry(request: Request, job_id: int):
     if old is None:
         ctx["message"] = "job not found"
         return templates.TemplateResponse(request, "fragments/error_toast.html", ctx)
-    job, error = _queue(app, old.device_id, old.sources)
+    # Repeat what was run, dry run included. Retrying a preview as a real transfer is
+    # wrong in any mode; on a mirror it would turn "show me what would change" into a
+    # --delete push, which is the one place it is unrecoverable.
+    job, error = _queue(app, old.device_id, old.sources, dry_run=old.dry_run)
     if job is None:
         ctx["message"] = error
         return templates.TemplateResponse(request, "fragments/error_toast.html", ctx)

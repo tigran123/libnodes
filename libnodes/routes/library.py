@@ -34,6 +34,7 @@ def library_context(
 
     device_ids = [d.id for d in app.devices.config.devices]
     presence = app.manifests.presence(rows, device_ids)
+    selectable = [d for d in app.devices.config.devices if not d.is_mirror]
 
     elapsed_ms = (time.perf_counter() - started) * 1000
     meta = app.index.meta()
@@ -57,8 +58,13 @@ def library_context(
             "tree": app.index.expanded_tree(path),
             "ancestors": app.index.ancestors(path),
             "by_id": app.devices.config.by_id,
-            "push_devices": app.devices.config.devices[:2],
-            "more_devices": app.devices.config.devices[2:],
+            # Mirror nodes are not selection targets. `_resolve` cannot offer them .data/,
+            # so a subtree of preserved symlinks would land pointing at a vault that is not
+            # there — the dangling-link failure, from the other direction. They replicate
+            # the whole root or nothing. They stay in `presence` above: what a mirror holds
+            # is worth showing, it just is not pushed to from here.
+            "push_devices": selectable[:2],
+            "more_devices": selectable[2:],
         }
     )
     return ctx

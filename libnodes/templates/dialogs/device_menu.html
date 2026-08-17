@@ -20,19 +20,45 @@
         {% with device_id = device.id %}{% include "fragments/scan_status.html" %}{% endwith %}
       </div>
 
-      {% if device.full_sync %}
-        {# Dry run first: on a device that already holds the library this answers
-           "would anything actually move?" in about 15s, without moving it. #}
+      {# A mirror node's Dry run is not the same offer as a reader's: it is the only way to
+         read what --delete would remove before it removes it, so it is offered
+         unconditionally rather than behind `full_sync`. A reader's is gated with Full Sync
+         because there is nothing to preview until the whole library is on the table. #}
+      {% if device.is_mirror or device.full_sync %}
         {% set act = {
           'label': 'Dry run',
-          'note': 'list what a Full Sync would transfer — changes nothing. Streams into
-                   the dock; takes ~15s because rsync still compares the whole library.',
+          'note': (
+            'list what a Replicate would transfer AND what it would delete — changes
+             nothing. Read this first: it is the only preview of the prune.'
+            if device.is_mirror else
+            'list what a Full Sync would transfer — changes nothing. Streams into
+             the dock; takes ~15s because rsync still compares the whole library.'
+          ),
           'cmd': commands.dry_run,
           'method': 'post', 'url': '/device/' ~ device.id ~ '/dry-run',
           'target': '#notices', 'swap': 'beforeend', 'close': true,
         } %}
         {% include "fragments/device_action.html" %}
+      {% endif %}
 
+      {% if device.is_mirror %}
+        {# Deliberately not sharing Full Sync's note below: that one promises it never
+           deletes, and this one is defined by deleting. #}
+        {% set act = {
+          'label': 'Replicate',
+          'note': 'replicate ' ~ library_root ~ ' verbatim — symlinks kept as symlinks,
+                   the .data vault carried with them, urantia-library/ included.
+                   --delete removes anything on the device that is no longer here,
+                   including under urantia-library/.',
+          'cmd': commands.replicate,
+          'method': 'post', 'url': '/device/' ~ device.id ~ '/replicate',
+          'target': '#notices', 'swap': 'beforeend', 'close': true,
+          'confirm': 'Replicate ' ~ library_root ~ ' onto ' ~ device.name ~ '? This
+                      DELETES anything there that is not here, urantia-library/ included.',
+        } %}
+        {% include "fragments/device_action.html" %}
+
+      {% elif device.full_sync %}
         {% set act = {
           'label': 'Full Sync',
           'note': 'push the whole library — ' ~ library_root ~ ' in full. Adds and

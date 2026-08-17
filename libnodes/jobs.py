@@ -124,6 +124,13 @@ INFO_FLAGS = "progress2,flist0,misc0,stats1"
 #: hand-edited devices.yaml that dropped one would break the app in ways that look like
 #: bugs rather than misconfiguration, so `rsync_flags` is no longer a config key.
 #:
+#: -L is the one member that is conditional, and only on a whole different kind of target:
+#: a `sync_mode: mirror` node wants the symlinks *kept*, so `build_argv` drops it there.
+#: For every reader -- which is every device this program had until then -- it is
+#: mandatory. Dropping it is only safe together with the other half of that mode: a mirror
+#: sends the whole root, so .data/ travels with the links and they still resolve on the far
+#: side. See Device.sync_mode.
+#:
 #: -h is absent on purpose: it exists to make rsync's own output pleasant for a human
 #: reading a terminal, and we format every number for display ourselves. Plain byte
 #: counts are one less thing to parse.
@@ -434,18 +441,49 @@ def build_argv(
     Run with `cwd=library_root` and `-R`, so a source of `Science/Philology/` lands at
     `<target>/Science/Philology/` and several sources can share one invocation while
     keeping the library's shape on the device.
+
+    The mode is read off the device rather than passed in, so every caller — including the
+    three preview renders in `routes/devices.py` — gets it without opting in.
     """
     defaults = config.defaults
+    mirror = device.is_mirror
+
+    if mirror:
+        # Both guards exist because of --delete below. In books mode a wrong source list
+        # transfers the wrong thing; here it *removes* the right thing, so neither case
+        # may be allowed to reach rsync.
+        if not sources:
+            raise ValueError(
+                f"{device.id}: refusing a mirror push with no sources — "
+                "--delete would empty the target"
+            )
+        if not device.target.strip("/"):
+            raise ValueError(
+                f"{device.id}: refusing to mirror onto {device.target!r} — "
+                "--delete needs a target below the root"
+            )
 
     # LibNodes owns the transfer flags. See BASE_FLAGS.
     argv = [
         "rsync",
-        *BASE_FLAGS,
+        # A mirror keeps the CAS shape, so the one flag that translates it comes out. See
+        # BASE_FLAGS: this is the only place -L is ever absent, and it is only safe because
+        # the source below is the whole root, vault included.
+        *(f for f in BASE_FLAGS if not (mirror and f == "-L")),
         f"--info={INFO_FLAGS}",
         f"--out-format={OUT_FORMAT}",
     ]
     if dry_run:
         argv.append("-n")
+
+    # A replica that keeps what the Pi dropped is not a replica. Deliberately kept under
+    # -n as well: a mirror dry run is the only way to read what a prune would remove
+    # before it removes it, which makes it the safety feature rather than the hazard.
+    #
+    # Not on an adopt. That run exists to repair timestamps on files already in place --
+    # pairing "change nothing" with "delete whatever does not match" would be a trap.
+    if mirror and not adopt:
+        argv.append("--delete")
 
     # The target filesystem decides, not the device type: an ext4 Linux node keeps full
     # archive semantics, a FAT card does not get chmod attempts it can only fail.
@@ -506,10 +544,20 @@ def build_argv(
     argv += ["-e", " ".join(shlex.quote(b) if " " in b else b for b in ssh_bits)]
 
     root = Path(settings.library_root)
-    for src in sources:
-        rel = src.strip("/")
-        abs_src = root / rel if rel else root
-        argv.append(f"{rel}/" if abs_src.is_dir() else rel)
+    if mirror:
+        # One source, the root itself, and it has to be this way round: --delete only
+        # prunes directories that are part of the transfer. Hand rsync the top-level names
+        # and it cleans inside each of them while never once scanning the destination root,
+        # so a file or a whole directory that exists only on the device outlives every
+        # replicate. `./` makes the transfer root the destination root, which is what a
+        # replica means. `.` rather than `""`: an empty relative source appends a bare "/"
+        # and defeats -R.
+        argv.append("./")
+    else:
+        for src in sources:
+            rel = src.strip("/")
+            abs_src = root / rel if rel else root
+            argv.append(f"{rel}/" if abs_src.is_dir() else rel)
 
     target = device.target.rstrip("/")
     argv.append(f"{device.effective_user}@{device.host}:{target}/")
@@ -528,6 +576,44 @@ def full_sync_sources(settings: Settings) -> list[str]:
     except OSError:
         return []
     return names
+
+
+def mirror_sources(settings: Settings) -> list[str]:
+    """Every top-level entry, with nothing held back. The mirror counterpart.
+
+    Three differences from `full_sync_sources`, and each is the point rather than an
+    oversight:
+
+    * **No SKIP_TOPLEVEL.** `.data/` stops being optional and becomes mandatory — a
+      mirror keeps the symlinks, so without the vault beside them every one of them
+      dangles, which is the exact failure `-L` exists to prevent, reached from the other
+      side. `urantia-library/` goes because a replica of the Pi's /Books is what was
+      asked for; that is the mode's whole cost, and it is confined to nodes that name it.
+    * **`Recommended/` too.** It is skipped for a reader *because* `-L` would expand its
+      companion symlinks into a second full copy of every recommended book. Preserved as
+      links they cost a few hundred bytes, so the reason not to send it does not apply.
+    * **Files as well as directories**, so CLAUDE.md, exclude.txt and the dotfiles at the
+      root are replicated rather than silently dropped.
+
+    Note what these names are *for*. They are the job's logical sources — what
+    `_estimate` prices, what `_update_manifest` records, what the row says was pushed —
+    and not what rsync is handed. `build_argv` passes a mirror one source, `./`, because
+    `--delete`'s scope is the directories in the transfer: with the names enumerated,
+    rsync prunes inside `Science/` but never looks at the destination root, so a stray
+    top-level file survives every replicate for ever. Measured on a local pair — an
+    enumerated run left `Leftover.pdf` and a whole orphaned `OldCat/` in place, `./`
+    removed both. An empty list here therefore still means "refuse", because the guard is
+    about whether we know what the library holds, not about argv length.
+
+    Sorted, so the job's source list is stable between runs and diffable in the log.
+    """
+    root = Path(settings.library_root)
+    try:
+        return sorted(e.name for e in os.scandir(root))
+    except OSError:
+        # build_argv refuses an empty mirror source list rather than running --delete
+        # against nothing. Returning [] here is what hands it that decision.
+        return []
 
 
 class JobRunner:
@@ -636,7 +722,7 @@ class JobRunner:
         argv = build_argv(
             device, config, sources, self.settings, dry_run=dry_run, adopt=adopt
         )
-        files_total, bytes_total = self._estimate(sources)
+        files_total, bytes_total = self._estimate(sources, mirror=device.is_mirror)
 
         job = Job(
             id=0,
@@ -662,8 +748,22 @@ class JobRunner:
         self._emit(JobEvent("dock"))
         return job
 
-    def _estimate(self, sources: Sequence[str]) -> tuple[int, int]:
-        """Pre-flight totals from the index, so the dock has numbers before rsync does."""
+    def _estimate(
+        self, sources: Sequence[str], *, mirror: bool = False
+    ) -> tuple[int, int]:
+        """Pre-flight totals from the index, so the dock has numbers before rsync does.
+
+        Sources the index does not know contribute nothing, which is silent by design --
+        most of them are simply not there. A mirror is the case where that silence would
+        mislead: it sends `.data/` and `urantia-library/` as paths, and neither is indexed.
+
+        For a mirror the two numbers therefore need opposite corrections. The *bytes* are
+        already close, because a symlink's indexed size is the blob it dereferences to --
+        exactly what moves -- so counting the vault again would double it; the vault is
+        added for its *file count* only, and its bytes are the same bytes. Without that
+        count the bar would claim ~24.6k files for a run rsync sees as roughly twice that,
+        and a count that is not the number of files is the thing CLAUDE.md forbids.
+        """
         files = 0
         size = 0
         for src in sources:
@@ -676,6 +776,9 @@ class JobRunner:
             else:
                 files += 1
                 size += entry.size
+        if mirror:
+            vault_files, _vault_bytes = self.index.vault_totals()
+            files += vault_files
         return files, size
 
     async def abort(self, job_id: int) -> Job | None:
@@ -1264,4 +1367,5 @@ __all__ = [
     "PROGRESS_RE",
     "build_argv",
     "full_sync_sources",
+    "mirror_sources",
 ]

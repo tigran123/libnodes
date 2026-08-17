@@ -40,7 +40,18 @@
             </span>
           </label>
         {% else %}
-          <div class="meta">No devices configured.</div>
+          {# A mirror node is not a selection target — it replicates the whole root from
+             its own row action — so on an all-mirror fleet this list is legitimately
+             empty and has to say which kind of empty it is. #}
+          {% if hidden_mirrors %}
+            <div class="meta">
+              No devices take a selection. {{ hidden_mirrors }}
+              mirror node{{ 's' if hidden_mirrors != 1 }} configured — use Replicate on the
+              device row.
+            </div>
+          {% else %}
+            <div class="meta">No devices configured.</div>
+          {% endif %}
         {% endfor %}
       </form>
     </div>

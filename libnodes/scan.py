@@ -12,6 +12,11 @@ a request.
 
 What a listing cannot give us is content. It reports size and mtime only, so a scanned
 manifest row is a weaker claim than a pushed one — see `manifests._compare`.
+
+With one exception, and it is the stronger case rather than a further concession: a
+`sync_mode: mirror` device holds the library as symlinks, and rsync prints a link's target
+beside its name. The target *is* the blob hash, so scanning a mirror recovers exact content
+identity from the listing — see `parse_line`.
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Iterator
 
+from .library import blob_from_link
 from .models import Device
 from .probe import ssh_argv
 from .procs import reap
@@ -51,21 +57,46 @@ class ScanResult:
         return self.error is None
 
 
-def parse_line(line: str) -> tuple[str, int, int, bool] | None:
-    """One listing line -> ``(path, size, mtime, is_dir)``, or None if unusable.
+def parse_line(
+    line: str, *, keep_links: bool = False
+) -> tuple[str, str | None, int, int, bool] | None:
+    """One listing line -> ``(path, blob, size, mtime, is_dir)``, or None if unusable.
 
     Directories are kept, not discarded: an empty directory contains no files to count,
-    so its own row is the only evidence that it exists on the device at all. Symlinks,
-    device nodes and rsync's `.` self-entry are dropped.
+    so its own row is the only evidence that it exists on the device at all. Sockets and
+    device nodes, and rsync's `.` self-entry, are dropped.
+
+    Symlinks are dropped too *unless* `keep_links` — which is a mirror device, where they
+    are not an oddity on the device but the whole point of it. Dropping them there would
+    report a node holding the entire library as holding none of it, the same way
+    `find -type f` finds no books.
+
+    A kept link is reported as a *file* carrying the blob hash its target names, because
+    that is what it stands for. rsync prints `name -> ../../.data/<hash>`, so the hash is
+    already in the listing and needs no second round trip. That makes a scanned mirror row
+    an exact content claim rather than the size guess a scan is normally limited to --
+    `manifests._compare` prefers blob-vs-blob and never reaches the size check. Size is
+    reported as 0 for the same reason: the 63 bytes of the link itself would be a lie
+    about the book, and nothing needs to read it once the blob is known.
     """
     m = LINE_RE.match(line.rstrip("\n"))
     if m is None:
         return None
     perms, size, date, clock, path = m.groups()
     is_dir = perms.startswith("d")
-    if not (is_dir or perms.startswith("-")):
-        return None  # symlink, socket, device node
+    is_link = perms.startswith("l")
+    if not (is_dir or perms.startswith("-") or (is_link and keep_links)):
+        return None  # symlink we do not want, socket, device node
     path = path.strip()
+    blob = None
+    if is_link:
+        # `name -> target`. Split from the right: a book's name may contain " -> ",
+        # rsync's separator is the last one.
+        path, _, target = path.rpartition(" -> ")
+        if not path:
+            return None
+        path = path.strip()
+        blob = blob_from_link(target.strip())
     if path.startswith("./"):
         path = path[2:]
     if not path or path == ".":
@@ -75,21 +106,24 @@ def parse_line(line: str) -> tuple[str, int, int, bool] | None:
     except ValueError:
         stamp = 0.0
     try:
-        return (path, int(size.replace(",", "")), int(stamp), is_dir)
+        return (path, blob, 0 if is_link else int(size.replace(",", "")), int(stamp), is_dir)
     except ValueError:
         return None
 
 
-def parse_listing(lines: Iterator[str]) -> Iterator[tuple[str, None, int, int, int]]:
+def parse_listing(
+    lines: Iterator[str], *, keep_links: bool = False
+) -> Iterator[tuple[str, str | None, int, int, int]]:
     """Manifest rows from a listing: ``(path, blob, size, mtime, is_dir)``.
 
-    `blob` is always None — a remote listing cannot tell us content.
+    `blob` is None for an ordinary file — a remote listing cannot tell us its content. A
+    symlink on a mirror device is the exception; see `parse_line`.
     """
     for line in lines:
-        parsed = parse_line(line)
+        parsed = parse_line(line, keep_links=keep_links)
         if parsed is not None:
-            path, size, mtime, is_dir = parsed
-            yield (path, None, 0 if is_dir else size, mtime, int(is_dir))
+            path, blob, size, mtime, is_dir = parsed
+            yield (path, blob, 0 if is_dir else size, mtime, int(is_dir))
 
 
 def demangle(path: str) -> str | None:
@@ -111,7 +145,15 @@ def demangle(path: str) -> str | None:
 
 
 def scan_argv(device: Device, settings) -> list[str]:
-    """``rsync -r --list-only`` over the device's target directory."""
+    """``rsync -r --list-only`` over the device's target directory.
+
+    A mirror device also gets `-l`, and that is not cosmetic. Plain `-r --list-only` does
+    list a symlink, but prints only its name; `-l` is what makes rsync append
+    ``-> ../../.data/<hash>``, which is the whole reason a mirror scan can report exact
+    content instead of a size. Verified against rsync 3.4.1. Readers never get it: without
+    a target to read, a link row would be a book we cannot identify, and `parse_line`
+    drops it as it always has.
+    """
     ssh = ssh_argv(device, settings)
     remote = f"{device.effective_user}@{device.host}"
     # ssh_argv ends with user@host; everything before it is the ssh command itself.
@@ -120,6 +162,7 @@ def scan_argv(device: Device, settings) -> list[str]:
     return [
         "rsync",
         "-r",
+        *(["-l"] if device.is_mirror else []),
         "--list-only",
         "-e",
         ssh_cmd,
@@ -160,7 +203,10 @@ class Scanner:
     async def _run(self, device: Device) -> ScanResult:
         started = time.time()
         result = ScanResult(started_at=started)
-        rows: list[tuple[str, None, int, int, int]] = []
+        rows: list[tuple[str, str | None, int, int, int]] = []
+        # On a mirror node the books *are* symlinks, so dropping them would report a node
+        # holding the whole library as holding none of it. See parse_line.
+        keep_links = device.is_mirror
         try:
             argv = scan_argv(device, self.settings)
             proc = await asyncio.create_subprocess_exec(
@@ -171,16 +217,18 @@ class Scanner:
             self._procs[device.id] = proc
             assert proc.stdout is not None
             async for raw in proc.stdout:
-                parsed = parse_line(raw.decode("utf-8", errors="replace"))
+                parsed = parse_line(
+                    raw.decode("utf-8", errors="replace"), keep_links=keep_links
+                )
                 if parsed is None:
                     result.skipped += 1
                     continue
-                path, size, mtime, is_dir = parsed
+                path, blob, size, mtime, is_dir = parsed
                 if is_dir:
                     rows.append((path, None, 0, mtime, 1))
                     result.dirs += 1
                 else:
-                    rows.append((path, None, size, mtime, 0))
+                    rows.append((path, blob, size, mtime, 0))
                     result.files += 1
                     result.total_bytes += size
 

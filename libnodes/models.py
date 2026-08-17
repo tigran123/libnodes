@@ -26,6 +26,10 @@ Bool = StrictBool
 
 NodeType = Literal["kobo", "termux", "linux"]
 
+#: What shape of the library a node wants. Two genuinely different transfers, not two
+#: styles of the same one -- see `Device.sync_mode` and `jobs.build_argv`.
+SyncMode = Literal["books", "mirror"]
+
 #: Picking a node type seeds transport fields. The drawer surfaces this as a `warn`
 #: note explaining what changed; here it only fills gaps the user left empty.
 TYPE_SEEDS: dict[str, dict[str, Any]] = {
@@ -158,6 +162,24 @@ class Device(BaseModel):
     #: Unset is inferred from `type`: kobo and termux targets are FAT in practice,
     #: linux is not. See FS_PROFILES.
     fs: str | None = None
+    #: Which shape of the library this node wants. Declare what the node is *for*;
+    #: LibNodes decides the flags and the source list.
+    #:
+    #:   books   A reader -- e-reader, tablet, phone. It wants the books themselves, so
+    #:           the CAS symlinks are dereferenced (-L) and the infrastructure top-level
+    #:           directories are not sent at all. This is what every device was until a
+    #:           Linux node needed the other thing.
+    #:
+    #:   mirror  A replica. It wants /Books exactly as the Pi stores it: symlinks kept as
+    #:           symlinks, the .data vault carried alongside them so they resolve, and
+    #:           urantia-library/ included. No -L, no skiplist, and --delete, because a
+    #:           replica that keeps files the origin dropped is not a replica.
+    #:
+    #: Not derived from `type`, for the same reason `fs` is not: type is a proxy, and a
+    #: Linux host is perfectly entitled to want either shape. A mirror node is also the
+    #: only thing that may receive urantia-library/ -- see config.SKIP_TOPLEVEL, where
+    #: that boundary is documented.
+    sync_mode: SyncMode = "books"
     #: A file on the device whose contents are the battery percentage, or unset for a
     #: node that has no battery worth reporting.
     #:
@@ -278,6 +300,11 @@ class Device(BaseModel):
     @property
     def fs_profile(self) -> "FsProfile":
         return FS_PROFILES.get(self.effective_fs, FS_PROFILES["other"])
+
+    @property
+    def is_mirror(self) -> bool:
+        """One name for the mode, so argv, routes and templates cannot disagree."""
+        return self.sync_mode == "mirror"
 
     @property
     def capacity_bytes(self) -> int | None:
@@ -416,6 +443,7 @@ __all__ = [
     "Device",
     "DevicesFile",
     "NodeType",
+    "SyncMode",
     "TYPE_SEEDS",
     "ValidationIssue",
     "parse_devices",

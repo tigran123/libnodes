@@ -18,6 +18,14 @@
       {% else %}
         <span class="badge">{{ node.device.type|upper }}</span>
       {% endif %}
+      {# Outside the branch above, not inside it: the state badge replaces the type badge,
+         but what kind of node this is does not stop being true because it is asleep — and
+         a card whose MIRROR came and went with reachability would be the more confusing
+         of the two. #}
+      {% if node.device.is_mirror %}
+        <span class="badge" title="sync_mode: mirror — replicates the library verbatim and
+                                   prunes with --delete">MIRROR</span>
+      {% endif %}
     </div>
 
     <div class="mono nowrap">{{ node.device.host }}:{{ node.device.effective_port }}</div>

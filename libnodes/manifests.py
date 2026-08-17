@@ -366,7 +366,13 @@ class Manifests:
         finally:
             conn.close()
 
-    def extras(self, device_id: str, library_paths: set[str], limit: int = 500) -> Extras:
+    def extras(
+        self,
+        device_id: str,
+        library_paths: set[str],
+        limit: int = 500,
+        expected_toplevel: frozenset[str] = frozenset(),
+    ) -> Extras:
         """Files on the device that the library does not have.
 
         Orphans accumulate: books deleted from the library, and — as found on a real
@@ -381,6 +387,13 @@ class Manifests:
 
         Each row carries the decoded name when one can be recovered, and whether that
         name is in the library — which is what makes it safe to delete.
+
+        `expected_toplevel` is for a mirror device, and without it this answer inverts on
+        one: a mirror is *sent* `.data/` and `urantia-library/`, neither of which is in the
+        index, so every blob in the vault would be reported as an orphan — around 24,616
+        rows of "delete me" describing a correct replica. Those names are expected there
+        because the mode put them there, so they are excluded rather than listed. Pass
+        `SKIP_TOPLEVEL`; a reader passes nothing and the comparison is unchanged.
         """
         from .scan import demangle
 
@@ -402,6 +415,10 @@ class Manifests:
             conn.close()
 
         found = sorted(set(sizes) - library_paths)
+        if expected_toplevel:
+            found = [
+                p for p in found if p.split("/", 1)[0] not in expected_toplevel
+            ]
         rows: list[dict] = []
         duplicates = 0
         for path in found:

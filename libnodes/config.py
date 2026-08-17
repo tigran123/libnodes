@@ -22,18 +22,33 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # _TOPDIR_SKIPLIST in /Books/urantia-library/webapp/backend/config.py:34, plus the
 # entries in /Books/urantia-library/exclude.txt.
 #
-# Two of these entries are load-bearing, not housekeeping:
+# This list governs *browsing*, and browsing is what makes it a boundary rather than a
+# preference: the index walk applies it at depth 0 (library.py), and the push path admits
+# only paths the index vouches for (routes/jobs.py `_resolve`). Nothing here can be
+# reached by browsing, searching or selecting, and that has not changed.
+#
+# What did change: a `sync_mode: mirror` node -- and only such a node -- is sent these
+# paths deliberately, by `jobs.mirror_sources`, which does not consult this list at all.
+# So the rule is "never browsable, and pushable only to a device that names the mode",
+# not "never pushable". A reader still cannot receive any of it.
+#
+# Three of these entries are load-bearing, not housekeeping:
 #
 #   urantia-library  A sibling application that lives inside the library root: the
 #                    webapp that owns the catalog. Its tree holds source, configuration
 #                    and potentially credentials, none of which is a book. Removing it
-#                    from this set would make all of that browsable, and pushable to a
-#                    device. Do not.
+#                    from this set would make all of that browsable, and pushable to
+#                    every device. Do not. A mirror node receives it because a verbatim
+#                    replica of the Pi's /Books is the whole point of that mode, which is
+#                    also its whole cost: declaring `sync_mode: mirror` is declaring that
+#                    this node may hold the credentials. Nothing else grants that.
 #
 #   .data            Skipped for *browsing* only. It holds the actual bytes every
 #                    library symlink points at, and rsync -L dereferences into it when
 #                    transferring -- so it must stay out of the tree without being
-#                    excluded from transfers.
+#                    excluded from transfers. For a mirror it inverts from permitted to
+#                    mandatory: that transfer keeps the symlinks, so without the vault
+#                    beside them every one of them dangles.
 #
 #   Recommended      Not a place, a *category*. urantia-library calls it a "pseudo-
 #                    directory managed exclusively by the recommend/unrecommend
@@ -42,7 +57,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 #                    tree. Verified: all three of its entries point at blobs also
 #                    reachable under Religions/ and Science/. Because we transfer with
 #                    -L, syncing it would ship a complete SECOND copy of every
-#                    recommended book to the device.
+#                    recommended book to the device. That reason is specific to -L: a
+#                    mirror preserves the companion links as links, so they cost a few
+#                    hundred bytes and belong in a replica.
 SKIP_TOPLEVEL = frozenset(
     {
         ".data",
@@ -171,6 +188,24 @@ SEED_DEVICES_YAML = """\
 #       FAT32 cannot hold a file of 4 GiB or more). Optional: unset means vfat for
 #       kobo/termux and ext4 for linux.
 #
+# sync_mode: which shape of the library this node wants. Optional; default `books`.
+#
+#       books   A reader. It gets the books themselves: the library is symlinks into a
+#               content-addressed vault, so rsync -L copies the bytes through them, and
+#               the infrastructure directories (.data, urantia-library, Recommended) are
+#               not sent at all. Push whole categories or individual books.
+#
+#       mirror  A replica -- an ordinary Linux box that wants /Books exactly as it is
+#               here. Symlinks stay symlinks, .data comes with them so they resolve,
+#               urantia-library comes too, and --delete removes whatever the origin no
+#               longer has. It is all-or-nothing: a mirror is not offered in the Library
+#               view's push targets, it has one Replicate action on its device row.
+#
+#               Note what that means before setting it: this node will hold a copy of
+#               urantia-library, configuration and credentials included, and Replicate
+#               will delete files there that do not exist here. Run its Dry run first --
+#               that is the only preview of the prune.
+#
 # battery: a file on the DEVICE holding the charge percentage, shown as a bar beside
 #       storage. A path, because there is no portable way to ask: Android keeps it under
 #       /sys/class/power_supply/ but the node name varies by vendor -- `battery` on an
@@ -229,6 +264,8 @@ devices:
     full_sync: false
     battery: /sys/class/power_supply/battery/capacity
 
+  # A Linux box kept as a verbatim replica rather than stocked with books. Contrast the
+  # two entries above: same program, two entirely different transfers.
   - id: mirror
     name: Linux mirror
     abbr: MIRR
@@ -237,7 +274,7 @@ devices:
     user: books
     target: /srv/books
     fs: ext4
-    full_sync: true
+    sync_mode: mirror
 """
 
 

@@ -398,6 +398,38 @@ class LibraryIndex:
         emit("", 0)
         return out
 
+    def vault_totals(self) -> tuple[int, int]:
+        """``(files, bytes)`` of `.data` itself, for a mirror push's pre-flight estimate.
+
+        A mirror sends the vault as *paths*, and `.data` is not in the index — it is
+        skipped at depth 0 by design — so `JobRunner._estimate` would count the symlinks
+        and miss every byte behind them. The blobs are still knowable from here without a
+        walk: one row per library file records the hash it points at, so the distinct
+        hashes are the vault's contents and their sizes are its size.
+
+        DISTINCT is load-bearing. Two library paths sharing a blob are one file in the
+        vault, which is the entire point of content addressing; counting the rows would
+        report the deduplicated copy as though it were not.
+
+        A floor, not a total: `urantia-library/` is not indexed either, so a mirror moves
+        somewhat more than this. Better a bar that finishes early than one built on a
+        number that means nothing.
+        """
+        conn = self._connect()
+        if conn is None:
+            return (0, 0)
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*), COALESCE(SUM(size), 0) FROM "
+                "(SELECT DISTINCT blob, size FROM entries "
+                " WHERE blob IS NOT NULL AND is_dir = 0)"
+            ).fetchone()
+        except sqlite3.Error:
+            return (0, 0)
+        finally:
+            conn.close()
+        return (int(row[0]), int(row[1])) if row else (0, 0)
+
     def all_file_paths(self) -> set[str]:
         """Every file path in the library, for set comparisons against a device."""
         conn = self._connect()
@@ -511,15 +543,26 @@ class _Counters:
         self.errors = 0
 
 
+def blob_from_link(target: str) -> str | None:
+    """The vault hash a symlink target names, or None if it names something else.
+
+    Split out from `_blob_of` so the scanner can reach it: `rsync --list-only` prints
+    `name -> ../../.data/<hash>` for a symlink, which means a scan of a mirror device can
+    recover exact content identity from the listing alone. See scan.parse_line.
+    """
+    base = os.path.basename(target)
+    return base if _BLOB_RE.match(base) else None
+
+
 def _blob_of(dir_entry: os.DirEntry) -> str | None:
     """The vault hash a library symlink points at, if it points at one."""
     try:
         if not dir_entry.is_symlink():
             return None
-        base = os.path.basename(os.readlink(dir_entry.path))
+        target = os.readlink(dir_entry.path)
     except OSError:
         return None
-    return base if _BLOB_RE.match(base) else None
+    return blob_from_link(target)
 
 
 def _walk(
@@ -634,6 +677,7 @@ def _enrich(conn: sqlite3.Connection, catalog_db: Path) -> int:
 __all__ = [
     "Entry",
     "IndexMeta",
+    "blob_from_link",
     "LibraryIndex",
     "PathError",
     "SORTS",

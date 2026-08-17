@@ -12,7 +12,7 @@ variable. This file is what neither of those says: how to work in the tree.
 ```bash
 uv pip sync requirements-dev.txt                    # uv, not pip. /usr/local/bin/uv here
 uv run uvicorn libnodes.main:app --reload           # http://127.0.0.1:8000/devices
-uv run pytest                                       # 360 tests, ~15s, no network
+uv run pytest                                       # 457 tests, ~17s, no network
 uv run pytest tests/test_jobs.py::test_name -x
 ./deploy/deploy.sh [--no-restart]                   # sync to pi, uv pip sync, restart, poll /healthz
 ```
@@ -25,10 +25,42 @@ Dependencies are declared in `requirements.in` / `requirements-dev.in` and compi
 Each of these, when broken, leaves the tests green and the UI plausible. That is why they
 are listed.
 
-- **`rsync -L` is mandatory and not configurable.** `BASE_FLAGS` (`libnodes/jobs.py:120`),
-  assembled in `build_argv` (`libnodes/jobs.py:369`). The library is symlinks into a
-  blake2b vault, so without `--copy-links` a transfer reports success and delivers
-  dangling links that an e-reader shows as zero-byte files.
+- **`rsync -L` is mandatory for a *reader*, and never configurable.** `BASE_FLAGS`
+  (`libnodes/jobs.py`), assembled in `build_argv`. The library is symlinks into a blake2b
+  vault, so without `--copy-links` a transfer reports success and delivers dangling links
+  that an e-reader shows as zero-byte files.
+  The one exception is a different kind of target, not a setting: a device declaring
+  `sync_mode: mirror` (`Device.sync_mode`) wants the tree replicated verbatim, so
+  `build_argv` drops `-L` and sends the whole root so `.data/` travels with the links it
+  kept. Both halves are load-bearing — dropping `-L` *without* the vault is precisely the
+  dangling-link failure, reached from the other side. Pinned by
+  `tests/test_sync_mode.py::test_a_mirror_push_keeps_the_symlinks`, with the reader
+  invariant restated beside it.
+- **A mirror's rsync source is `./`, and that is what makes `--delete` mean anything.**
+  `--delete` prunes only directories in the transfer, so enumerating the top-level names
+  tidies inside `Science/` while never scanning the destination root — a stray top-level
+  file then outlives every replicate. Measured on a local pair: enumerated left
+  `Leftover.pdf` and an orphaned `OldCat/`, `./` removed both. `mirror_sources` still
+  returns the enumerated names, because `_estimate` prices them and `_update_manifest`
+  records them; collapse `job.sources` to `./` as well and a replicate updates no manifest,
+  leaving `PRESENT ON` blank for ever. Two lists, deliberately: what rsync is told, and
+  what the app reasons about.
+- **A mirror deletes; nothing else does.** `--delete` is the only genuinely destructive flag
+  the program emits. `build_argv` therefore *refuses* to compose a mirror push with an empty
+  source list or a target that normalises to `/` — both would be data loss rather than a
+  wrong transfer — and Adopt never gets it. Kept under `-n`, deliberately: a mirror's dry
+  run is the only preview of the prune. Full Sync must never route a mirror node, because
+  its own note promises it never deletes. `retry` re-derives the whole root instead of
+  replaying stored sources through `_resolve`, which would strip `.data/` while `--delete`
+  stayed, and it now preserves `dry_run` so a preview cannot be retried into a prune.
+- **A mirror's vault is not "extras".** `Manifests.extras` subtracts the index from a scan,
+  and a mirror legitimately holds `.data/` and `urantia-library/`, neither of which is
+  indexed — so without `expected_toplevel=SKIP_TOPLEVEL` the dialog invites you to delete
+  ~24.6k blobs from a correct replica.
+- **`SKIP_TOPLEVEL` is a browsing boundary that a mirror crosses on purpose.** See the
+  entry further down; the short version is that "never pushable" became "pushable only to a
+  node that names `sync_mode: mirror`", and `library.py`'s depth-0 filter — the thing that
+  keeps it unbrowsable and unselectable — was not touched.
 - **Do not add `-h` or `%i`.** Both were tried against real hardware and rejected for a
   measured reason. See README §"The rsync flags belong to the program" before touching
   `BASE_FLAGS`, `INFO_FLAGS` or `OUT_FORMAT`.
@@ -102,11 +134,29 @@ are listed.
   `<html>`, no doctype. That is the HTMX contract, enforced by
   `test_fragments_render_standalone`. **A new fragment route must be added to `FRAGMENTS` in
   `tests/test_routes.py:7`**, or the contract simply is not enforced for it.
-- **`SKIP_TOPLEVEL` (`libnodes/config.py:45`) is a security boundary, not housekeeping.**
+- **`SKIP_TOPLEVEL` (`libnodes/config.py`) is a security boundary, not housekeeping.**
   `urantia-library/` is a sibling app holding configuration and credentials;
   `Recommended/` is a pseudo-directory of duplicate symlinks that `-L` would expand into a
   second full copy of every recommended book; `.data/` must stay unbrowsable while
   remaining the target rsync dereferences into. The docstring there explains each one.
+  It is enforced in exactly two places, and only the first is the boundary: the index walk
+  at depth 0 (`library.py`), which is what makes these paths unbrowsable *and* unpushable,
+  since `_resolve` (`routes/jobs.py`) admits only what the index vouches for; and
+  `full_sync_sources`. `mirror_sources` deliberately consults neither — a
+  `sync_mode: mirror` node is sent all of it, which is that mode's entire cost. Do not
+  "fix" the asymmetry by editing the skiplist or the walk: browsing must stay closed, and
+  the two together are what keep the exception confined to a node that named it. Pinned by
+  `tests/test_sync_mode.py::test_the_vault_is_still_hidden_from_browsing` beside
+  `::test_mirror_sources_carry_exactly_what_the_skiplist_hides`.
+- **A scan drops symlinks — except on a mirror, where they are the library.** `parse_line`
+  (`libnodes/scan.py`) keeps dirs and regular files; a link row would be a book it cannot
+  identify. On a mirror node every book *is* a link, so dropping them reported a full
+  library as an empty one. `keep_links` turns them into file rows carrying the blob hash
+  read out of the link target, which makes the row an exact content claim rather than the
+  size guess a scan is otherwise limited to. This needs `-l` in `scan_argv`: plain
+  `-r --list-only` lists a symlink but prints no `-> target`, verified against rsync 3.4.1,
+  and without the target there is no hash. Size is recorded as 0 on purpose — the link's
+  own 63 bytes would be a lie about the book.
 - **Cancelling a task that owns a subprocess does not stop the subprocess.** Every
   `stop()` must cancel its readers and then `await procs.reap(...)`
   (`libnodes/procs.py`); `terminate()` alone only asks. Get it wrong and an rsync keeps

@@ -61,22 +61,78 @@ itself because it depends on the exact behaviour of the flags:
 
 | Flag | Why |
 |---|---|
-| `-L` | the library is symlinks into a CAS vault |
+| `-L` | the library is symlinks into a CAS vault — **except on a mirror**, below |
 | `-R` | a source keeps its path shape on the device |
 | `--out-format=@%l\|%n` | file events are declared, so parsing is exact rather than a guess about which lines look like filenames |
 | `--info=progress2,flist0,misc0,stats1` | one aggregate progress line; no chatter we would only have to filter |
 | `-O` | otherwise rsync stamps every directory's mtime and reports each as touched |
 | `--no-perms` | **only** where the target filesystem cannot store them |
 | `--modify-window=1` | **only** on FAT, whose seconds field counts in twos |
+| `--delete` | **only** on a mirror, where a stale leftover is a divergence |
 
-Those last two are why devices declare `fs:` (vfat, exfat, ext4, …) rather than a flag
-list: the filesystem is the actual constraint, and device type is only a proxy for it.
-A Linux host with an exFAT disk gets FAT treatment; an ext4 target keeps full archive
-semantics. See `FS_PROFILES` in `models.py`.
+Those last three are why devices declare facts — `fs:` (vfat, exfat, ext4, …) and
+`sync_mode:` — rather than a flag list: the filesystem and the node's purpose are the
+actual constraints, and device type is only a proxy for either. A Linux host with an exFAT
+disk gets FAT treatment; an ext4 target keeps full archive semantics. See `FS_PROFILES` in
+`models.py`.
 
 Deliberately absent: `-h` (we format numbers ourselves), `%i` in the out-format (it
 makes rsync log every unchanged file on a FAT target — 24,616 lines around 4 real
 transfers, measured), and `--size-only`, which belongs to Adopt alone — see below.
+
+### Two shapes: readers and mirrors
+
+Every device was a *reader* until a Linux box needed the other thing. A reader wants the
+books; a replica wants the tree. `sync_mode:` in `devices.yaml` picks which, and nothing
+else does — not `type:`, because a Linux host is entitled to either.
+
+| | `books` (default) | `mirror` |
+|---|---|---|
+| symlinks | dereferenced (`-L`) into real files | kept as symlinks |
+| `.data/` | never named; `-L` reads *through* it | **sent**, or every link dangles |
+| `urantia-library/` | never sent | sent, credentials and all |
+| `Recommended/` | never sent — `-L` would duplicate every book in it | sent; as links it is nearly free |
+| deletes | never | `--delete`, always |
+| granularity | any subtree, any book | the whole root, or nothing |
+
+The two rows in the middle are the interesting ones, because each inverts a rationale that
+holds perfectly well for a reader:
+
+- `.data/` is excluded from *browsing* so the vault is not a directory you can wander
+  into, while remaining the thing `-L` dereferences. A mirror keeps the symlinks, so for
+  it the vault stops being permitted and becomes **mandatory** — omit it and you have
+  delivered exactly the dangling links `-L` exists to prevent, arrived at from the
+  opposite direction.
+- `Recommended/` is excluded *because of* `-L`: its entries are companion symlinks to
+  books that already live elsewhere, so dereferencing would ship a second full copy of
+  every recommended book. Preserve the links and that cost disappears.
+
+A mirror is not offered in the Library view's push targets. A subtree of preserved
+symlinks has no vault to resolve against, and the index cannot offer `.data/` as something
+to select — so it would only ever be a way to build the dangling-link failure by hand. It
+gets one **Replicate** action on its device row instead, and a **Dry run** beside it that
+is the only preview of what `--delete` would remove.
+
+### Why a mirror is one source, `./`
+
+`--delete` only prunes directories that are part of the transfer. Hand rsync the top-level
+names — `.data/ Science/ urantia-library/ …` — and it tidies *inside* each of them while
+never once scanning the destination root, so anything that exists only on the device and
+does not share a name with a source survives every replicate for ever. Measured on a local
+pair: the enumerated form left a stray `Leftover.pdf` and a whole orphaned `OldCat/`
+untouched; `./` removed both. So a mirror sends `./` and `-R` makes the transfer root the
+destination root, which is what "replica" has to mean.
+
+The job still *records* the enumerated top-level names as its sources, because that is what
+the estimate prices and the manifest records — collapse those to `./` too and a replicate
+updates no manifest at all, leaving `PRESENT ON` permanently blank. The two lists are
+different on purpose: one is what rsync is told, the other is what the app reasons about.
+
+Scanning a mirror is the one case where a scan is the *stronger* claim rather than a weaker
+one. `rsync --list-only` normally reports size and mtime, never content — but with `-l` it
+prints a symlink's target, and that target is the blob hash. So a mirror's listing answers
+"is this the same book?" exactly, which is the comparison `manifests._compare` prefers and
+a reader's scan can never reach.
 
 ### Why FAT needs a modify window
 
@@ -173,7 +229,7 @@ a deploy deletes.
 
 ## Testing notes
 
-360 tests, no network required. Two fixtures encode lessons that cost real debugging:
+457 tests, no network required. Two fixtures encode lessons that cost real debugging:
 
 - `tests/data_rsync_human.log` — verbatim output from a real transfer. `-avhP` includes
   `-h`, so rsync reported `734.38K` rather than `1,234,567`, and a parser tested only

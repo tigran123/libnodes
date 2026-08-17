@@ -35,8 +35,9 @@ def test_parses_a_file_line():
         "-rwxr-x---     21,669,813 2026/08/11 08:32:40 Art/Complete-Book.pdf"
     )
     assert got is not None
-    path, size, mtime, is_dir = got
+    path, blob, size, mtime, is_dir = got
     assert path == "Art/Complete-Book.pdf"
+    assert blob is None  # a listing cannot report content; only a mirror's links can
     assert size == 21_669_813
     assert mtime > 0
     assert is_dir is False
@@ -47,7 +48,7 @@ def test_directories_are_kept():
     got = parse_line("drwxr-x---  32,768 2026/08/11 08:32:42 Art")
     assert got is not None
     assert got[0] == "Art"
-    assert got[3] is True
+    assert got[4] is True
 
 
 def test_skips_symlinks_and_self():

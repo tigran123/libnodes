@@ -15,8 +15,17 @@
     </span>
   </div>
 
+  {# The mode rides in the Type cell rather than a column of its own: the CSS tracks, the
+     <thead> cells and these row cells have to agree in number, and a grid that grows a
+     column the stylesheet does not know about wraps its last cell silently. Type and mode
+     are both "what kind of node is this", so one cell holds both. #}
   <div data-label="Type">
     <span class="badge">{{ node.device.type|upper }}</span>
+    {% if node.device.is_mirror %}
+      <span class="badge" title="sync_mode: mirror — replicates {{ library_root }} verbatim,
+                                 symlinks and vault included, and prunes with
+                                 --delete">MIRROR</span>
+    {% endif %}
   </div>
 
   <div data-label="Address" class="mono nowrap">
