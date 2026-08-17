@@ -9,6 +9,7 @@ them. Scan solves the first problem, adopt the second.
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 
@@ -624,11 +625,90 @@ async def test_connection_test_reports_failure_legibly(client, app):
     assert 'id="test-result"' in r.text
     assert "getElementById('test-result').remove()" in r.text
 
-    # The handler re-probes on the way here, so the row rides along out of band. Without
-    # it the STORAGE column behind the dialog keeps the figure from the last poll for up
-    # to 10s, contradicting the df the dialog is showing.
+    # The handler re-probes on the way here, so the row rides along out of band.
     assert 'hx-swap-oob="true"' in r.text
     assert 'id="node-kobo"' in r.text
+
+
+async def test_the_test_updates_the_storage_it_just_measured(client, app, monkeypatch):
+    """The row used to ride along out of band carrying the *previous* poll's storage.
+
+    `probe()` on the way out refreshes reachability only, so the dialog printed the df it
+    had just run while the STORAGE cell behind it showed a figure up to freespace_interval
+    (5 min) old — the two disagreeing on screen at the same moment. The reading is already
+    paid for; the fix is to keep it, not to spend a second ssh.
+    """
+    from libnodes.probe import FreeSpace, Reachability
+
+    lib = app.state.lib
+    now = time.time()
+    lib.probe._slot("kobo").reach = Reachability(
+        state="online", last_ok=now, checked_at=now
+    )
+    # What the row is showing: 5 GB used of 30.
+    lib.probe._slot("kobo").space = FreeSpace(
+        total=32212254720, used=5368709120, free=26843545600, checked_at=now - 600
+    )
+
+    # What the test measures: 10 GB used. 1K blocks, as `df -Pk` reports them.
+    transcript = (
+        "# df\n"
+        "Filesystem 1024-blocks Used Available Capacity Mounted on\n"
+        "/dev/mmcblk0p3 31457280 10485760 20971520 33% /mnt/onboard\n"
+        "# rsync\nrsync  version 3.2.7  protocol version 31\n"
+        "# write\nwritable\n"
+    )
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return (transcript.encode(), b"")
+
+    async def fake_exec(*a, **k):
+        return _Proc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    r = await client.post("/device/kobo/test")
+    assert r.status_code == 200
+
+    space = lib.probe.space("kobo")
+    assert space.used == 10737418240, "the test threw away the df it had just run"
+    assert space.total == 32212254720
+    assert space.free == 21474836480
+    # ...and the row it swaps out of band says so, rather than the old figure.
+    assert "10.0 GB used" in r.text
+    assert "5.0 GB used" not in r.text
+
+
+async def test_the_rsync_banner_is_not_read_as_a_df_record(app):
+    """`_parse_df` scans backwards for the last line that parses, and
+    `rsync  version 3.2.7  protocol version 31` splits into the six fields it wants.
+    Handing it the whole transcript would let the version line answer for the disk."""
+    from libnodes.routes.devices import _df_section
+
+    transcript = (
+        "# df\n"
+        "Filesystem 1024-blocks Used Available Capacity Mounted on\n"
+        "/dev/mmcblk0p3 31457280 10485760 20971520 33% /mnt/onboard\n"
+        "# rsync\nrsync  version 3.2.7  protocol version 31\n"
+        "# write\nwritable\n"
+    )
+    section = _df_section(transcript)
+    assert "rsync" not in section
+    assert "writable" not in section
+    assert "31457280" in section
+
+    lib = app.state.lib
+    assert lib.probe.adopt_space("kobo", section) is True
+    assert lib.probe.space("kobo").used == 10737418240
+
+    # A device that answered but whose df said nothing usable leaves the reading alone
+    # rather than blanking a figure the last real probe established.
+    before = lib.probe.space("kobo")
+    assert lib.probe.adopt_space("kobo", "# df\ndf: /nope: No such file\n") is False
+    assert lib.probe.space("kobo") is before
 
 
 async def test_a_dry_run_does_not_claim_to_have_updated_the_manifest(

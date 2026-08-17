@@ -89,6 +89,9 @@ Every setting is a `LIBNODES_`-prefixed environment variable or a line in `.env`
 | `LIBNODES_CATALOG_DB` | `/Books/.data/db/lib.db` | read-only; optional |
 | `LIBNODES_CONCURRENCY` | `1` | simultaneous rsyncs |
 | `LIBNODES_PROBE_INTERVAL` | `10` | seconds between reachability sweeps |
+| `LIBNODES_PROBE_BACKOFF_MAX` | `300` | ceiling on the per-device backoff — in effect, how long a recovery can go unnoticed when nobody has a Devices page open |
+| `LIBNODES_PROBE_BACKOFF_WATCHED` | `30` | the same ceiling while a Devices page is polling |
+| `LIBNODES_WATCH_WINDOW` | `150` | how long after the last Devices request the fleet still counts as watched — above 60s on purpose, since a backgrounded tab polls only once a minute |
 | `LIBNODES_REINDEX_INTERVAL` | `1800` | seconds; `0` disables the periodic rebuild |
 | `LIBNODES_LOG_RETENTION` | `200` | job logs kept on disk |
 | `LIBNODES_PASSWORD` | *(empty)* | the shared login password; **empty means no login at all** |

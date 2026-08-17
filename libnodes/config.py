@@ -83,6 +83,22 @@ class Settings(BaseSettings):
     #: Without it, twenty dead devices cost twenty connect attempts every probe_interval
     #: for as long as the service runs.
     probe_backoff_max: float = 300.0
+    #: The same ceiling, for a fleet someone is actually looking at. The backoff is a cost
+    #: control, but its cost is only ever *paid* by a person watching a red dot that will
+    #: not go green: at 300s a device that came back stayed red for up to five minutes
+    #: while the browser dutifully re-rendered the stale reading every 10s. That is what
+    #: this exists to stop, and it is charged only while a Devices page is polling.
+    probe_backoff_watched: float = 30.0
+    #: How long a Devices request keeps the fleet "watched" after the last one. Sized
+    #: against what a browser actually does, not against the template: `every 10s` holds
+    #: only while the tab is in front. Backgrounded, the browser throttles the timer to
+    #: once a minute -- measured on the Pi's journal, 10s intervals from 09:08:01 to
+    #: 09:10:11 and exactly 60s from 09:11:01 on, same tab. At 60 this would sit on that
+    #: boundary and flap between the two ceilings; 150 leaves two and a half throttled
+    #: polls of margin and still relaxes a couple of minutes after the last tab closes.
+    #: A backgrounded tab counting as watched is the point -- you alt-tab back to a page
+    #: that is current, which is the whole complaint.
+    watch_window: float = 150.0
     reindex_interval: float = 1800.0
     reindex_on_start: bool = True
 

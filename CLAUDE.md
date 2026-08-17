@@ -66,7 +66,24 @@ are listed.
   atomic rename. A full walk is ~29 s on the Pi.
 - **Requests never probe a device.** A background task writes reachability into a dict
   (`libnodes/probe.py`); handlers read it. Otherwise six sleeping e-readers become a
-  six-second page load.
+  six-second page load. `devices_context` calls `probe.note_interest()`, which is a
+  `time.time()` stamp and must stay one — it is the single place a request touches the
+  probe, and the moment it does any I/O the invariant is gone.
+- **The dot's freshness is the backoff, not the 10s poll.** Two independent cadences and
+  only one is 10s: the browser's `hx-trigger="every 10s"` is hardcoded in `devices.html`
+  and only re-renders the dict, while the probe backs a failing device off to
+  `probe_backoff_max`. At the 300s default a device that came back stayed red for up to
+  five minutes with the page dutifully refreshing the stale reading — the bug that produced
+  `note_interest`, which cuts the ceiling to `probe_backoff_watched` (30s) while a Devices
+  page is polling. `due()` re-judges against the *current* ceiling rather than trusting the
+  stored `next_probe_at`, or a page opening now would wait out an appointment made while
+  nobody was watching. Red is slower still: `offline` needs `sleeping_window` (1800s) to
+  have passed, so red always means "down over 30 minutes" and amber `sleeping` is the first
+  half hour. Losing a node is quick in either case, ~22s. Pinned by
+  `tests/test_probe.py::test_an_opening_tab_pulls_a_long_backoff_forward`.
+- **`_loop` never awaits a `df`.** A space probe is bounded at 15s and tried twice, so
+  awaiting it put up to 30s per online node between reachability sweeps — 30s of every dot
+  on the page being stale. Use `probe_space_soon`.
 - **One rsync at a time.** `Settings.concurrency`, default 1. The Pi's NIC shares the USB 2.0
   bus with the library disk, so two transfers go half as fast each.
 - **Every template except `base.html` and the page templates must render standalone** — no
@@ -103,7 +120,7 @@ are listed.
   exactly as it does when nginx buffers `/jobs/stream`. It reads `scope` only and never
   wraps `send`.
 - **rsync and ssh are argv lists, never shell strings** (`build_argv`,
-  `ssh_argv` at `libnodes/probe.py:341`, `scan_argv` at `libnodes/scan.py:112`).
+  `ssh_argv` at `libnodes/probe.py:448`, `scan_argv` at `libnodes/scan.py:113`).
   `BatchMode=yes` throughout, so a missing key fails fast instead of hanging on a prompt.
 
 ## Conventions

@@ -18,7 +18,7 @@ from ..jobs import Job, build_argv, full_sync_sources, hints_for_text
 from ..manifests import Extras
 from ..models import Device
 from ..state import AppState
-from ..templating import reltime, templates
+from ..templating import reltime, templates, until
 
 router = APIRouter()
 
@@ -98,10 +98,17 @@ class DeviceView:
 
     @property
     def reach_note(self) -> str:
-        """The tooltip behind a failed row: a reading of the error, and when it last
-        answered. A reading, not the fact — the fact is the error itself, which the row
-        prints. Here rather than in the template because it interprets, and templates
-        only format."""
+        """The tooltip behind a failed row: a reading of the error, when it last
+        answered, and how old the reading itself is. A reading, not the fact — the fact is
+        the error itself, which the row prints. Here rather than in the template because it
+        interprets, and templates only format.
+
+        The age is not decoration. The row is re-rendered every 10s but the probe behind it
+        backs off to five minutes, so without it a dot silently asserts a measurement it
+        did not just take — a device that came back four minutes ago looks identical to one
+        that is still down, and the page gives you no way to tell. Chasing exactly that
+        cost an afternoon.
+        """
         if self.online or not self.reach.error:
             return ""
         error = self.reach.error.lower()
@@ -111,7 +118,14 @@ class DeviceView:
             if self.reach.last_ok
             else "has never answered"
         )
-        return f"{note} · {seen}" if note else seen
+        checked = (
+            f"checked {reltime(self.reach.checked_at)}, "
+            f"next {until(self.reach.next_probe_at)}"
+            if self.reach.checked_at
+            else "not checked yet"
+        )
+        parts = [p for p in (note, seen, checked) if p]
+        return " · ".join(parts)
 
     @property
     def capacity(self) -> int | None:
@@ -174,6 +188,11 @@ def _filtered(views: list[DeviceView], q: str | None) -> list[DeviceView]:
 
 def devices_context(request: Request, q: str | None = None) -> dict:
     app = state(request)
+    # A stamp, not a probe -- this stays inside "requests never probe a device". It tells
+    # the background loop somebody is looking, which tightens the backoff ceiling from five
+    # minutes to thirty seconds for as long as the page keeps polling. Every devices route
+    # funnels through here, so the row poll alone is enough to hold it.
+    app.probe.note_interest()
     views = _filtered(device_views(app), q)
     online, total = app.probe.reachable_count
     ctx = base_context(request, "devices")
@@ -377,6 +396,12 @@ async def device_test(request: Request, device_id: str):
     elapsed = time.perf_counter() - started
     # Re-probe reachability too, so the row behind the dialog agrees with the strip.
     await app.probe.probe(device)
+    # And keep the `df` this test just ran. `probe()` above refreshes reachability only,
+    # so without this the Storage cell kept whatever the last space probe left there —
+    # up to freespace_interval (5 min) old, and visibly disagreeing with the figure in
+    # the dialog printed from the same command. The reading is free: we have already
+    # paid for the ssh.
+    app.probe.adopt_space(device_id, _df_section(out))
 
     ctx = base_context(request, "devices")
     ctx.update(
@@ -389,13 +414,34 @@ async def device_test(request: Request, device_id: str):
             "elapsed": elapsed,
             "summary": _test_summary(out) if code == 0 else None,
             "hints": hints_for_text(f"{out}\n{err}", code if code is not None else 255),
-            # Built after the re-probe above, so the row the dialog carries out of band
-            # shows the storage this test just measured rather than the last poll's.
+            # Built after both updates above, so the row the dialog carries out of band
+            # shows the reachability and the storage this test just measured rather than
+            # the last poll's.
             "node": _one(request, device_id),
             "oob": True,
         }
     )
     return templates.TemplateResponse(request, "dialogs/test_result.html", ctx)
+
+
+def _df_section(out: str) -> str:
+    """The `df` block of the test transcript, without the sections that follow it.
+
+    `_parse_df` scans backwards for the last line that parses, so handing it the whole
+    transcript invites it to read the rsync version banner as a size record —
+    `rsync  version 3.2.7  protocol version 31` splits into six fields, which is the
+    shape it is looking for. `_TEST_SCRIPT` prints `# df` / `# rsync` / `# write`
+    markers precisely so the parts stay separable.
+    """
+    lines = out.splitlines()
+    start = next((i + 1 for i, ln in enumerate(lines) if ln.strip() == "# df"), None)
+    if start is None:
+        return ""
+    end = next(
+        (i for i in range(start, len(lines)) if lines[i].startswith("# ")),
+        len(lines),
+    )
+    return "\n".join(lines[start:end])
 
 
 def _test_summary(out: str) -> list[str]:

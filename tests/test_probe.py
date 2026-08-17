@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 
 import pytest
@@ -94,6 +95,111 @@ async def test_backoff_skips_undue_devices(app, monkeypatch):
     assert len(calls) == first_round + 2
 
 
+def test_a_watched_fleet_is_retried_sooner(settings):
+    """The ceiling is a cost control, and its cost is paid by whoever is looking at it."""
+    from libnodes.config import DevicesStore
+    from libnodes.probe import DeviceProbe
+
+    tuned = settings.model_copy(
+        update={
+            "probe_interval": 10.0,
+            "probe_backoff_max": 300.0,
+            "probe_backoff_watched": 30.0,
+            "watch_window": 60.0,
+        }
+    )
+    probe = DeviceProbe(tuned, DevicesStore(settings.resolved_devices_file))
+
+    # Nobody has looked since startup: the long ceiling applies.
+    assert probe.watched is False
+    assert probe._backoff(9) == 300.0
+
+    probe.note_interest()
+    assert probe.watched is True
+    assert probe._backoff(9) == 30.0
+    # The early growth is untouched -- only the ceiling moves.
+    assert probe._backoff(1) == 10.0
+    assert probe._backoff(2) == 20.0
+
+    # ...and it lapses on its own once the page stops polling.
+    probe._interest_at = time.time() - 61.0
+    assert probe.watched is False
+    assert probe._backoff(9) == 300.0
+
+
+def test_the_watch_window_outlasts_a_backgrounded_tab(settings):
+    """`every 10s` is what a *foreground* tab does. Backgrounded, the browser throttles
+    the timer to once a minute — measured on the Pi's journal, the same tab dropping from
+    10s to exactly 60s intervals. A window of 60 would sit on that boundary and flap
+    between the two ceilings, so a device would be retried at whichever rate happened to
+    apply when `_backoff` ran."""
+    assert settings.watch_window > 60.0, (
+        "a backgrounded Devices tab polls once a minute; a window at or below that "
+        "flaps the backoff ceiling"
+    )
+
+
+async def test_an_opening_tab_pulls_a_long_backoff_forward(app, monkeypatch):
+    """The regression: a device that came back stayed red for five minutes.
+
+    It failed while nobody was watching, so `next_probe_at` was stamped 300s out. Opening
+    the page must not mean waiting out an appointment made under the other ceiling.
+    """
+    probe = _probe(app)
+    device = _device(app)
+    probe.settings = probe.settings.model_copy(
+        update={
+            "probe_interval": 10.0,
+            "probe_backoff_max": 300.0,
+            "probe_backoff_watched": 30.0,
+            "watch_window": 60.0,
+        }
+    )
+
+    async def refuse(*a, **k):
+        raise ConnectionRefusedError(111, "Connection refused")
+
+    monkeypatch.setattr("asyncio.open_connection", refuse)
+    for _ in range(9):
+        await probe.probe(device)
+
+    reach = probe.status(device.id)
+    assert reach.next_probe_at - time.time() > 250  # parked at the long ceiling
+
+    # Still parked 40s later, with nobody watching.
+    later = time.time() + 40.0
+    assert probe.due(device, now=later) is False
+
+    # A Devices page opens. The same 40s is now past the watched ceiling, so the device
+    # is due immediately -- without waiting for the stored appointment.
+    probe.note_interest()
+    assert probe.due(device, now=later) is True
+
+
+async def test_note_interest_touches_no_device(app, monkeypatch):
+    """It runs inside a request, so it must be a stamp and nothing else."""
+    probe = _probe(app)
+
+    async def explode(*a, **k):
+        raise AssertionError("a request opened a connection to a device")
+
+    monkeypatch.setattr("asyncio.open_connection", explode)
+
+    before = probe._interest_at
+    probe.note_interest()
+    assert probe._interest_at > before
+
+
+async def test_the_devices_page_marks_the_fleet_watched(client, app):
+    """The row poll alone must hold the shorter ceiling -- no extra request needed."""
+    probe = _probe(app)
+    probe._interest_at = 0.0
+
+    resp = await client.get("/devices/rows")
+    assert resp.status_code == 200
+    assert probe.watched is True
+
+
 async def test_success_resets_the_backoff(app, monkeypatch):
     probe = _probe(app)
     device = _device(app)
@@ -120,6 +226,73 @@ async def test_success_resets_the_backoff(app, monkeypatch):
     await probe.probe(device)
     assert probe.status(device.id).state == "online"
     assert probe.status(device.id).failures == 0
+
+
+async def test_the_sweep_is_not_delayed_by_df(app, monkeypatch):
+    """A `df` is bounded at 15s and tried twice. Awaiting it in the loop put up to 30s
+    per online node between reachability sweeps — 30s of every dot being stale."""
+    probe = _probe(app)
+    probe.settings = probe.settings.model_copy(update={"probe_interval": 0.01})
+
+    class _W:
+        def close(self):
+            pass
+
+        async def wait_closed(self):
+            pass
+
+    async def accept(*a, **k):
+        return (None, _W())
+
+    monkeypatch.setattr("asyncio.open_connection", accept)
+
+    spawned = []
+
+    async def slow_space(device, force=False):
+        spawned.append(device.id)
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(probe, "probe_space", slow_space)
+
+    # One tick of the real loop, with a df that would block it for half a minute.
+    task = asyncio.create_task(probe._loop())
+    try:
+        await asyncio.sleep(0.2)
+        # The sweep ran repeatedly rather than parking inside the first df...
+        assert probe.status("kobo").state == "online"
+        assert probe.status("phone").state == "online"
+        # ...and the df was started, just never waited for.
+        assert spawned, "the space probe was not spawned at all"
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+async def test_a_wedged_loop_says_so(app, monkeypatch, caplog):
+    """A body that always raises leaves the fleet grey and /healthz at `online: 0` —
+    indistinguishable from a genuinely dark fleet unless it is logged."""
+    probe = _probe(app)
+    probe.settings = probe.settings.model_copy(update={"probe_interval": 0.01})
+
+    async def boom(*a, **k):
+        raise RuntimeError("devices.yaml is unreadable")
+
+    monkeypatch.setattr(probe, "probe_all", boom)
+
+    task = asyncio.create_task(probe._loop())
+    try:
+        with caplog.at_level("WARNING", logger="libnodes.probe"):
+            await asyncio.sleep(0.2)
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    hits = [r for r in caplog.records if "devices.yaml is unreadable" in r.getMessage()]
+    assert hits, "a permanently failing probe loop logged nothing"
+    # Once, not once per tick: the loop ran many times in that window.
+    assert len(hits) == 1, f"logged {len(hits)} times for one unchanging fault"
 
 
 # ------------------------------------------------------- non-blocking UI --
@@ -323,6 +496,39 @@ async def test_an_offline_row_still_prints_its_error(client, app):
     row = _row((await client.get("/devices/rows")).text, "kobo")
     assert "no route to host" in row
     assert "t-err" in row
+
+
+async def test_the_row_says_how_old_its_reading_is(client, app):
+    """The row is re-rendered every 10s but the probe behind it backs off to five
+    minutes, so without the age a dot silently asserts a measurement it did not take:
+    a device that came back four minutes ago looks exactly like one still down."""
+    lib = app.state.lib
+    now = time.time()
+    lib.probe._slot("kobo").reach = Reachability(
+        state="offline",
+        last_ok=now - 7200,
+        checked_at=now - 240,
+        error="no route to host",
+        failures=9,
+        next_probe_at=now + 90,
+    )
+    row = _row((await client.get("/devices/rows")).text, "kobo")
+    assert "no route to host" in row      # the fact
+    assert "last answered 2h ago" in row  # when it was last up
+    assert "checked 4m ago" in row        # how stale this reading is
+    assert "next in 1m" in row            # and when that changes
+
+
+async def test_a_never_checked_row_does_not_claim_a_reading(client, app):
+    """`checked_at` is None until the first sweep lands. Printing "checked never ago"
+    there would assert exactly the thing the age exists to stop."""
+    lib = app.state.lib
+    lib.probe._slot("kobo").reach = Reachability(
+        state="offline", error="no route to host"
+    )
+    row = _row((await client.get("/devices/rows")).text, "kobo")
+    assert "not checked yet" in row
+    assert "checked never" not in row
 
 
 # ------------------------------------------------ actions follow the dot --

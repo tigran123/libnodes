@@ -78,6 +78,28 @@ def reltime(ts: float | None, now: float | None = None) -> str:
     return time.strftime("%Y-%m-%d", time.localtime(ts))
 
 
+def until(ts: float | None, now: float | None = None) -> str:
+    """`in 4m` / `due now` — `reltime` pointed the other way, for the probe's next check.
+
+    Separate from `reltime` rather than folded into its `delta < 0` arm, which answers
+    "just now": a timestamp in the past means a clock skew there and a probe that has come
+    due here, and the row wants to say so.
+    """
+    if not ts:
+        return "unscheduled"
+    now = now if now is not None else time.time()
+    delta = ts - now
+    if delta <= 0:
+        return "due now"
+    if delta < 60:
+        return f"in {int(delta)}s"
+    if delta < 3600:
+        return f"in {int(delta // 60)}m"
+    if delta < 86400:
+        return f"in {int(delta // 3600)}h"
+    return f"in {int(delta // 86400)}d"
+
+
 def freshness(ts: float | None, now: float | None = None) -> str:
     """`fresh 3m` — the rail's index-age readout."""
     if not ts:
@@ -151,6 +173,7 @@ def build_templates() -> Jinja2Templates:
         hsize_short=hsize_short,
         commafy=commafy,
         reltime=reltime,
+        until=until,
         freshness=freshness,
         hhmmss=hhmmss,
         clock=clock,

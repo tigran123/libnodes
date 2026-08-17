@@ -24,7 +24,7 @@ what is left, with pointers into the code. Keep the two from contradicting each 
 - [ ] **Keys page.** Currently an informational stub
       (`libnodes/routes/config_view.py:127`). It could list the identities in the service
       user's `~/.ssh` and offer a per-device "test key" that runs the existing
-      `ssh_argv` (`libnodes/probe.py:341`) and reports the exit status — the machinery is
+      `ssh_argv` (`libnodes/probe.py:448`) and reports the exit status — the machinery is
       already there, only the view is missing.
 
 ## Engineering hygiene

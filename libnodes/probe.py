@@ -1,18 +1,36 @@
 """Reachability and free-space probes for the configured devices.
 
-Requests never probe. A background task TCP-connects to every node on a fixed interval
-and writes into a dict; handlers read the dict. That is what keeps `/devices/rows` — which
-the browser polls every 10s — from turning six sleeping e-readers into a six-second
-page load.
+Requests never probe. A background task TCP-connects to the nodes that are due and writes
+into a dict; handlers read the dict. That is what keeps `/devices/rows` — which the browser
+polls every 10s — from turning six sleeping e-readers into a six-second page load.
+
+**Two cadences, and only one of them is 10s.** The browser's poll is a hardcoded
+`every 10s` in `devices.html`; it re-renders whatever is in the dict, however old. This
+loop's own rate is `probe_interval` (10s) only for a node that answered. A node that did
+not is backed off exponentially — 10, 20, 40, 80, 160 — up to `probe_backoff_max`, so it
+is really contacted every five minutes and the 10s poll just re-paints a stale dot. Read
+`probe_backoff_max` as "how long a recovery can go unnoticed", because that is the number
+it sets: 310s measured against a live fleet, which is what `probe_backoff_watched` and
+`note_interest` exist to cut to ~40s whenever a Devices page is actually open.
+
+The two slow numbers compound, so a *red* dot is slower than it looks: `offline` needs
+`sleeping_window` (1800s) to have passed since the node last answered, and a node down that
+long is also pinned at the backoff ceiling. Amber `sleeping` is the first 30 minutes.
+Losing a node is quick either way — while it is green the next probe is 10s out, so a
+failure surfaces in ~22s including the poll.
 
 Free space is a second, much slower probe (it costs a real ssh round trip), so it runs
-on its own longer interval and is refreshed opportunistically after a transfer.
+on its own longer interval and is refreshed opportunistically after a transfer. It is
+never awaited by this loop: a `df` is bounded at 15s and tried twice, and thirty seconds
+per online node between one reachability sweep and the next is thirty seconds of every
+dot being wrong.
 """
 
 from __future__ import annotations
 
 import asyncio
 import errno
+import logging
 import shlex
 import time
 from dataclasses import dataclass, field, replace
@@ -23,6 +41,8 @@ from .models import Device, parse_size
 from .procs import reap
 
 State = Literal["online", "sleeping", "offline", "unknown"]
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -104,6 +124,12 @@ class DeviceProbe:
         #: that task on shutdown abandons the ssh underneath it — see procs.reap.
         self._procs: set[asyncio.subprocess.Process] = set()
         self._listeners: set[asyncio.Queue] = set()
+        #: When a Devices page last asked for the fleet. Drives the backoff ceiling; see
+        #: note_interest. Zero means nobody has looked since startup.
+        self._interest_at: float = 0.0
+        #: The last failure `_loop` swallowed, so a permanent fault is logged once rather
+        #: than every probe_interval for as long as the service runs.
+        self._loop_error: str | None = None
 
     # --- accessors --------------------------------------------------------
 
@@ -177,14 +203,46 @@ class DeviceProbe:
             )
         return slot.reach
 
+    def note_interest(self) -> None:
+        """Record that a Devices page asked for the fleet.
+
+        A stamp, not a probe — this must stay I/O-free, because it runs inside a request
+        and "requests never probe a device" is what keeps six sleeping e-readers from
+        becoming a six-second page load. All it does is tell the background loop that a
+        slow retry would now be seen by somebody, which `_backoff` turns into a shorter
+        ceiling.
+        """
+        self._interest_at = time.time()
+
+    @property
+    def watched(self) -> bool:
+        return time.time() - self._interest_at < self.settings.watch_window
+
     def _backoff(self, failures: int) -> float:
-        """Exponential, capped. A node dead for an hour is not news every 10 seconds."""
+        """Exponential, capped. A node dead for an hour is not news every 10 seconds —
+        unless a Devices page is open on it, in which case that cap *is* the complaint:
+        it is the whole reason a device that came back stays red for five minutes."""
         delay = self.settings.probe_interval * (2 ** min(failures - 1, 8))
-        return min(delay, self.settings.probe_backoff_max)
+        ceiling = (
+            self.settings.probe_backoff_watched
+            if self.watched
+            else self.settings.probe_backoff_max
+        )
+        return min(delay, ceiling)
 
     def due(self, device: Device, now: float | None = None) -> bool:
         now = now if now is not None else time.time()
-        return self._slot(device.id).reach.next_probe_at <= now
+        reach = self._slot(device.id).reach
+        if reach.next_probe_at <= now:
+            return True
+        # `next_probe_at` was frozen at failure time, under whichever ceiling was in force
+        # then. A page opening now would otherwise have to wait out an appointment made
+        # while nobody was watching -- which is exactly the case being fixed -- so re-judge
+        # the wait against the ceiling that applies at this moment. Additive: this can only
+        # ever make a device more due, never less.
+        if reach.checked_at is not None and reach.failures:
+            return now - reach.checked_at >= self._backoff(reach.failures)
+        return False
 
     async def probe_all(self, force: bool = False) -> None:
         """Probe every node that is due. Concurrent, so wall time is one timeout.
@@ -304,6 +362,24 @@ class DeviceProbe:
         slot = self._slot(device_id)
         slot.space = replace(slot.space, checked_at=None)
 
+    def adopt_space(self, device_id: str, text: str) -> bool:
+        """Take a `df` reading somebody else already paid for. True if it parsed.
+
+        The connection test runs the same `df -Pk <target>` this probe would, over an ssh
+        it has already opened, so asking the device again to learn what it has just been
+        told is a round trip for nothing. Worse, without this the row the test swaps out
+        of band renders the *previous* poll's figure while the dialog above it shows the
+        number just measured — the two disagreeing on screen at the same moment.
+        """
+        parsed = _parse_df(text)
+        if parsed is None:
+            return False
+        total, used, free = parsed
+        self._slot(device_id).space = FreeSpace(
+            total=total, used=used, free=free, checked_at=time.time()
+        )
+        return True
+
     # --- change notification ---------------------------------------------
 
     def subscribe(self) -> asyncio.Queue:
@@ -328,15 +404,41 @@ class DeviceProbe:
             try:
                 await self.probe_all()
                 for device in self.devices.config.devices:
-                    if self.status(device.id).online:
-                        await self.probe_space(device)
+                    if self.status(device.id).online and self._space_stale(device.id):
+                        # Spawned, never awaited. A `df` is bounded at 15s and tried
+                        # twice, so awaiting it here put up to 30s per online node
+                        # between one reachability sweep and the next -- 30s in which
+                        # every dot on the page is whatever it was before.
+                        self.probe_space_soon(device)
                     # Offline nodes are skipped entirely: probe_space already returns
                     # early for them, and there is nothing to ask a dead host.
+                self._loop_error = None
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001 - a probe must never kill the loop
-                pass
+            except Exception as exc:  # noqa: BLE001 - a probe must never kill the loop
+                # Swallowed, but not silently. A body that raises every time leaves the
+                # whole fleet grey and /healthz reporting `online: 0`, which is exactly
+                # what a genuinely dark fleet looks like -- there is no way to tell the
+                # two apart from outside the process. Logged on the first occurrence and
+                # again only when the fault changes, so a permanent one does not write a
+                # line every probe_interval for as long as the service runs. No handler is
+                # configured anywhere in the app, so this reaches the journal through
+                # logging.lastResort; see the same posture in main.py.
+                current = f"{type(exc).__name__}: {exc}"
+                if current != self._loop_error:
+                    self._loop_error = current
+                    log.warning("device probe sweep failed: %s", current)
             await asyncio.sleep(self.settings.probe_interval)
+
+    def _space_stale(self, device_id: str) -> bool:
+        """Whether a `df` is worth spawning. `probe_space` returns early on a fresh
+        reading anyway, so this only avoids creating a task per device per tick to do
+        nothing."""
+        checked = self._slot(device_id).space.checked_at
+        return (
+            checked is None
+            or time.time() - checked >= self.settings.freespace_interval
+        )
 
     def start(self) -> None:
         if self._task is None or self._task.done():
