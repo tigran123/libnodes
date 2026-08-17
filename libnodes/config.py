@@ -125,7 +125,8 @@ class Settings(BaseSettings):
 
     # --- serving --------------------------------------------------------------
     host: str = "0.0.0.0"
-    # 8080 is already nginx's on the Pi (urantia-library).
+    # LAN only on pi5, with nothing in front: nginx owns 80/443 for urantia-library, which
+    # itself sits on 8000. 8090 was already the port on the old Pi, where 8080 was nginx's.
     port: int = 8090
 
     # --- access ---------------------------------------------------------------

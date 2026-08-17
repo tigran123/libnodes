@@ -14,7 +14,7 @@ uv pip sync requirements-dev.txt                    # uv, not pip. /usr/local/bi
 uv run uvicorn libnodes.main:app --reload           # http://127.0.0.1:8000/devices
 uv run pytest                                       # 457 tests, ~17s, no network
 uv run pytest tests/test_jobs.py::test_name -x
-./deploy/deploy.sh [--no-restart]                   # sync to pi, uv pip sync, restart, poll /healthz
+./deploy/deploy.sh [--no-restart]                   # sync to pi5, uv pip sync, restart, poll /healthz
 ```
 
 Dependencies are declared in `requirements.in` / `requirements-dev.in` and compiled with
@@ -95,7 +95,9 @@ are listed.
   Pinned by `tests/test_manifests.py::test_every_view_counts_files_the_same_way`.
 - **Never walk the library in a request.** The tree and file list come from the SQLite
   index (`libnodes/library.py`); a rebuild runs on one background thread and publishes by
-  atomic rename. A full walk is ~29 s on the Pi.
+  atomic rename. A full walk is 1.0 s on pi5 for 24,621 entries, and was ~29 s on the Pi 3
+  it replaced — the invariant survives the speedup, because a request must not depend on
+  the walk being fast on *any* host.
 - **Requests never probe a device.** A background task writes reachability into a dict
   (`libnodes/probe.py`); handlers read it. Otherwise six sleeping e-readers become a
   six-second page load. `devices_context` calls `probe.note_interest()`, which is a
@@ -128,8 +130,13 @@ are listed.
   it silently wraps the last cell onto a second line. `.subrow` is the one top-level div
   that is not a column and says so with `grid-column: 1 / -1`. Pinned by
   `tests/test_battery.py::test_the_grid_declares_a_track_for_every_cell`.
-- **One rsync at a time.** `Settings.concurrency`, default 1. The Pi's NIC shares the USB 2.0
-  bus with the library disk, so two transfers go half as fast each.
+- **`Settings.concurrency` defaults to 1, and the default is not the deployment.** The 1 is
+  a property of an unknown host: on the Pi 3 the NIC shared the USB 2.0 bus with the library
+  disk, so two transfers went half as fast each. pi5 puts the library on PCIe NVMe and the
+  NIC on its own bus, so `deploy/libnodes.service` sets `LIBNODES_CONCURRENCY=3`. Leave the
+  code default at 1 — the remaining shared resource is Wi-Fi airtime across the six wireless
+  nodes, which is why the unit says 3 rather than "unbounded", and a host that has not
+  declared itself should not assume either.
 - **Every template except `base.html` and the page templates must render standalone** — no
   `<html>`, no doctype. That is the HTMX contract, enforced by
   `test_fragments_render_standalone`. **A new fragment route must be added to `FRAGMENTS` in
@@ -166,8 +173,10 @@ are listed.
   reap *after* the cancels, never before.
 - **Auth is off whenever `LIBNODES_PASSWORD` is unset, and that is deliberate.** It is
   what leaves the dev server and the suite untouched (`libnodes/auth.py`), and it is
-  fail-open: the startup warning in `create_app` is the only thing between a Pi that lost
-  its env var and a fleet the whole LAN can drive. Pinned by
+  fail-open: the startup warning in `create_app` is the only thing between a host that lost
+  its env var and a fleet the whole LAN can drive. There is no reverse proxy and no network
+  ACL in front of it — pi5 is LAN-only, and the LAN is not a trust boundary. This password
+  is the entire guard. Pinned by
   `tests/test_auth.py::test_no_password_means_no_lock`. The password is `SecretStr`
   because `base_context` puts all of `settings` into every template context.
 - **An unauthenticated fragment gets `HX-Redirect` and an empty body, never a page.** A
@@ -219,9 +228,24 @@ are listed.
   gitignored. Do not delete it to "clean up", and never commit it.
 - `design_handoff_libnodes/` is gitignored and local-only. It has been consumed; the code is
   the artefact now. Do not add it back to git.
-- `.venv/` is x86_64 and the Pi builds its own. `deploy.sh` excludes `.venv/`, `var/`,
-  `tests/`, `.git/` and the design bundle.
-- The Pi serves on **8090** (8080 is nginx for urantia-library); the dev default is 8000.
+- `.venv/` is x86_64 and pi5 builds its own aarch64 one. `deploy.sh` excludes `.venv/`,
+  `var/`, `tests/`, `.git/` and the design bundle, and creates the venv if the host has
+  none — otherwise `uv pip sync` has nothing to sync into on a first deploy.
+- **pi5 is the deployment target, not `pi`.** `ssh pi5` (192.168.1.32, aarch64, user
+  `tigran`, `/home/tigran/libnodes`, uv at `/usr/local/bin/uv`). It serves **8090** on
+  `0.0.0.0`, **LAN only** — no reverse proxy, 8090 not forwarded. urantia-library holds
+  8000 behind nginx on 443; 8080 is free. The dev default is 8000. It was briefly public at
+  `https://proxyai.ddns.net/` on 2026-08-17 and that was withdrawn the same evening — the
+  allowlist was pinned to a rotating home IP, so it would eventually have admitted whoever
+  the ISP handed the address to next. `deploy/README.md` has the full reasoning; do not
+  re-add a public vhost without reading it. The old Pi 3 (`ssh pi`, `/home/pi/libnodes`,
+  8090, uv at `~/.local/bin/uv`) is **still running its own copy** — nothing was stopped
+  there — so two instances can reach the same fleet. Drive transfers from one at a time.
+- **LibNodes only works at the URL root.** ~64 template URLs are absolute
+  (`hx-get="/jobs/dock"`), `asset()` emits `/static/…`, and `AuthMiddleware` matches
+  `scope["path"]` against exact strings in `OPEN_PATHS`. That is why it gets its own
+  hostname rather than a `/libnodes` prefix under the existing one. Serving it under a
+  sub-path is a feature (`LIBNODES_URL_PREFIX`), not an nginx setting.
 - The `/fleet/*` and `/node/*` 308 redirects (`libnodes/main.py:54`) exist for pages left
   open across the rename. Remove them and a stale tab polls a 404 forever, with the table
   silently frozen and nothing saying why.

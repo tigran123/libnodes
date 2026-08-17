@@ -1,42 +1,80 @@
-# OPTIONAL. You almost certainly do not need this.
+# NOT INSTALLED. Kept for reference, so that reinstating a public door is an edit rather
+# than a rediscovery.
 #
-# uvicorn already listens on 0.0.0.0:8090, so http://pi:8090/ works directly and is one
-# less moving part. Putting nginx in front buys exactly two things:
+# This served LibNodes at https://proxyai.ddns.net/ on pi5 for about an hour on
+# 2026-08-17 and was withdrawn the same evening. It worked — valid certificate, correct
+# SNI selection, unbuffered SSE — and it was withdrawn anyway, for reasons that are not
+# visible from the config and so are recorded here:
 #
-#   1. LibNodes on port 80, i.e. http://pi/ instead of http://pi:8090/, alongside the
-#      existing plain file browser on :8080.
-#   2. /static served straight off the disk, so uvicorn never spends a request on the
-#      600 KB of fonts and CSS.
+#   * `allow 78.147.193.57` was the house's public IP, and the reason this box runs DDNS
+#     is that the IP rotates. The lockout when it changes is the harmless half; the other
+#     half is that whoever the ISP hands the address to next inherits the allow rule. A
+#     guard that silently transfers to a stranger is worse than no public door, in front
+#     of a panel that starts transfers, deletes job history and drives `rsync --delete`
+#     at the mirror node.
+#   * A scanner fetched /.git/config from proxyai.ddns.net *by name* seventeen minutes
+#     after this went live. Bots enumerate DDNS namespaces continuously; 63 distinct
+#     hostile source IPs were blocked across this host's vhosts that day.
+#   * The upside was small. pi5 does the rsync and pi5 is on the LAN, so a push started
+#     from a phone away from home would genuinely have worked — but the device you want
+#     synced is normally in your hand.
 #
-# If neither appeals, skip this file entirely.
+# LibNodes is LAN-only now: http://pi5:8090/, uvicorn on 0.0.0.0, nothing in front, and
+# LIBNODES_PASSWORD as the entire guard. See deploy/README.md §"There is no reverse proxy".
+#
+# ---------------------------------------------------------------------------------------
+# BEFORE REINSTATING, four things that are not obvious:
+#
+#   1. **Do not install the second block below as-is.** Its `default_server` twin is
+#      already live on pi5 as /etc/nginx/sites-available/no-sni-default, which outlived
+#      this file on purpose. Two default servers on :443 is a config error and
+#      `nginx -t` will reject it. Install the first block only, or delete the other file.
+#   2. Replace the pinned `allow` with something that does not rot — a VPN/WireGuard
+#      address, or drop the allowlist and rely on LIBNODES_PASSWORD alone. Do not simply
+#      update the IP: that recreates the same trap with a later expiry date.
+#   3. `proxyai.ddns.net` must not appear in the ulib.ddns.net site's `listen 443`
+#      server_name, or that name has two candidate blocks and the first parsed wins.
+#      It was removed from there on 2026-08-17 and has stayed out.
+#      (`/etc/nginx/sites-available/ulib.ddns.net.pre-libnodes.bak` is the original.)
+#   4. Port 80 is not forwarded on the router, so the shared `listen 80` redirect never
+#      runs for outside traffic. Either forward 80 or expect bare-hostname URLs to hang
+#      rather than upgrade to https.
 #
 #   sudo cp deploy/libnodes.nginx /etc/nginx/sites-available/libnodes
 #   sudo ln -s /etc/nginx/sites-available/libnodes /etc/nginx/sites-enabled/
-#   sudo nginx -t && sudo systemctl reload nginx
+#   sudo /usr/sbin/nginx -t && sudo systemctl reload nginx    # nginx is not on the PATH
 #
-# If you do install it, tighten the service afterwards so 8090 is not a second public
-# door: change --host 0.0.0.0 to --host 127.0.0.1 in libnodes.service, then
-#   sudo systemctl daemon-reload && sudo systemctl restart libnodes
+# Two names on one IP and one port is SNI: the client puts the hostname it wants in the
+# TLS ClientHello, in plaintext, before a certificate is chosen, so nginx can pick this
+# block for proxyai.ddns.net and the urantia-library block for ulib.ddns.net and give
+# each its own cert.
 
 server {
-    listen 80;
-    server_name _;
+    listen 443 ssl;
+    server_name proxyai.ddns.net;
 
-    client_max_body_size 1m;
+    ssl_certificate     /etc/letsencrypt/live/proxyai.ddns.net/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/proxyai.ddns.net/privkey.pem;
 
-    # Served from disk, not proxied — nginx is much better at this than uvicorn and the
-    # files never change between deploys.
-    location /static/ {
-        alias /home/pi/libnodes/libnodes/static/;
-        access_log off;
-        expires 7d;
-        add_header Cache-Control "public";
-        try_files $uri =404;
-    }
+    # See note 2 above before trusting this line. The LAN entry is not decoration: a
+    # request to this name from inside the house resolves to the public IP and, if the
+    # router hairpins the NAT, arrives here with a 192.168.1.x source.
+    allow 78.147.193.57;
+    allow 192.168.1.0/24;
+    deny  all;
+
+    client_max_body_size 1m;   # LibNodes accepts no uploads at all
+
+    # /static is proxied, not served off disk with an alias. nginx runs as www-data and
+    # /home/tigran is mode 0700, so www-data cannot traverse it — an alias 403s every font
+    # and stylesheet. The alternatives are loosening the home directory or moving the
+    # checkout out of it, and neither is worth 600 KB on NVMe behind 1 GbE. The caching
+    # problem an alias would have solved is already solved: asset() stamps every URL with
+    # the file's mtime, so a deploy changes the URL.
 
     # The job stream is Server-Sent Events. With buffering on, nginx holds the fragments
     # and the sync dock appears to freeze mid-transfer — this block is the whole reason
-    # the SSE endpoint gets its own location.
+    # the SSE endpoint is called out separately.
     location /jobs/stream {
         proxy_pass http://127.0.0.1:8090;
         proxy_http_version 1.1;
@@ -58,3 +96,25 @@ server {
         proxy_read_timeout 120s;
     }
 }
+
+# ALREADY INSTALLED SEPARATELY — see note 1. This is the twin of pi5's live
+# /etc/nginx/sites-available/no-sni-default, reproduced here only so this file explains
+# the whole arrangement rather than half of it.
+#
+# A client that connects by IP — https://<public-ip>/, https://192.168.1.32/ — sends no
+# server name, so nginx falls back to the default server for the socket. Without an
+# explicit one that is whichever `listen 443 ssl` block it parsed first, which would be
+# the urantia-library site by accident of filename ordering. Answer nothing instead.
+#
+# The certificate is not decoration: the TLS handshake has to complete before nginx can
+# see there was no SNI, so a cert must be presented even though no request is served. The
+# client gets a name mismatch and then a closed connection.
+#server {
+#    listen 443 ssl default_server;
+#    server_name _;
+#
+#    ssl_certificate     /etc/letsencrypt/live/ulib.ddns.net/fullchain.pem;
+#    ssl_certificate_key /etc/letsencrypt/live/ulib.ddns.net/privkey.pem;
+#
+#    return 444;
+#}

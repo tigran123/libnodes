@@ -231,7 +231,7 @@ class AuthMiddleware:
 
     BaseHTTPMiddleware wraps the response in a queue to hand it back as a single object,
     which breaks EventSourceResponse: the dock would stop streaming and start arriving in
-    lumps, the same symptom nginx's proxy_buffering produces (see deploy/libnodes.nginx).
+    lumps, the same symptom nginx's proxy_buffering produces on an SSE endpoint.
     jobs.py:424 carries the matching warning about the receive channel.
 
     This class reads the scope and nothing else. It either calls the app unchanged --

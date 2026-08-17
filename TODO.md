@@ -53,11 +53,9 @@ what is left, with pointers into the code. Keep the two from contradicting each 
       something. Either surface them in the validation strip as *ignored*, or drop them and
       say so in the seed `devices.yaml` comment block.
 
-- [ ] **`deploy/README.md` is out of date about the Pi bind mount.** Its opening section,
-      "Before the first deploy: make `~/libnodes` writable", asserts that
-      `/home/pi/libnodes` is a read-only bind mount and prescribes a `sed` against
-      `/etc/fstab`. The Pi's fstab has no ro/rw problem, so that section now sends a reader
-      to edit fstab for no reason. Demote it to a one-line troubleshooting note and let the
-      writability probe in `deploy/deploy.sh:21` be the actual guard. The same stale claim
-      is echoed in `deploy/libnodes.service:6` and in `deploy.sh`'s error message — fix all
-      three together.
+- [x] **`deploy/README.md` is out of date about the Pi bind mount.** *(done 2026-08-17, by
+      the pi5 migration.)* All three copies of the stale claim are gone: the opening section
+      of `deploy/README.md`, the note at the top of `deploy/libnodes.service`, and the
+      `/etc/fstab` advice in `deploy.sh`'s error message. There is no bind mount on pi5 —
+      `/home/tigran/libnodes` is plain NVMe — so the writability probe is now the only guard,
+      as intended, and it `mkdir -p`s the destination so a first deploy to a new host works.

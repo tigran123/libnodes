@@ -4,8 +4,10 @@ Pushes selected parts of a large book library out to a fleet of reading devices 
 Kobo/KOReader over dropbear, Android/Termux, plain Linux hosts — over `ssh` + `rsync`,
 and keeps a cached view of what each device already holds.
 
-Built to run on a Raspberry Pi 3 against a 250 GB library, so the constraints are real:
-one transfer at a time, never walk the library in a request, and 60 MB of RSS.
+Built on a Raspberry Pi 3 against a 250 GB library, so the constraints are real: never walk
+the library in a request, never probe a device in one, and 60 MB of RSS. It runs on a Pi 5
+now, which makes it quick rather than different — the constraints stayed, because the ones
+worth keeping were never about the hardware.
 
 FastAPI + Jinja2 + HTMX. No client framework, no build step, no Node, no ORM.
 
@@ -15,7 +17,7 @@ uv run uvicorn libnodes.main:app --reload      # http://127.0.0.1:8000/devices
 uv run pytest
 ```
 
-Deploying to a Pi: [`deploy/README.md`](deploy/README.md).
+Deploying to the Pi: [`deploy/README.md`](deploy/README.md).
 
 ## What it looks like
 
@@ -209,8 +211,10 @@ them) so the machine works on an isolated LAN.
   handlers read it. Otherwise six sleeping e-readers become a six-second page load.
 - **Never walk the library in a request.** The tree and file list come from the index; a
   rebuild runs on one background thread and publishes by atomic rename.
-- **One rsync at a time.** On a Pi the NIC shares the USB bus with the library disk, so
-  two transfers do not go twice as fast — they go half as fast each.
+- **Concurrency is the host's to declare, and defaults to one.** On the Pi 3 the NIC shared
+  the USB bus with the library disk, so two transfers did not go twice as fast — they went
+  half as fast each. On NVMe and gigabit that reason is gone and the deployment sets three;
+  the code default stays one, for a host that has not said.
 - **Every template except `base.html` and the page templates must render standalone.**
   That is the HTMX contract; `test_fragments_render_standalone` enforces it.
 

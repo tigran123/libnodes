@@ -2,8 +2,6 @@
 #
 #   sudo cp deploy/libnodes.service /etc/systemd/system/
 #   sudo systemctl daemon-reload && sudo systemctl enable --now libnodes
-#
-# Note: /home/pi/libnodes must be mounted READ-WRITE. See deploy/README.md.
 
 [Unit]
 Description=LibNodes — library orchestrator
@@ -12,25 +10,35 @@ Wants=network-online.target
 
 [Service]
 Type=exec
-User=pi
-Group=pi
-WorkingDirectory=/home/pi/libnodes
+User=tigran
+Group=tigran
+WorkingDirectory=/home/tigran/libnodes
 Environment=LIBNODES_LIBRARY_ROOT=/Books
-Environment=LIBNODES_STATE_DIR=/home/pi/libnodes/var
+Environment=LIBNODES_STATE_DIR=/home/tigran/libnodes/var
 Environment=LIBNODES_CATALOG_DB=/Books/.data/db/lib.db
+# The code default is 1, and stays 1: it is the only safe default for a host whose disk
+# and NIC might share a bus, as the Pi 3's USB 2.0 did. pi5's library is on PCIe NVMe and
+# its NIC is separate, so the host is no longer the constraint — what is still shared is
+# Wi-Fi airtime across the six wireless nodes, which is why this is 3 and not unbounded.
+Environment=LIBNODES_CONCURRENCY=3
 # LIBNODES_PASSWORD lives here, not in this file and not in .env: this file is in git, and
 # deploy.sh syncs with --delete without excluding .env, so a .env password is removed by
 # the next deploy. The leading `-` makes the file optional. See deploy/README.md §Access.
 EnvironmentFile=-/etc/default/libnodes
-# Port 8090: 8080 is taken by nginx (urantia-library).
-ExecStart=/home/pi/libnodes/.venv/bin/uvicorn libnodes.main:app \
+# Port 8090, and 0.0.0.0 rather than 127.0.0.1 on purpose. nginx proxies
+# https://proxyai.ddns.net/ to this port (deploy/libnodes.nginx), but binding loopback
+# would then be the only way in — and from inside the LAN that name resolves to the public
+# IP, so a hairpinned request arrives at nginx from 192.168.1.x and the allowlist rejects
+# it. 8090 is not forwarded on the router and LIBNODES_PASSWORD guards it, so keeping
+# http://pi5:8090/ reachable on the LAN is a feature, not a second public door.
+ExecStart=/home/tigran/libnodes/.venv/bin/uvicorn libnodes.main:app \
     --host 0.0.0.0 --port 8090 --workers 1 --loop uvloop --http httptools
 Restart=on-failure
 RestartSec=5
 
-# The Pi has 1 GB total and also runs nginx, rsync and hostapd. Expect ~60 MB RSS;
-# this cap exists to catch a leak, not to constrain normal operation.
-MemoryMax=320M
+# pi5 has 15 GB and expected RSS is ~40 MB, so this constrains nothing; it exists to catch
+# a leak before it reaches the machine. It was 320M when the host was a 923 MB Pi 3.
+MemoryMax=1G
 
 # rsync and ssh are spawned as children, so no sandboxing that blocks exec or network.
 NoNewPrivileges=yes

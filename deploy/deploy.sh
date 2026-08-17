@@ -1,32 +1,34 @@
 #!/usr/bin/env bash
-# Push LibNodes to the Pi and restart it.
+# Push LibNodes to pi5 and restart it.
 #
 #   ./deploy/deploy.sh            # sync + deps + restart
 #   ./deploy/deploy.sh --no-restart
 #
 # Deliberately does NOT sync var/ (index, jobs, manifests, logs, devices.yaml) or the
-# workstation's x86_64 .venv.
+# workstation's x86_64 .venv — pi5 is aarch64 and builds its own.
 set -euo pipefail
 
-HOST="${LIBNODES_HOST:-pi}"
-DEST="${LIBNODES_DEST:-/home/pi/libnodes}"
-UV="${LIBNODES_UV:-/home/pi/.local/bin/uv}"
-PORT="${LIBNODES_PORT:-8090}"   # 8080 on the Pi is nginx's
+HOST="${LIBNODES_HOST:-pi5}"
+DEST="${LIBNODES_DEST:-/home/tigran/libnodes}"
+UV="${LIBNODES_UV:-/usr/local/bin/uv}"
+PORT="${LIBNODES_PORT:-8090}"   # nginx owns 80/443 on pi5; urantia-library owns 8000
 RESTART=1
 [[ "${1:-}" == "--no-restart" ]] && RESTART=0
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# mkdir -p, not just touch: on a host being deployed to for the first time $DEST does not
+# exist yet, and a bare touch fails there in a way indistinguishable from a permissions
+# problem. Creating it is also the whole of "install" — everything else rsync brings.
 echo "==> checking $HOST:$DEST is writable"
-if ! ssh -o BatchMode=yes "$HOST" "touch $DEST/.deploy-probe && rm -f $DEST/.deploy-probe" 2>/dev/null; then
+if ! ssh -o BatchMode=yes "$HOST" \
+    "mkdir -p $DEST && touch $DEST/.deploy-probe && rm -f $DEST/.deploy-probe" 2>/dev/null; then
     cat >&2 <<EOF
-error: $DEST is not writable on $HOST.
+error: cannot create or write $DEST on $HOST.
 
-If it is a read-only bind mount, /etc/fstab needs rw instead of ro:
+Check that the ssh login works and the parent directory is writable:
 
-    /ext/disk4/work/libnodes  /home/pi/libnodes  none  defaults,rw,bind,nofail  0  0
-
-then:  sudo mount -o remount,rw,bind /home/pi/libnodes
+    ssh $HOST 'mkdir -p $DEST && touch $DEST/.probe && rm $DEST/.probe && echo writable'
 EOF
     exit 1
 fi
@@ -42,8 +44,12 @@ rsync -az --delete \
     --exclude 'tests/' \
     "$here/" "$HOST:$DEST/"
 
+# `uv pip sync` refuses to run without a target venv, and .venv/ is excluded from the
+# rsync above (the workstation's is x86_64), so on a host being deployed to for the first
+# time there is nothing for it to sync into. Create it if absent; uv reads .python-version.
 echo "==> installing dependencies"
-ssh -o BatchMode=yes "$HOST" "cd $DEST && $UV pip sync requirements.txt"
+ssh -o BatchMode=yes "$HOST" \
+    "cd $DEST && { [ -d .venv ] || $UV venv; } && $UV pip sync requirements.txt"
 
 if [[ $RESTART -eq 1 ]]; then
     # `systemctl list-unit-files` exits 0 with an empty list when the unit is absent,
@@ -51,9 +57,10 @@ if [[ $RESTART -eq 1 ]]; then
     if ssh -o BatchMode=yes "$HOST" \
         'systemctl cat libnodes.service' >/dev/null 2>&1; then
         echo "==> restarting libnodes.service"
-        # systemd reports `active` as soon as it has exec'd uvicorn, which on a Pi 3 is
-        # several seconds before the app can answer. Poll the health endpoint instead so
-        # a deploy that starts a broken build fails here rather than looking fine.
+        # systemd reports `active` as soon as it has exec'd uvicorn, which is before the
+        # app can answer — seconds on a Pi 3, less on pi5, but never zero. Poll the health
+        # endpoint instead so a deploy that starts a broken build fails here rather than
+        # looking fine.
         ssh -o BatchMode=yes "$HOST" "
             sudo systemctl restart libnodes
             for i in \$(seq 1 30); do
