@@ -11,7 +11,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
 from ..deps import base_context, state
-from ..probe import FreeSpace, Reachability, ssh_argv
+from ..probe import Battery, FreeSpace, Reachability, _section, ssh_argv
 from ..procs import reap
 from ..scan import scan_argv
 from ..jobs import Job, build_argv, full_sync_sources, hints_for_text
@@ -54,6 +54,7 @@ class DeviceView:
     device: Device
     reach: Reachability
     space: FreeSpace
+    battery: Battery
     last_sync: float | None
     job: Job | None
     #: The connection test as a shell line, for the row button's tooltip. The test is the
@@ -153,6 +154,51 @@ class DeviceView:
             return 0.0
         return max(0.0, min(100.0, 100.0 * self.space.used / total))
 
+    @property
+    def has_battery(self) -> bool:
+        """Whether this device reports a battery at all.
+
+        Keyed on the declared path, not on the reading: a node with `battery:` set that
+        has not answered yet must render an empty cell rather than no cell, or the column
+        would appear and disappear under the poll.
+        """
+        return bool(self.device.battery)
+
+    @property
+    def battery_pct(self) -> float:
+        return float(self.battery.percent or 0)
+
+    @property
+    def battery_class(self) -> str:
+        """The bar's tint — a colour modifier only, composed onto `track track-2` by the
+        template, since `track-2` is a height and these are not.
+
+        Storage fills up as it gets worse and a battery empties, so the two cannot share
+        a threshold: this is low-is-bad, at the levels a phone itself warns at.
+        """
+        pct = self.battery.percent
+        if pct is None:
+            return ""
+        if pct <= 15:
+            return "track-err"
+        if pct <= 30:
+            return "track-warn"
+        return ""
+
+    @property
+    def battery_note(self) -> str:
+        """The cell's tooltip: the reading, its age, and why it is missing if it is."""
+        if self.battery.error:
+            stale = (
+                f"last read {reltime(self.battery.checked_at)}"
+                if self.battery.checked_at
+                else "never read"
+            )
+            return f"{self.device.battery}: {self.battery.error} · {stale}"
+        if self.battery.percent is None:
+            return f"{self.device.battery} — not read yet"
+        return f"{self.battery.percent}% · read {reltime(self.battery.checked_at)}"
+
 
 def device_views(app: AppState) -> list[DeviceView]:
     running = {j.device_id: j for j in app.jobs.active() if j.state == "running"}
@@ -163,6 +209,7 @@ def device_views(app: AppState) -> list[DeviceView]:
                 device=device,
                 reach=app.probe.status(device.id),
                 space=app.probe.space(device.id),
+                battery=app.probe.battery(device.id),
                 last_sync=app.manifests.last_sync(device.id),
                 job=running.get(device.id),
                 test_command=_shell(_test_argv(device, app.settings)),
@@ -401,7 +448,7 @@ async def device_test(request: Request, device_id: str):
     # up to freespace_interval (5 min) old, and visibly disagreeing with the figure in
     # the dialog printed from the same command. The reading is free: we have already
     # paid for the ssh.
-    app.probe.adopt_space(device_id, _df_section(out))
+    app.probe.adopt_space(device_id, _section(out, "df"))
 
     ctx = base_context(request, "devices")
     ctx.update(
@@ -422,26 +469,6 @@ async def device_test(request: Request, device_id: str):
         }
     )
     return templates.TemplateResponse(request, "dialogs/test_result.html", ctx)
-
-
-def _df_section(out: str) -> str:
-    """The `df` block of the test transcript, without the sections that follow it.
-
-    `_parse_df` scans backwards for the last line that parses, so handing it the whole
-    transcript invites it to read the rsync version banner as a size record —
-    `rsync  version 3.2.7  protocol version 31` splits into six fields, which is the
-    shape it is looking for. `_TEST_SCRIPT` prints `# df` / `# rsync` / `# write`
-    markers precisely so the parts stay separable.
-    """
-    lines = out.splitlines()
-    start = next((i + 1 for i, ln in enumerate(lines) if ln.strip() == "# df"), None)
-    if start is None:
-        return ""
-    end = next(
-        (i for i in range(start, len(lines)) if lines[i].startswith("# ")),
-        len(lines),
-    )
-    return "\n".join(lines[start:end])
 
 
 def _test_summary(out: str) -> list[str]:

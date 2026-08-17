@@ -157,6 +157,18 @@ class Device(BaseModel):
     #: Unset is inferred from `type`: kobo and termux targets are FAT in practice,
     #: linux is not. See FS_PROFILES.
     fs: str | None = None
+    #: A file on the device whose contents are the battery percentage, or unset for a
+    #: node that has no battery worth reporting.
+    #:
+    #: A path rather than a flag, because there is no portable way to ask. Android exposes
+    #: it under /sys/class/power_supply/, but the node name varies by vendor and kernel --
+    #: `battery` on the LG G4s, `bms` or `battery_0` elsewhere -- and a Kobo running
+    #: KOReader has a different tree again. Whoever edits devices.yaml can `cat` the file
+    #: to check; LibNodes cannot guess it, and guessing wrong would report a confident
+    #: wrong number rather than nothing.
+    #:
+    #: Read by the same ssh that runs `df`, so declaring it costs no extra round trip.
+    battery: str | None = None
     #: Accepted but ignored. The design proposed a per-device format whitelist; in
     #: practice LibNodes pushes whatever you point it at, and deciding what a device can
     #: open is the device's business. Kept in the schema only so an older devices.yaml

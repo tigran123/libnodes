@@ -86,10 +86,29 @@ class FreeSpace:
         return 100.0 * (self.used or 0) / self.total
 
 
+@dataclass(frozen=True)
+class Battery:
+    """What `cat <device.battery>` said, as a percentage.
+
+    Separate from FreeSpace despite arriving down the same ssh: a device can answer one
+    and not the other -- an unreadable sysfs node, or a `df` that toybox refused -- and
+    folding them into one record would make either failure look like both.
+    """
+
+    percent: int | None = None
+    checked_at: float | None = None
+    error: str | None = None
+
+    @property
+    def known(self) -> bool:
+        return self.percent is not None
+
+
 @dataclass
 class _Slot:
     reach: Reachability = field(default_factory=Reachability)
     space: FreeSpace = field(default_factory=FreeSpace)
+    battery: Battery = field(default_factory=Battery)
     space_inflight: bool = False
 
 
@@ -141,6 +160,9 @@ class DeviceProbe:
 
     def space(self, device_id: str) -> FreeSpace:
         return self._slot(device_id).space
+
+    def battery(self, device_id: str) -> Battery:
+        return self._slot(device_id).battery
 
     @property
     def reachable_count(self) -> tuple[int, int]:
@@ -303,7 +325,10 @@ class DeviceProbe:
             # output parses rather than by the exit code.
             parsed = None
             last_error = "df failed"
-            for command in (f"df -Pk {target}", f"df {target}"):
+            for command in (
+                _readings_script(f"df -Pk {target}", device.battery),
+                _readings_script(f"df {target}", device.battery),
+            ):
                 proc = await asyncio.create_subprocess_exec(
                     *ssh_argv(device, self.settings),
                     command,
@@ -335,7 +360,13 @@ class DeviceProbe:
                 stderr_tail = err.decode(errors="replace").strip().splitlines()
                 if stderr_tail:
                     last_error = stderr_tail[-1]
-                parsed = _parse_df(out.decode(errors="replace"))
+                text = out.decode(errors="replace")
+                # Recorded on every attempt, not only the one whose df parsed: a toybox
+                # node fails the first command and still reads its battery on it, and a
+                # node whose df never parses should not lose its battery figure too.
+                if device.battery:
+                    self._record_battery(device.id, _section(text, "battery"))
+                parsed = _parse_df(_section(text, "df") or text)
                 if parsed is not None:
                     break
 
@@ -356,6 +387,24 @@ class DeviceProbe:
         finally:
             slot.space_inflight = False
         return slot.space
+
+    def _record_battery(self, device_id: str, text: str) -> None:
+        """Store what the battery file said. Never raises — a device that cannot answer
+        this must not cost us the `df` that came back on the same ssh."""
+        percent = _parse_battery(text)
+        if percent is None:
+            # Keep the last known figure rather than blanking the bar on one bad read;
+            # the error is what says the reading is no longer being refreshed.
+            previous = self._slot(device_id).battery
+            self._slot(device_id).battery = Battery(
+                percent=previous.percent,
+                checked_at=time.time(),
+                error=text.strip().splitlines()[-1] if text.strip() else "unreadable",
+            )
+            return
+        self._slot(device_id).battery = Battery(
+            percent=percent, checked_at=time.time()
+        )
 
     def invalidate_space(self, device_id: str) -> None:
         """Force the next space probe, e.g. right after a transfer landed."""
@@ -487,6 +536,61 @@ def ssh_argv(device: Device, settings: Settings, timeout: int = 10) -> list[str]
     return argv
 
 
+def _readings_script(df_command: str, battery: str | None) -> str:
+    """One shell line that reads everything an ssh round trip can get us at once.
+
+    The battery file rides along with `df` rather than opening a second connection: on a
+    sleeping Termux node the connection *is* the cost, and two probes on their own
+    schedules would also drift out of step in the row that shows both. Marked sections
+    rather than positional parsing, because `df` output is one line on some devices and
+    two on others — see `_parse_df`.
+    """
+    if not battery:
+        return df_command
+    return (
+        f'echo "# df"; {df_command}; '
+        f'echo "# battery"; cat {shlex.quote(battery)} 2>&1'
+    )
+
+
+def _section(text: str, name: str) -> str:
+    """The `# <name>` block of a marked transcript, up to the next marker.
+
+    Returns "" when the marker is absent, which is also what an unmarked single-command
+    transcript yields — callers fall back to the whole text for that case.
+    """
+    lines = text.splitlines()
+    start = next(
+        (i + 1 for i, ln in enumerate(lines) if ln.strip() == f"# {name}"), None
+    )
+    if start is None:
+        return ""
+    end = next(
+        (i for i in range(start, len(lines)) if lines[i].startswith("# ")), len(lines)
+    )
+    return "\n".join(lines[start:end])
+
+
+def _parse_battery(text: str) -> int | None:
+    """A battery sysfs file as a percentage, or None if it did not read like one.
+
+    The file is conventionally a bare integer and nothing else, so anything that is not
+    one is treated as a failure rather than pattern-matched out of a longer message: a
+    `cat` of a missing node prints an error, and reading `2` out of "No such file or
+    directory (2)" would put a confident wrong number on the row.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return None
+    first = stripped.splitlines()[0].strip()
+    if not first.isdigit():
+        return None
+    value = int(first)
+    if not 0 <= value <= 100:
+        return None
+    return value
+
+
 def _df_field(token: str) -> int | None:
     """One df size field -> bytes.
 
@@ -533,6 +637,7 @@ def _parse_df(text: str) -> tuple[int, int, int] | None:
 
 
 __all__ = [
+    "Battery",
     "DeviceProbe",
     "FreeSpace",
     "Reachability",

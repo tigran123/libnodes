@@ -968,6 +968,9 @@ ul {
 .track-ok > i {
   background: var(--ok);
 }
+.track-warn > i {
+  background: var(--warn);
+}
 .track-err > i {
   background: var(--err);
 }
@@ -1107,6 +1110,9 @@ ul {
     minmax(118px, 176px)
     minmax(96px, 200px)
     minmax(92px, 120px)
+    /* Battery. Narrower than Storage because its widest content is "100%" plus a bar,
+       where Storage carries "302.9G / 466.4G". */
+    minmax(58px, 84px)
     minmax(56px, 132px)
     /* 320px, not 200: the floor has to clear this cell's widest content on one line --
        "connection refused" (~120px) plus Test, Retry and Actions plus gaps, ~295px -- or

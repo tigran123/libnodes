@@ -171,6 +171,13 @@ SEED_DEVICES_YAML = """\
 #       FAT32 cannot hold a file of 4 GiB or more). Optional: unset means vfat for
 #       kobo/termux and ext4 for linux.
 #
+# battery: a file on the DEVICE holding the charge percentage, shown as a bar beside
+#       storage. A path, because there is no portable way to ask: Android keeps it under
+#       /sys/class/power_supply/ but the node name varies by vendor -- `battery` on an
+#       LG G4, `bms` or `battery_0` elsewhere. `cat` it over ssh to check first; unset
+#       simply leaves the column empty. Read by the same ssh that runs df, so it costs
+#       no extra round trip.
+#
 # The entries below are examples. Replace them.
 
 defaults:
@@ -207,6 +214,7 @@ devices:
     target_ui: ~/sd/Books
     fs: vfat
     full_sync: false
+    battery: /sys/class/power_supply/battery/capacity
 
   - id: mirror
     name: Linux mirror

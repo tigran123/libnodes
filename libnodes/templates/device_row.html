@@ -44,6 +44,26 @@
     {% endif %}
   </div>
 
+  {# Battery. The column is present for every device but only filled for one that
+     declares a `battery:` path — there is no portable way to ask, so a node that has
+     not been told where to look reports nothing rather than guessing. Keyed on the
+     declared path and not on the reading, or the cell would empty itself between the
+     poll and the next successful probe. #}
+  <div data-label="Battery">
+    {% if not node.has_battery %}
+      <span class="usage-v t-faint">—</span>
+    {% elif node.battery.percent is none %}
+      <span class="usage-v t-faint" title="{{ node.battery_note }}">—</span>
+    {% else %}
+      <div class="usage">
+        <span class="usage-v{% if node.battery.error %} t-warn{% endif %}"
+              title="{{ node.battery_note }}">{{ node.battery.percent }}%</span>
+        <div class="track track-2 {{ node.battery_class }}"><i
+             style="width:{{ '%.1f'|format(node.battery_pct) }}%"></i></div>
+      </div>
+    {% endif %}
+  </div>
+
   <div data-label="Last sync" class="mono t-dim">
     {% if node.state == 'syncing' %}
       <span class="t-accent">running</span>

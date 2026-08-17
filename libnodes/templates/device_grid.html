@@ -38,6 +38,24 @@
       <div class="track track-2" style="margin-top:7px">
         <i style="width:{{ '%.1f'|format(node.used_pct) }}%"></i>
       </div>
+
+      {# Battery, on the same terms as the table cell: shown only for a device that
+         declares where to read it, same thresholds, same tint. #}
+      {% if node.has_battery %}
+        <div class="stat" style="line-height:1.4;margin-top:7px">
+          <span class="t-muted">battery</span>
+          <b{% if node.battery_note %} title="{{ node.battery_note }}"{% endif %}>
+            {%- if node.battery.percent is not none -%}
+              {{ node.battery.percent }}%
+            {%- else -%}—{%- endif -%}
+          </b>
+        </div>
+        {% if node.battery.percent is not none %}
+          <div class="track track-2 {{ node.battery_class }}" style="margin-top:7px">
+            <i style="width:{{ '%.1f'|format(node.battery_pct) }}%"></i>
+          </div>
+        {% endif %}
+      {% endif %}
     </div>
 
     <div class="card-actions">

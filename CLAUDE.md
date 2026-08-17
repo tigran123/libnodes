@@ -84,6 +84,18 @@ are listed.
 - **`_loop` never awaits a `df`.** A space probe is bounded at 15s and tried twice, so
   awaiting it put up to 30s per online node between reachability sweeps — 30s of every dot
   on the page being stale. Use `probe_space_soon`.
+- **One ssh carries every device reading.** `df` and `battery:` come back from a single
+  `_readings_script` invocation with `# df` / `# battery` markers, split by `_section`.
+  On a sleeping Termux node the connection *is* the cost, and two probes on separate
+  schedules would also drift apart in a row that shows both. `battery:` is a path because
+  there is no portable way to ask — the sysfs node name varies by vendor — so a device
+  that does not declare one reports nothing rather than a guess. Pinned by
+  `tests/test_battery.py::test_the_battery_rides_along_with_df`.
+- **The device table's CSS tracks, `<thead>` cells and row cells must agree in number.**
+  A grid whose template grew a column the stylesheet does not know about still renders —
+  it silently wraps the last cell onto a second line. `.subrow` is the one top-level div
+  that is not a column and says so with `grid-column: 1 / -1`. Pinned by
+  `tests/test_battery.py::test_the_grid_declares_a_track_for_every_cell`.
 - **One rsync at a time.** `Settings.concurrency`, default 1. The Pi's NIC shares the USB 2.0
   bus with the library disk, so two transfers go half as fast each.
 - **Every template except `base.html` and the page templates must render standalone** — no

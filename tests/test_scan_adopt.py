@@ -686,7 +686,7 @@ async def test_the_rsync_banner_is_not_read_as_a_df_record(app):
     """`_parse_df` scans backwards for the last line that parses, and
     `rsync  version 3.2.7  protocol version 31` splits into the six fields it wants.
     Handing it the whole transcript would let the version line answer for the disk."""
-    from libnodes.routes.devices import _df_section
+    from libnodes.probe import _section
 
     transcript = (
         "# df\n"
@@ -695,7 +695,7 @@ async def test_the_rsync_banner_is_not_read_as_a_df_record(app):
         "# rsync\nrsync  version 3.2.7  protocol version 31\n"
         "# write\nwritable\n"
     )
-    section = _df_section(transcript)
+    section = _section(transcript, "df")
     assert "rsync" not in section
     assert "writable" not in section
     assert "31457280" in section
