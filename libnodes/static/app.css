@@ -28,7 +28,17 @@
   --accent: #9a8ce6;
   --accent-hi: #b6acef;
   --ok: #4fb383;
-  --warn: #d3a05a;
+  /* Amber and red have to be told apart at 6px, which is the size of a status dot. The
+     design bundle's pair was #d3a05a against #d1685c: 29deg of hue and *identical*
+     lightness (both L59 in HSL), 1.53:1 against each other -- amber read as red at a
+     glance, so `sleeping` and `offline` looked like one state. This is L65 and H45, a
+     38deg gap and 2.2:1, without going neon. Every rgba() literal of it below has to be
+     changed with it; `test_a_state_tint_is_the_state_colour` is what enforces that. */
+  --warn: #eac861;
+  /* Solid fills -- the status dot, the battery bar -- as opposed to ink and 1px borders.
+     On black they are the same colour and this is `var(--warn)`; on white they cannot be,
+     which is what the light theme's own note explains. */
+  --warn-fill: var(--warn);
   --err: #d1685c;
 
   /* Chrome sits between bg and panel; two row states get their own value. */
@@ -100,7 +110,20 @@
   --accent: #6244cf;
   --accent-hi: #4f34b8;
   --ok: #1f7a52;
-  --warn: #92661f;
+  /* The same separation problem, solved only in hue: this is text and 1px borders on
+     white, where 4.5:1 is the floor, so amber cannot be lightened here the way the dark
+     one was -- #92661f was already only 5.07:1. H37 -> H44 at an unchanged 5.06:1 buys
+     the hue gap against #b23d31 and keeps the contrast. */
+  --warn: #8a6a12;
+  /* Amber on white cannot be one colour. Small text needs 4.5:1, which on white means a
+     dark mustard -- #8a6a12 is 5.06:1 and is as light as the floor allows -- while a 6px
+     dot needs to read as *yellow* beside a red one, and anything that does is around 2:1.
+     Measured: at one token the pair was #8a6a12 on #b23d31, both mid-dark and saturated,
+     which is the pairing reported as "almost the same as red". So the ink keeps its
+     contrast and solid fills get this: H42 against the red's H6, and 7 lightness points
+     above it. A fill only owes 3:1 to its background, and the dot's 3px halo carries it.
+     `test_warning_text_stays_readable` is why this is not simply assigned to --warn. */
+  --warn-fill: #edb01c;
   --err: #b23d31;
 
   --chrome: #eef0f4;
@@ -119,8 +142,8 @@
   border-color: rgba(31, 122, 82, 0.3);
 }
 :root[data-theme="light"] .badge-warn {
-  background: rgba(146, 102, 31, 0.1);
-  border-color: rgba(146, 102, 31, 0.3);
+  background: rgba(138, 106, 18, 0.1);
+  border-color: rgba(138, 106, 18, 0.3);
 }
 :root[data-theme="light"] .badge-err {
   background: rgba(178, 61, 49, 0.1);
@@ -141,7 +164,7 @@
   box-shadow: 0 0 0 3px rgba(31, 122, 82, 0.2);
 }
 :root[data-theme="light"] .dot-warn {
-  box-shadow: 0 0 0 3px rgba(146, 102, 31, 0.2);
+  box-shadow: 0 0 0 3px rgba(237, 176, 28, 0.2);
 }
 :root[data-theme="light"] .dot-err {
   box-shadow: 0 0 0 3px rgba(178, 61, 49, 0.2);
@@ -718,8 +741,8 @@ ul {
   box-shadow: 0 0 0 3px rgba(79, 179, 131, 0.15);
 }
 .dot-warn {
-  background: var(--warn);
-  box-shadow: 0 0 0 3px rgba(211, 160, 90, 0.15);
+  background: var(--warn-fill);
+  box-shadow: 0 0 0 3px rgba(234, 200, 97, 0.15);
 }
 .dot-err {
   background: var(--err);
@@ -925,8 +948,8 @@ ul {
 }
 .badge-warn {
   color: var(--warn);
-  background: rgba(211, 160, 90, 0.1);
-  border-color: rgba(211, 160, 90, 0.25);
+  background: rgba(234, 200, 97, 0.1);
+  border-color: rgba(234, 200, 97, 0.25);
 }
 .badge-err {
   color: var(--err);
@@ -969,7 +992,7 @@ ul {
   background: var(--ok);
 }
 .track-warn > i {
-  background: var(--warn);
+  background: var(--warn-fill);
 }
 .track-err > i {
   background: var(--err);
@@ -1110,9 +1133,19 @@ ul {
     minmax(118px, 176px)
     minmax(96px, 200px)
     minmax(92px, 120px)
-    /* Battery. Narrower than Storage because its widest content is "100%" plus a bar,
-       where Storage carries "302.9G / 466.4G". */
-    minmax(58px, 84px)
+    /* Battery. Narrower than Storage because its widest content is a charging bolt plus
+       "100%" over a bar, where Storage carries "302.9G / 466.4G". The floor went 58 -> 70
+       when the bolt arrived: 7px of glyph and 3px of margin, rounded up. That puts the
+       nine floors at 1022px and a single-line row at 1248px of viewport, still inside the
+       1280px stacking breakpoint below -- which is what
+       test_the_stack_breakpoint_clears_the_row_floor checks, so the next one to grow
+       fails there rather than on somebody's screen. */
+    minmax(70px, 96px)
+    /* Last seen, then Last sync. Same content shape -- "3m ago", "yesterday", "never" --
+       so the same floor. The pair sits together on purpose: they are two ages that
+       routinely disagree, and reading one for the other is the mistake the column exists
+       to stop. */
+    minmax(56px, 116px)
     minmax(56px, 132px)
     /* 320px, not 200: the floor has to clear this cell's widest content on one line --
        "connection refused" (~120px) plus Test, Retry and Actions plus gaps, ~295px -- or
@@ -1141,10 +1174,44 @@ ul {
   gap: 4px;
 }
 
+/* An offline row keeps the last figures it got, dated by LAST SEEN, rather than blanking
+   them -- so the bar must not read as a live measurement. A modifier on the storage bar
+   itself, not a rule on the row or the card: either would outrank `.track-err > i` on
+   specificity and take the battery tint with it, and a red node's low battery is the most
+   useful thing on the row, being the likeliest reason it is red at all. */
+.trow.is-offline .track-disk > i,
+.card.is-offline .track-disk > i {
+  background: var(--faint);
+}
+
 .usage-v {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--ink-2);
+}
+
+/* The charging bolt, left of the percentage in both views. `vertical-align: -1px` rather
+   than a flex wrapper: the glyph sits inside the mono value span, and giving that span a
+   display would take the number out of the text flow it shares with the `%` sign. */
+.bolt {
+  display: inline-block;
+  vertical-align: -1px;
+  margin-right: 3px;
+}
+
+/* Amber while current is flowing, green once it is merely connected -- full, or a charger
+   that has paused. `--warn-fill` and not `--warn`: that token exists because plain amber
+   reads as red at small sizes, which is exactly the size this is.
+
+   Set on the glyph itself, so it survives `.trow.is-offline .usage-v` dimming the number
+   beside it. That is deliberate and matches the low-battery tint next to it: an offline
+   row keeps every figure it had, dated by LAST SEEN, and "it was on the charger when we
+   last reached it" is among the more useful things that row can say. */
+.bolt-charging {
+  color: var(--warn-fill);
+}
+.bolt-plugged {
+  color: var(--ok);
 }
 
 .trow.is-offline .usage-v,
@@ -1830,6 +1897,25 @@ button.tree-caret:hover {
   color: var(--warn);
 }
 
+/* A finished transcript, not a live tail. Two differences from `.term`, and both matter.
+   `flex-start`, because the connection test is a document you read from the top -- and
+   because a flex-end column that overflows pushes its first lines past the start edge
+   where scrolling cannot reach them, so the head of the output was not merely scrolled
+   away, it was unreachable.
+
+   And a height that hugs the content up to a cap, rather than `.term`'s fixed 206px: a
+   failed connect is three lines and should not sit in a 460px box, while a termux node's
+   `BatteryStatus` prints 15 lines of JSON inside a 24-line transcript -- measured on s4l.
+   At 11.5px/1.55 that is 428px of lines plus 20px of padding, so 480px shows all of it
+   with a spare line for a `df` that wraps its device name. The vh cap keeps the dialog
+   inside a short laptop screen; past either, it scrolls, now from the top. */
+.term-doc {
+  height: auto;
+  max-height: min(480px, 62vh);
+  overflow: auto;
+  justify-content: flex-start;
+}
+
 .caret {
   display: inline-block;
   width: 7px;
@@ -2320,7 +2406,15 @@ button.tree-caret:hover {
   }
 }
 
-@media (max-width: 1200px) {
+/* 1280px, the same breakpoint `.file-grid` stacks at, so all three tables now agree.
+   Arithmetic, not taste: the device row's nine track floors sum to 1022px, and the panel
+   gets `viewport - --rail(190) - 2x--gutter(18)`, so a single-line row needs 1248px of
+   viewport. At the old 1200px there was a 36px band -- 1200 to 1236 -- where the row had
+   stopped stacking but could not lay out either, and an over-constrained grid pays for it
+   by wrapping the Actions buttons. `test_the_stack_breakpoint_clears_the_row_floor` keeps
+   the two numbers in step when a column is added. `.jobs-grid` rides along; its floors sum
+   to 628px, so it fits comfortably either side and only gains consistency. */
+@media (max-width: 1280px) {
   .thead.device-grid, .thead.jobs-grid {
     display: none;
   }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import time
 
 import pytest
@@ -617,3 +618,199 @@ def test_the_grid_and_the_table_draw_the_bar_the_same_way():
 
     assert classes["device_row.html"] == classes["device_grid.html"]
     assert "disk-bar" not in classes["device_grid.html"]
+
+
+# ------------------------------------------------- the reading and its date --
+
+
+async def test_invalidating_the_cache_keeps_the_reading_it_dates(app):
+    """Forcing a re-read must not forge the timestamp.
+
+    A transfer landing (`jobs.py`) and a devices.yaml edit both want the next sweep to
+    ask again, and both deliberately keep the figures so the cell does not blink empty.
+    Nulling `checked_at` to schedule that was invisible until LAST SEEN began printing it:
+    the column would then say "never" beside figures plainly on screen, in the one moment
+    — just after a push — when the row is being watched. Staleness is `_Slot.space_stale`
+    for exactly this reason.
+    """
+    probe = _probe(app)
+    read_at = time.time() - 90
+    probe._slot("kobo").space = FreeSpace(
+        total=100, used=50, free=50, checked_at=read_at
+    )
+    assert not probe._space_stale("kobo")
+
+    probe.invalidate_space("kobo")
+
+    assert probe._space_stale("kobo"), "the next sweep will not re-read it"
+    assert probe.space("kobo").checked_at == read_at, "the reading lost its date"
+    assert probe.space("kobo").used == 50, "the figure went with it"
+
+    # And a reading that lands clears the flag, or every tick would spawn a df for ever.
+    probe.adopt_space("kobo", "Filesystem 1024-blocks Used Available Capacity Mounted on\n"
+                              "/dev/mmcblk0p3 200 100 100 50% /mnt/onboard\n")
+    assert not probe._space_stale("kobo")
+    assert probe.space("kobo").used == 102400
+
+
+
+# ------------------------------------------------- readings across a restart --
+
+
+def _fresh_probe(settings):
+    from libnodes.config import DevicesStore
+    from libnodes.probe import DeviceProbe
+
+    return DeviceProbe(settings, DevicesStore(settings))
+
+
+async def test_the_readings_survive_a_restart(settings):
+    """A deploy used to blank every node that happened to be asleep at that moment, and on
+    this fleet the Kobo can be asleep for days. The figures come back with the ages they
+    actually have -- LAST SEEN says "4h ago", not "just now"."""
+    from libnodes.probe import Battery, FreeSpace, Reachability
+
+    now = time.time()
+    before = _fresh_probe(settings)
+    before._slot("kobo").space = FreeSpace(
+        total=100, used=40, free=60, checked_at=now - 14400
+    )
+    before._slot("kobo").battery = Battery(
+        percent=64, power="plugged", checked_at=now - 14400
+    )
+    before._slot("kobo").reach = Reachability(
+        state="offline", last_ok=now - 900, checked_at=now, failures=5
+    )
+    before.save_cache()
+    assert settings.probe_cache.exists()
+
+    after = _fresh_probe(settings)
+    after.load_cache()
+    slot = after._slot("kobo")
+    assert (slot.space.used, slot.space.total) == (40, 100)
+    assert slot.space.checked_at == pytest.approx(now - 14400)
+    assert slot.battery.percent == 64
+    # The bolt comes back too. That does not contradict "the charge state is never carried
+    # forward": that rule is about a *read* that failed, and this is the unreachable case,
+    # which already keeps its bolt for as long as the process lives.
+    assert slot.battery.power == "plugged"
+    assert slot.reach.last_ok == pytest.approx(now - 900)
+
+
+async def test_a_restart_measures_the_dot_rather_than_restoring_it(settings):
+    """`last_ok` is a historical fact and comes back -- without it every unreachable node
+    reads as half-an-hour-dead the moment the service returns. The *state* is a
+    measurement and must be taken now, and so is the schedule: restoring `next_probe_at`
+    would have the first sweep honour an appointment made last session."""
+    from libnodes.probe import Reachability
+
+    now = time.time()
+    before = _fresh_probe(settings)
+    before._slot("kobo").reach = Reachability(
+        state="offline", last_ok=now - 900, checked_at=now, failures=5,
+        next_probe_at=now + 300, error="timed out", latency=0.5,
+    )
+    before.save_cache()
+
+    after = _fresh_probe(settings)
+    after.load_cache()
+    reach = after._slot("kobo").reach
+    assert reach.last_ok == pytest.approx(now - 900)
+    assert reach.state == "unknown", "a dot was restored instead of measured"
+    assert reach.checked_at is None
+    assert reach.failures == 0
+    assert reach.next_probe_at == 0.0
+    assert reach.error is None
+
+
+async def test_a_restored_reading_schedules_its_own_replacement(settings):
+    """The ages are restored untouched precisely so that nothing downstream has to know
+    these came off disk: every staleness test already in probe.py then treats them as due,
+    so a restored figure is replaced at the first opportunity rather than suppressing the
+    probe that would replace it."""
+    from libnodes.probe import FreeSpace
+
+    now = time.time()
+    before = _fresh_probe(settings)
+    before._slot("kobo").space = FreeSpace(
+        total=100, used=40, free=60, checked_at=now - 14400
+    )
+    before.save_cache()
+
+    after = _fresh_probe(settings)
+    after.load_cache()
+    assert after._space_stale("kobo"), "a four-hour-old reading passed as fresh"
+    # ...and it is due for a reachability probe immediately, not at some restored time.
+    device = _dev_named("kobo")
+    assert after.due(device)
+
+
+def _dev_named(device_id: str):
+    from libnodes.models import Device
+
+    return Device(id=device_id, name=device_id, type="kobo", host="h", target="/t")
+
+
+async def test_a_broken_cache_costs_a_cold_fleet_not_a_startup(settings):
+    """A cache is a convenience. Anything unreadable must leave the fleet blank -- which
+    is exactly where it was before this existed -- rather than fail the start."""
+    from libnodes.probe import Battery
+
+    for content in ("{ not json", "[]", "null", ""):
+        settings.probe_cache.write_text(content)
+        probe = _fresh_probe(settings)
+        probe.load_cache()
+        assert probe.battery("kobo") == Battery()
+
+    # A future version is dropped rather than guessed at.
+    settings.probe_cache.write_text(
+        json.dumps({"version": 99, "devices": {"kobo": {"battery": {"percent": 50}}}})
+    )
+    probe = _fresh_probe(settings)
+    probe.load_cache()
+    assert probe.battery("kobo").percent is None
+
+    # A field this version does not know is ignored, not fatal -- the file is written by
+    # one version and read by another every time the schema moves.
+    settings.probe_cache.write_text(
+        json.dumps({
+            "version": 1,
+            "devices": {"kobo": {"battery": {"percent": 50, "voltage": 3.7}}},
+        })
+    )
+    probe = _fresh_probe(settings)
+    probe.load_cache()
+    assert probe.battery("kobo").percent == 50
+
+    # And no file at all is the ordinary first start.
+    settings.probe_cache.unlink()
+    probe = _fresh_probe(settings)
+    probe.load_cache()
+    assert probe.battery("kobo") == Battery()
+
+
+async def test_the_cache_is_written_at_shutdown_and_not_before(app):
+    """Shutdown only. Nothing reads the file while the process runs, so a periodic flush
+    would buy durability against an unclean exit alone and cost a write every time a node
+    answered -- every 10s across six nodes, for data nobody reads."""
+    from libnodes.probe import Battery
+
+    lib = app.state.lib
+    cache = lib.settings.probe_cache
+
+    async with app.router.lifespan_context(app):
+        lib.probe._slot("kobo").battery = Battery(percent=77, checked_at=time.time())
+        await lib.probe.probe_all(force=True)
+        assert not cache.exists(), "the cache was written while the app was running"
+
+    assert cache.exists(), "the lifespan shutdown did not write the cache"
+    assert json.loads(cache.read_text())["devices"]["kobo"]["battery"]["percent"] == 77
+
+
+async def test_a_node_never_read_is_not_written_at_all(settings):
+    """An empty slot carries no information, and writing one would put every device that
+    has never answered into a file whose only job is to remember the ones that did."""
+    probe = _fresh_probe(settings)
+    probe._slot("kobo")          # touched by a page render, never read
+    probe.save_cache()
+    assert json.loads(settings.probe_cache.read_text())["devices"] == {}

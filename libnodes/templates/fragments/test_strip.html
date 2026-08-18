@@ -9,7 +9,7 @@
     </span>
   </div>
 
-  <div class="term" style="height:auto;max-height:190px;overflow:auto">
+  <div class="term term-doc">
     <div class="cmd">$ {{ command }}</div>
     {% for line in stdout.splitlines() %}
       <div class="{{ 'info' if line.startswith('#') else 'prog' }}">{{ line }}</div>

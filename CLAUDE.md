@@ -125,6 +125,75 @@ are listed.
   there is no portable way to ask — the sysfs node name varies by vendor — so a device
   that does not declare one reports nothing rather than a guess. Pinned by
   `tests/test_battery.py::test_the_battery_rides_along_with_df`.
+- **Only the `status` file beside `capacity` may say whether a node is on a charger.**
+  `charging_command` (`libnodes/probe.py`) derives it with `posixpath.dirname`, which is a
+  narrower guess than the one `Device.battery` exists to avoid: sysfs fixes both names
+  *within* one supply directory, and a missing `status` fails the `cat` and draws no bolt
+  rather than a wrong one. The `online` files that look like the more direct question are
+  measured liars — on lg, `charger_controller` reports `status: Charging` and `online: 1`
+  permanently while the phone is unplugged (`usb/present: 0`, battery `Discharging`, every
+  other supply `online: 0`), and its `usb` supply is typed `Unknown` rather than `USB`, so
+  "the non-battery supply that is online" picks the liar and skips the truth on one device.
+  A `battery_cmd` node derives nothing: its `termux-api` JSON already carries `plugged` and
+  `status`, and asking twice would be a second invocation for something already answered.
+  A device whose charger is not beside its charge says so with `charging:` — nexus10 reads
+  its charge from `ds2784-fuelgauge`, which has no `status`, while the charger is
+  `smb347-battery`, one of five supplies there with no rule relating them.
+  Pinned by `tests/test_battery.py::test_the_status_file_is_the_sibling_of_the_capacity_file`
+  and `::test_the_charger_rides_along_on_the_same_ssh`.
+- **`POWER_SUPPLY_CURRENT_NOW`'s sign is not a charging signal.** It is the obvious
+  fallback for a node with no `status`, and it means opposite things on this fleet:
+  nexus10 reports it positive while charging and negative unplugged, while lg and bk both
+  report it *positive* with `POWER_SUPPLY_STATUS=Discharging`. Three devices, two
+  conventions. It also cannot tell "full on the charger" from "unplugged", both being
+  ~0 — which is exactly the distinction the green bolt draws. Pinned by
+  `tests/test_battery.py::test_the_current_sign_is_not_a_charging_signal`.
+- **The charge state is never carried forward; the percentage is.** `adopt_battery`
+  re-parses `power` on every read and stores whatever came back, `None` included, while
+  `percent` survives a bad read. They are different kinds of fact: a level moves slowly, so
+  a minute-old one is still roughly true, but a bolt is a claim about *now* and a stale one
+  says a device is on a charger it may have been unplugged from since. `None` and
+  `"unplugged"` stay distinct in the record even though both draw nothing, because only the
+  tooltip can say which it was. Pinned by
+  `tests/test_battery.py::test_a_charge_state_that_stops_reading_blanks_the_bolt`.
+- **`var/probe.json` is written at shutdown and nowhere else.** Nothing reads it while
+  the process runs — `load_cache` runs once in `start()`, `save_cache` once in `stop()` —
+  so a periodic flush would buy durability against an *unclean* exit alone, and cost a
+  write every time a node answered: every 10s across six nodes, for data nobody reads.
+  It exists because a deploy restart blanked every node that happened to be asleep at that
+  moment, and on this fleet the Kobo can be asleep for days. `checked_at` is restored
+  untouched, which is the whole trick — every staleness test already in `probe.py` then
+  treats a restored figure as due, so nothing downstream needs to know it came off disk.
+  `reach` comes back in part and the omissions are load-bearing: `last_ok` is a historical
+  fact and is what separates amber `sleeping` from red `offline`, while `state` is a
+  measurement, and `checked_at`/`next_probe_at` would make the first sweep honour a backoff
+  appointment made last session. `save_cache` sits *between* the task cancels and
+  `reap()` — after the cancels so no task can still be writing a reading, before the reap
+  so a shutdown that runs long cannot be what loses the cache. Pinned by
+  `tests/test_probe.py::test_a_restart_measures_the_dot_rather_than_restoring_it` and
+  `::test_the_cache_is_written_at_shutdown_and_not_before`.
+- **`FreeSpace.checked_at` dates the reading; staleness is a separate flag.** The LAST SEEN
+  column (`DeviceView.seen_at`) prints it, so it has to mean "when this figure was
+  measured" and nothing else. Forcing a re-read — `invalidate_space` when a transfer
+  lands, `refresh_all` on a `devices.yaml` edit — deliberately keeps the figures so the
+  cell does not blink empty, and used to null `checked_at` to schedule the next probe.
+  With the column in place that reads as "never measured" beside numbers plainly on
+  screen, in the one moment the row is being watched. `_Slot.space_stale` carries the
+  schedule instead, cleared in the one place `probe_space` commits to the ssh so no
+  outcome can forget it. Pinned by
+  `tests/test_probe.py::test_invalidating_the_cache_keeps_the_reading_it_dates`.
+- **LAST SEEN dates the readings, not the dot.** One ssh carries `df` and `battery:` every
+  `freespace_interval` (300s); the connect behind the dot repeats every 10–30s and the row
+  re-renders every 10s. The two ages disagree by minutes as a matter of course, so the
+  column prints `space.checked_at` and the *tooltip* carries `reach.last_ok` — printing the
+  connect there would date STORAGE five minutes early, which is the fault the column exists
+  to remove. It is also what makes an offline row's figures honest rather than hidden: a red
+  row keeps the last reading in `--faint` with its age beside it, matching what the cards
+  and every *sleeping* row already did. The storage bar dims via the `track-disk` modifier
+  and not a row-level rule, because `.trow.is-offline .track > i` outranks `.track-err > i`
+  and would take a red node's low-battery tint with it — the likeliest reason it is red.
+  Pinned by `tests/test_battery.py::test_the_row_dates_the_readings_it_shows` and
+  `::test_a_low_battery_keeps_its_tint_on_an_offline_row`.
 - **The device table's CSS tracks, `<thead>` cells and row cells must agree in number.**
   A grid whose template grew a column the stylesheet does not know about still renders —
   it silently wraps the last cell onto a second line. `.subrow` is the one top-level div

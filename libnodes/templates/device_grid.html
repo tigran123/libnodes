@@ -43,8 +43,15 @@
           {%- else -%}—{%- endif -%}
         </b>
       </div>
-      <div class="track track-2" style="margin-top:7px">
+      <div class="track track-2 track-disk" style="margin-top:7px">
         <i style="width:{{ '%.1f'|format(node.used_pct) }}%"></i>
+      </div>
+
+      {# Same age the table's LAST SEEN column prints, from the same property: a card and a
+         row showing the same figures must agree about how old they are. #}
+      <div class="stat" style="line-height:1.4;margin-top:7px">
+        <span class="t-muted">seen</span>
+        <b title="{{ node.seen_note }}">{{ node.seen_at|reltime }}</b>
       </div>
 
       {# Battery, on the same terms as the table cell: shown only for a device that
@@ -54,7 +61,7 @@
           <span class="t-muted">battery</span>
           <b{% if node.battery_note %} title="{{ node.battery_note }}"{% endif %}>
             {%- if node.battery.percent is not none -%}
-              {{ node.battery.percent }}%
+              {% if node.bolt_class %}{% include "charging_bolt.html" %}{% endif %}{{ node.battery.percent }}%
             {%- else -%}—{%- endif -%}
           </b>
         </div>

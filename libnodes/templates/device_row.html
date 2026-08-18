@@ -35,7 +35,11 @@
   <div data-label="Target" class="mono t-muted nowrap"><span title="{{ node.device.target }}">{{ node.device.display_target }}</span></div>
 
   <div data-label="Storage">
-    {% if node.offline or node.used is none %}
+    {# Shown whatever the dot says, because LAST SEEN beside it dates the figure: an
+       offline row's `—` was hiding a reading it still had, and hiding it here while the
+       card view and every *sleeping* row printed theirs. Faint, with a faint bar, so it
+       still cannot be mistaken for a live measurement. #}
+    {% if node.used is none %}
       <span class="usage-v t-faint">—</span>
     {% else %}
       {# used / total, because the bar under it is `used_pct`: a figure and a bar side by
@@ -48,7 +52,7 @@
               title="{{ node.used|hsize }} used · {{ node.free|hsize }} free of {{ node.capacity|hsize }}">
           {{ node.used|hsize_short }}{% if node.capacity %} / {{ node.capacity|hsize_short }}{% endif %}
         </span>
-        <div class="track track-2"><i style="width:{{ '%.1f'|format(node.used_pct) }}%"></i></div>
+        <div class="track track-2 track-disk"><i style="width:{{ '%.1f'|format(node.used_pct) }}%"></i></div>
       </div>
     {% endif %}
   </div>
@@ -66,11 +70,19 @@
     {% else %}
       <div class="usage">
         <span class="usage-v{% if node.battery.error %} t-warn{% endif %}"
-              title="{{ node.battery_note }}">{{ node.battery.percent }}%</span>
+              title="{{ node.battery_note }}">{% if node.bolt_class %}{% include "charging_bolt.html" %}{% endif %}{{ node.battery.percent }}%</span>
         <div class="track track-2 {{ node.battery_class }}"><i
              style="width:{{ '%.1f'|format(node.battery_pct) }}%"></i></div>
       </div>
     {% endif %}
+  </div>
+
+  {# The age of the two readings to the left, which is not the age of the dot: one ssh
+     carries df and battery every freespace_interval (300s) while the connect behind the
+     dot repeats every 10-30s. The tooltip carries both, so the disagreement reads as the
+     normal case it is rather than as a fault. #}
+  <div data-label="Last seen" class="mono t-dim" title="{{ node.seen_note }}">
+    {{ node.seen_at|reltime }}
   </div>
 
   <div data-label="Last sync" class="mono t-dim">

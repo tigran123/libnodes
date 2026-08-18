@@ -166,6 +166,15 @@ class Settings(BaseSettings):
     def logs_dir(self) -> Path:
         return self.state_dir / "logs"
 
+    @property
+    def probe_cache(self) -> Path:
+        """Last session's device readings. A cache, not state: safe to delete, and the
+        app starts with a blank fleet if it is missing. JSON rather than a fourth SQLite
+        file because nothing queries it -- it is written once at shutdown and read once at
+        startup. Lives beside devices.yaml, which the config watcher filters by name, so
+        writing it does not trip a config reload."""
+        return self.state_dir / "probe.json"
+
     def ensure_dirs(self) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
@@ -213,6 +222,22 @@ SEED_DEVICES_YAML = """\
 #       LG G4, `BAT1` on a ThinkPad, `bms` or `battery_0` elsewhere. `cat` it over ssh to
 #       check first; unset simply leaves the column empty.
 #
+#       The `status` file next to it is read as well, and puts a lightning bolt beside the
+#       percentage: amber while charging, green while on the charger and full. Nothing to
+#       declare -- sysfs keeps both files in the one supply directory -- and a device
+#       without one simply gets no bolt.
+#
+# charging: where to read the charger, when it is NOT beside `battery`. Rare, and the
+#       Nexus 10 is the reason it exists: its charge comes from a fuel gauge with no
+#       `status` file, while the charger is a separate supply among five on that tablet.
+#
+#         battery:  /sys/class/power_supply/ds2784-fuelgauge/capacity
+#         charging: /sys/class/power_supply/smb347-battery/status
+#
+#       Find it with `grep . /sys/class/power_supply/*/status` over ssh and check it
+#       changes when you plug the charger in -- some of these nodes are stubs that read
+#       `Charging` for ever.
+#
 # battery_cmd: a command to run instead, for a device where the charge is not a file.
 #       Android 12 does not let Termux read /sys/class/power_supply at all, so there the
 #       answer comes from termux-api, which prints JSON:
@@ -220,8 +245,9 @@ SEED_DEVICES_YAML = """\
 #         battery_cmd: /data/data/com.termux/files/usr/libexec/termux-api BatteryStatus
 #
 #       A bare number or a JSON object is understood; in JSON the first of percentage,
-#       capacity, level or battery_level that holds a number in 0..100 is taken. Give the
-#       full path -- a non-interactive ssh gets Termux's PATH but not its libexec.
+#       capacity, level or battery_level that holds a number in 0..100 is taken, and
+#       `plugged`/`status` give the charging bolt at no extra cost. Give the full path --
+#       a non-interactive ssh gets Termux's PATH but not its libexec.
 #       Set battery or battery_cmd, never both.
 #
 #       Either way it is read by the same ssh that runs df, so it costs no extra round

@@ -16,8 +16,10 @@ from ..probe import (
     FreeSpace,
     Reachability,
     _parse_battery,
+    _parse_power,
     _section,
     battery_command,
+    charging_command,
     ssh_argv,
 )
 from ..config import SKIP_TOPLEVEL
@@ -33,7 +35,7 @@ from ..jobs import (
 from ..manifests import Extras
 from ..models import Device
 from ..state import AppState
-from ..templating import reltime, templates, until
+from ..templating import clock, reltime, templates, until
 
 router = APIRouter()
 
@@ -207,8 +209,25 @@ class DeviceView:
         return ""
 
     @property
+    def bolt_class(self) -> str:
+        """The charging glyph's tint, or "" for no glyph at all.
+
+        Two colours because the two states are different news: amber says the figure beside
+        it is climbing, green says the device is on a charger and done. Both are drawn only
+        from the reading just taken — `adopt_battery` never carries a charge state forward —
+        so a bolt on screen means the last successful read saw a charger, dated by LAST SEEN
+        like every other figure in the row.
+        """
+        if self.battery.power == "charging":
+            return "bolt-charging"
+        if self.battery.power == "plugged":
+            return "bolt-plugged"
+        return ""
+
+    @property
     def battery_note(self) -> str:
-        """The cell's tooltip: the reading, its age, and why it is missing if it is."""
+        """The cell's tooltip: the reading, its age, whether it is on a charger, and why
+        it is missing if it is."""
         if self.battery.error:
             stale = (
                 f"last read {reltime(self.battery.checked_at)}"
@@ -218,7 +237,53 @@ class DeviceView:
             return f"{self.battery_source}: {self.battery.error} · {stale}"
         if self.battery.percent is None:
             return f"{self.battery_source} — not read yet"
-        return f"{self.battery.percent}% · read {reltime(self.battery.checked_at)}"
+        # Spelled out here even where the bolt says it, because the bolt cannot distinguish
+        # "on its own battery" from "we could not read the charger" and this can — and
+        # because a two-colour glyph needs somewhere that names which colour is which.
+        power = {
+            "charging": " · charging",
+            "plugged": " · on charger, not charging",
+            "unplugged": " · on battery",
+        }.get(self.battery.power or "", "")
+        return (
+            f"{self.battery.percent}%{power} · "
+            f"read {reltime(self.battery.checked_at)}"
+        )
+
+    @property
+    def seen_at(self) -> float | None:
+        """When the readings this row is showing were taken — the LAST SEEN column.
+
+        The df and the battery come back on one ssh, so one stamp dates both. Not
+        `reach.last_ok`, which is a 2s connect repeated every probe_interval and says
+        nothing about the figures: at the defaults it is up to `freespace_interval` (300s)
+        fresher than they are, so printing it here would date STORAGE five minutes early.
+        The fallback is for a node whose battery was adopted by the connection test before
+        any df ran.
+        """
+        return self.space.checked_at or self.battery.checked_at
+
+    @property
+    def seen_note(self) -> str:
+        """The column's tooltip: when, from what, and how that compares to the connect.
+
+        Both cadences in one string on purpose — the cell can only carry one number, and
+        the two disagreeing is the normal case rather than a fault.
+        """
+        if self.seen_at is None:
+            return "no reading yet"
+        sources = "df + battery" if self.has_battery else "df"
+        parts = [f"{sources} read at {clock(self.seen_at)}"]
+        # An age against a "—" means we asked and got nothing, which is worth saying here:
+        # the storage cell has no room for the reason.
+        if self.space.error:
+            parts.append(self.space.error)
+        parts.append(
+            f"answered {reltime(self.reach.last_ok)}"
+            if self.reach.last_ok
+            else "has never answered"
+        )
+        return " · ".join(parts)
 
 
 def device_views(app: AppState) -> list[DeviceView]:
@@ -463,6 +528,12 @@ def _test_script(device: Device) -> str:
     # battery_cmd is free-form shell and may well contain braces -- `awk '{print $1}'` --
     # which str.format would then try to read as a field name and raise on.
     battery = f'echo "# battery"; {read}; ' if read else ""
+    # The charger, on the same terms. Only the file form produces one -- a battery_cmd's
+    # JSON already carries `plugged` -- and `charging_command` is what decides that, here
+    # as in the probe, so pressing Test cannot read a different set of things than the poll.
+    charger = charging_command(device)
+    if charger is not None:
+        battery += f'echo "# power"; {charger}; '
     return _TEST_DF.format(t=target) + battery + _TEST_TAIL.format(t=target)
 
 
@@ -526,7 +597,9 @@ async def device_test(request: Request, device_id: str):
     # paid for the ssh.
     app.probe.adopt_space(device_id, _section(out, "df"))
     if battery_command(device):
-        app.probe.adopt_battery(device_id, _section(out, "battery"))
+        app.probe.adopt_battery(
+            device_id, _section(out, "battery"), _section(out, "power")
+        )
 
     ctx = base_context(request, "devices")
     ctx.update(
@@ -549,6 +622,18 @@ async def device_test(request: Request, device_id: str):
     return templates.TemplateResponse(request, "dialogs/test_result.html", ctx)
 
 
+#: How each charge state is worded, for the verdict line and the cell tooltip. One table,
+#: because a row saying "on charger" beside a dialog saying "plugged in" reads as two
+#: different readings of two different things. "unplugged" is worth saying out loud: it is
+#: what distinguishes a device we know to be on its own battery from one whose charger
+#: source did not answer, which is the distinction `Battery.power` keeps a `None` for.
+_POWER_VERDICT = {
+    "charging": " (charging)",
+    "plugged": " (on charger)",
+    "unplugged": "",
+}
+
+
 def _test_summary(out: str) -> list[str]:
     """Turn the probe's output into the design's one-line verdict."""
     bits = []
@@ -559,7 +644,16 @@ def _test_summary(out: str) -> list[str]:
     # transcript below for anyone who wants it.
     charge = _parse_battery(_section(out, "battery"))
     if charge is not None:
-        bits.append(f"battery {charge}%")
+        # The charger qualifies the figure rather than standing on its own: "battery 27%"
+        # and "battery 27% (charging)" are the same measurement heading opposite ways, and
+        # the second is the whole reason the reading is worth pressing Test for twice.
+        # `.get` with an explicit default: an unplugged node and an unreadable one both
+        # land on a key that is not in the table, and without it the verdict read
+        # "battery 100%None".
+        power = _POWER_VERDICT.get(
+            _parse_power(_section(out, "power") or _section(out, "battery")) or "", ""
+        )
+        bits.append(f"battery {charge}%{power}")
     for line in out.splitlines():
         if line.startswith("rsync  version") or line.startswith("rsync version"):
             bits.append(line.strip().split(" protocol")[0].strip())

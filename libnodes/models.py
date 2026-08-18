@@ -191,7 +191,22 @@ class Device(BaseModel):
     #: wrong number rather than nothing.
     #:
     #: Read by the same ssh that runs `df`, so declaring it costs no extra round trip.
+    #:
+    #: The `status` file beside it is read too, for the charging bolt -- see
+    #: `probe.charging_command` for why that sibling is derived rather than declared, and
+    #: why the `online` files that look like the better question are not consulted.
     battery: str | None = None
+    #: Where to read the charging state, when the sibling of `battery` is not it.
+    #:
+    #: The derivation is right for a device whose charge and charger are the same supply,
+    #: which is most of them. The Nexus 10 is not one: its charge comes from a fuel gauge
+    #: (`ds2784-fuelgauge`) that exposes no `status` at all, while the charger is a
+    #: separate supply (`smb347-battery`) two directories away. No rule relates the two --
+    #: the tablet also carries `manta-battery`, `smb347-mains` and `smb347-usb` -- so this
+    #: is the case that has to be declared rather than worked out.
+    #:
+    #: Read exactly like `battery`: a path, quoted as one, `cat`ed on the same ssh.
+    charging: str | None = None
     #: A command to run on the device instead, for a node whose charge is not a file.
     #:
     #: Android 12 does not let Termux read /sys/class/power_supply, so there is nothing to
@@ -247,6 +262,14 @@ class Device(BaseModel):
             raise ValueError(
                 "set battery (a file to read) or battery_cmd (a command to run), "
                 "not both"
+            )
+        # A charger source with nothing to hang it off is read by nobody: the readings
+        # script only grows a `# power` section for a device that is already being asked
+        # for its charge. Silently ignoring it would leave someone staring at a line they
+        # had written and a column that never filled.
+        if self.charging and not (self.battery or self.battery_cmd):
+            raise ValueError(
+                "charging needs a battery or battery_cmd to be read alongside"
             )
         return self
 

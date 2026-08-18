@@ -142,7 +142,7 @@ Every setting is a `LIBNODES_`-prefixed environment variable or a line in `.env`
 | Variable | Default | Notes |
 |---|---|---|
 | `LIBNODES_LIBRARY_ROOT` | `/Books` | the library root |
-| `LIBNODES_STATE_DIR` | `<project>/var` | index, jobs, manifests, logs, devices.yaml |
+| `LIBNODES_STATE_DIR` | `<project>/var` | index, jobs, manifests, logs, devices.yaml, probe.json |
 | `LIBNODES_CATALOG_DB` | `/Books/.data/db/lib.db` | read-only; optional |
 | `LIBNODES_CONCURRENCY` | `1` | simultaneous rsyncs; the pi5 unit sets `3` |
 | `LIBNODES_PROBE_INTERVAL` | `10` | seconds between reachability sweeps |

@@ -13,7 +13,17 @@ DEST="${LIBNODES_DEST:-/home/tigran/libnodes}"
 UV="${LIBNODES_UV:-/usr/local/bin/uv}"
 PORT="${LIBNODES_PORT:-8090}"   # nginx owns 80/443 on pi5; urantia-library owns 8000
 RESTART=1
-[[ "${1:-}" == "--no-restart" ]] && RESTART=0
+# Rejected rather than ignored. The only flag is --no-restart, and a mistyped one used to
+# fall through to a full deploy including the restart -- the opposite of what someone
+# reaching for a flag usually wants. Note there is no -t to pass: see the restart block.
+case "${1:-}" in
+    "")           ;;
+    --no-restart) RESTART=0 ;;
+    *)
+        echo "usage: $(basename "$0") [--no-restart]" >&2
+        exit 2
+        ;;
+esac
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -57,11 +67,25 @@ if [[ $RESTART -eq 1 ]]; then
     if ssh -o BatchMode=yes "$HOST" \
         'systemctl cat libnodes.service' >/dev/null 2>&1; then
         echo "==> restarting libnodes.service"
+        # `sudo` on pi5 needs a terminal to prompt for a password, and the ssh above
+        # allocates none by default -- which is why a deploy run by a human stopped dead
+        # at the last step with "a terminal is required to read the password".
+        #
+        # -t, and never -tt. -t asks for a PTY and OpenSSH declines when the caller has no
+        # terminal, so a scripted deploy keeps today's fast, explicit failure. -tt would
+        # force one, and the password prompt would then block a caller with no way to
+        # answer it -- a silent hang in place of a clear error.
+        #
+        # Conditional rather than always-on only to keep the "Pseudo-terminal will not be
+        # allocated" notice off stderr in non-interactive runs, where a stderr line from a
+        # deploy script reads as a failure.
+        tty_flag=()
+        if [[ -t 0 ]]; then tty_flag=(-t); fi
         # systemd reports `active` as soon as it has exec'd uvicorn, which is before the
         # app can answer — seconds on a Pi 3, less on pi5, but never zero. Poll the health
         # endpoint instead so a deploy that starts a broken build fails here rather than
         # looking fine.
-        ssh -o BatchMode=yes "$HOST" "
+        ssh "${tty_flag[@]}" -o BatchMode=yes "$HOST" "
             sudo systemctl restart libnodes
             for i in \$(seq 1 30); do
                 if curl -fsS -m 2 http://127.0.0.1:$PORT/healthz >/dev/null 2>&1; then

@@ -6,6 +6,144 @@ from __future__ import annotations
 # --------------------------------------------------------------------- theme --
 
 
+def _css() -> str:
+    from pathlib import Path
+
+    return (
+        Path(__file__).resolve().parent.parent / "libnodes" / "static" / "app.css"
+    ).read_text()
+
+
+def _rgb(hex_colour: str) -> tuple[int, int, int]:
+    h = hex_colour.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def _hue_and_lightness(hex_colour: str) -> tuple[float, float]:
+    import colorsys
+
+    r, g, b = (c / 255 for c in _rgb(hex_colour))
+    hue, lightness, _ = colorsys.rgb_to_hls(r, g, b)
+    return hue * 360, lightness * 100
+
+
+def _contrast(a: str, b: str) -> float:
+    """WCAG contrast ratio, so the thresholds below are the published ones: 4.5:1 for
+    small text, 3:1 for a graphic."""
+    def relative(hex_colour: str) -> float:
+        def channel(c: float) -> float:
+            c /= 255
+            return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+        r, g, b = _rgb(hex_colour)
+        return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+
+    hi, lo = sorted((relative(a), relative(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+_THEMES = {"dark": ":root {", "light": ':root[data-theme="light"] {'}
+
+
+def _token(css: str, theme: str, name: str) -> str:
+    """One palette token, resolving a `var(--other)` alias one level -- which is how the
+    dark theme says "the fill is the ink" without repeating the hex."""
+    import re
+
+    block = css.split(_THEMES[theme], 1)[1].split("}", 1)[0]
+    values = dict(re.findall(r"--([\w-]+):\s*([^;]+);", block))
+    value = values[name].strip()
+    alias = re.fullmatch(r"var\(--([\w-]+)\)", value)
+    if alias:
+        value = values[alias.group(1)].strip()
+    assert re.fullmatch(r"#[0-9a-fA-F]{6}", value), f"{theme} --{name} is {value!r}"
+    return value
+
+
+def _rule(css: str, selector: str) -> str:
+    import re
+
+    match = re.search(r"^" + re.escape(selector) + r"\s*\{([^}]*)\}", css, re.MULTILINE)
+    assert match, f"no rule for {selector}"
+    return match.group(1)
+
+
+def test_amber_does_not_read_as_red():
+    """`sleeping` and `offline` are different states and a 6px dot is what says which.
+
+    Two pairs have failed this. The design bundle's dark one was #d3a05a on #d1685c: 29deg
+    of hue and *identical* lightness, 1.53:1 against each other. The light one was worse in
+    practice — #92661f on #b23d31, both mid-dark and saturated, reported as "almost the
+    same as red". Hue *and* lightness, because each pair passed on one of them alone.
+    """
+    css = _css()
+    for theme in _THEMES:
+        # The dot's own colour, which in the light theme is not the ink -- see
+        # test_warning_text_stays_readable for why they had to part company.
+        amber = _token(css, theme, "warn-fill")
+        red = _token(css, theme, "err")
+        amber_h, amber_l = _hue_and_lightness(amber)
+        red_h, red_l = _hue_and_lightness(red)
+
+        assert abs(amber_h - red_h) >= 30, (
+            f"{theme}: amber {amber} is only {abs(amber_h - red_h):.0f}deg of hue from "
+            f"red {red}"
+        )
+        assert amber_l - red_l >= 5, (
+            f"{theme}: amber {amber} (L{amber_l:.0f}) is not clearly lighter than red "
+            f"{red} (L{red_l:.0f}) — hue alone does not separate them at 6px"
+        )
+
+
+def test_warning_text_stays_readable():
+    """Why the light theme has two ambers instead of one.
+
+    `--warn` is small mono text — a battery percentage, `connection refused` on a row — so
+    it owes 4.5:1 to the panel behind it. On white that caps it at a dark mustard, which is
+    exactly the colour that read as red. Brightening this token is the tempting fix and it
+    trades a legible warning for a distinguishable one; `--warn-fill` exists so neither has
+    to give. A fill owes only 3:1, and only to its background.
+    """
+    css = _css()
+    for theme in _THEMES:
+        ink = _token(css, theme, "warn")
+        panel = _token(css, theme, "panel")
+        assert _contrast(ink, panel) >= 4.5, (
+            f"{theme}: --warn {ink} on --panel {panel} is "
+            f"{_contrast(ink, panel):.2f}:1, under 4.5:1 for small text"
+        )
+
+
+def test_a_state_tint_is_the_state_colour():
+    """The badge fills and dot halos are rgba() literals of the palette, not `var()`s --
+    alpha needs the channels spelled out. So a token can be changed while the literals go
+    on wearing the old colour, in the two places the state is drawn rather than written."""
+    import re
+
+    for theme, prefix in (("dark", ""), ("light", ':root[data-theme="light"] ')):
+        css = _css()
+        for state in ("ok", "warn", "err"):
+            # A halo rings the dot, so it follows the dot's fill; a badge is ink and a 1px
+            # border, so it follows the ink.
+            for selector, token in (
+                (f"{prefix}.badge-{state}", state),
+                (f"{prefix}.dot-{state}", "warn-fill" if state == "warn" else state),
+            ):
+                expected = _rgb(_token(css, theme, token))
+                found = [
+                    tuple(int(c) for c in triple)
+                    for triple in re.findall(
+                        r"rgba\((\d+),\s*(\d+),\s*(\d+)", _rule(css, selector)
+                    )
+                ]
+                assert found, f"{selector}: no rgba tint to check"
+                for triple in found:
+                    assert triple == expected, (
+                        f"{theme} {selector} is tinted rgb{triple} while --{token} is "
+                        f"rgb{expected}"
+                    )
+
+
 def test_btn_default_does_not_wear_the_hover_background():
     """An emphasised button must not arrive already looking pressed.
 

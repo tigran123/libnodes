@@ -1,0 +1,18 @@
+{# The charging glyph, in one file because the row and the card both draw it and a bolt
+   that meant different things in TABLE and GRID would be worse than no bolt. Same reason
+   brand_mark.html exists.
+
+   Drawn as SVG and not as a character for the reason login.html gives for the eye: U+26A1
+   has an emoji presentation, so it arrives as a colour picture at a size the browser
+   chooses -- and the two tints are the whole point here. It also inherits nothing: the
+   fonts are self-hosted so the app works on an isolated LAN, and no self-hosted subset
+   carries emoji.
+
+   currentColor, so the tint lives in one CSS rule per state rather than in this markup.
+   aria-hidden because `battery_note` on the enclosing element already says it in words. #}
+{# The viewBox is the bolt's own bounds (x 3..13, y 0..16) and not a square 0 0 16 16.
+   preserveAspectRatio letterboxes rather than distorting, so a square box drawn into a
+   7x11 slot would shrink the glyph to 7x7 and centre it -- a bolt two-thirds the height
+   of the digits it sits beside. Cropping the viewBox to the path makes it fill. #}
+<svg class="bolt {{ node.bolt_class }}" viewBox="3 0 10 16" width="7" height="11"
+     fill="currentColor" aria-hidden="true"><path d="M9.9 0.6 3.2 9.1h3.4l-0.8 6.3 6.9-8.7H9.2z"/></svg>
