@@ -4,8 +4,8 @@ The Devices/Library rails show uptime, load and library-disk usage; the Jobs rai
 to live net/cpu/temp. All of it comes from /proc and /sys, is cheap, and is cached for
 a couple of seconds so a 10s poll plus an SSE stream cannot turn it into real work.
 
-Every reader degrades to None rather than raising: the workstation has no
-thermal_zone0, and the Pi's interface name is not the workstation's.
+Every reader degrades to None rather than raising: not every host has a thermal_zone0
+(pi5 does, an x86_64 workstation did not), and the interface name differs per machine.
 """
 
 from __future__ import annotations

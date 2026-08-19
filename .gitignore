@@ -8,3 +8,7 @@ __pycache__/
 # The design bundle this UI was built from. Consumed: the implementation is the
 # artefact now, and keeping ~1.6 MB of PNGs in git buys nothing.
 design_handoff_libnodes/
+
+# Screenshots from tools/shot.py. The docs' examples write here, and a PNG of the UI at
+# some past moment is not a record of anything — the tool regenerates it in a second.
+shots/

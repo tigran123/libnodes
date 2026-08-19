@@ -1,58 +1,100 @@
-# Deploying LibNodes to pi5
+# Running LibNodes on pi5
 
-The host is **pi5** — `192.168.1.32`, aarch64, Debian 13, 4 cores, 15 GB RAM, 447 GB NVMe,
-1 Gbps ethernet. `ssh pi5` logs in as `tigran`; the tree lives at `/home/tigran/libnodes`
-and the library at `/Books` on the NVMe. Nothing is a bind mount and nothing needs one.
+The host is **pi5** — `192.168.1.32`, aarch64, Debian 13 (trixie), Raspberry Pi 5 Model B
+Rev 1.1, 4 cores at `arm_freq=2800`, 15 GB RAM, 1 Gbps ethernet. `ssh pi5` logs in as
+`tigran`; the tree lives at `/home/tigran/libnodes` and the library at `/Books`. Both are on
+one **931 GB NVMe** — a WD Blue SN570 1TB, 917 G ext4 `rw,noatime`, 282 G used. Nothing is a
+bind mount and nothing needs one.
+
+The drive runs at **PCIe Gen2 x1** (`dtparam=pciex1_gen=2` in `/boot/firmware/config.txt`;
+the link reports 5.0 GT/s x1, the drive itself is 8.0 GT/s x4 capable and the Pi 5 only
+offers the one lane). Measured **430 MB/s** sequential — `dd iflag=direct` on an 824 MB
+blob, 2026-08-19 — against ~210 MB/s before, which is Gen1. That ceiling is the reason
+`LIBNODES_CONCURRENCY=3` is safe here at all; see §pi5 resource notes.
+
+**This is also where development happens.** The tree the service execs *is* the working
+tree, so there is nothing to push: edit it, `sudo systemctl restart libnodes`, look at
+`http://pi5:8090/`. `CLAUDE.md` §Commands is the loop.
 
 It was a Raspberry Pi 3 (`ssh pi`, `/home/pi/libnodes`, armv7l, 923 MB) until 2026-08-17.
-That machine is still running its own copy and has not been touched — which means two
-instances can reach the same fleet. Nothing in the code prevents both pushing to one device
-at once, so drive transfers from one of them at a time.
+That machine is still up and still holds its copy, but its `libnodes` unit is **disabled and
+inactive** and 8090 there is connection-refused — checked 2026-08-19. That is what retires
+the "two instances can reach one fleet" problem, and it retires it as a fact rather than a
+rule: nothing in the code stops two hosts pushing to one device, so if that unit is ever
+started again, drive transfers from one host at a time.
 
-## Deploy
+## Restarting
 
 ```bash
-./deploy/deploy.sh
+sudo systemctl restart libnodes && curl -s localhost:8090/healthz
 ```
 
-Syncs the source (excluding `var/`, `.venv/`, `tests/`, `design_handoff_libnodes/`), runs
-`uv pip sync requirements.txt` on pi5, restarts the service if installed, and then polls
-`/healthz` for 30 s — so a deploy that starts a broken build fails at the deploy rather
-than looking fine. The `.venv` is never shipped: the workstation's is x86_64 and pi5 builds
-its own aarch64 one.
+About a second, and no password: `/etc/sudoers.d/libnodes` carries
+`tigran ALL=(root) NOPASSWD: /usr/bin/systemctl restart libnodes` — that one command only.
+Restarting is cheap partly because `var/probe.json` is written at shutdown and read at
+start, so the fleet's dots survive it; a restart used to blank every node that happened to
+be asleep, and on this fleet the Kobo can be asleep for days.
+
+Dependencies, when `requirements.txt` changes:
+
+```bash
+uv pip sync requirements-dev.txt        # a superset of requirements.txt; see CLAUDE.md
+```
+
+That single venv is both the service's and the test suite's — `ExecStart` names
+`.venv/bin/uvicorn` — so sync the **dev** file, never the runtime one alone, and never a
+list that could drop `uvloop` or `httptools`.
+
+## Deploying somewhere else
+
+`./deploy/deploy.sh` is still here, but it is now only for pushing this tree to a
+*different* host. Run on pi5 it refuses: its own target is this tree, and it syncs with
+`--delete`. It syncs the source (excluding `var/`, `.venv/`, `tests/`,
+`design_handoff_libnodes/`), runs `uv pip sync requirements.txt` there, restarts the service
+if the unit is installed, then polls `/healthz` for 30 s so a push that starts a broken
+build fails at the push rather than looking fine.
 
 `LIBNODES_HOST`, `LIBNODES_DEST`, `LIBNODES_UV` and `LIBNODES_PORT` override the four
-targets if you ever need to deploy somewhere else. `uv` is at `/usr/local/bin/uv` on pi5
-and at `/home/pi/.local/bin/uv` on the old Pi.
+targets. Note the `uv` paths differ per host: `~/.local/bin/uv` is what `PATH` picks on pi5
+(0.12.5; the root-owned `/usr/local/bin/uv` is older, and is what `LIBNODES_UV` still
+defaults to), and `/home/pi/.local/bin/uv` on the old Pi.
 
-## Install the service (once)
+## The service, already installed
+
+`/etc/systemd/system/libnodes.service` is a copy of `deploy/libnodes.service`, enabled and
+active. Editing the file in the tree changes nothing until it is copied over — that copy and
+the `daemon-reload` after it are the one part of this that needs full root, so it belongs to
+the machine's sysadmin, not to a deploy:
 
 ```bash
-ssh pi5 'sudo cp /home/tigran/libnodes/deploy/libnodes.service /etc/systemd/system/ \
-         && sudo systemctl daemon-reload && sudo systemctl enable --now libnodes'
+sudo cp deploy/libnodes.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now libnodes
 ```
 
-Then LibNodes is on `http://pi5:8090/` from the LAN.
+`sudo systemctl restart libnodes` on its own needs no password (see §Restarting); everything
+above does.
 
-## `var/` does not travel
+## `var/` is this host's, and it is live
 
-`deploy.sh` excludes it deliberately: `var/` holds the index, jobs, manifests, logs and
-**`devices.yaml`**, all of which are genuinely per-machine. The workstation's `devices.yaml`
-is an uncorrected seed and must never be copied over a real one. The fleet definition was
-brought across from the old Pi once, by hand:
+`deploy.sh` excludes it deliberately, and on pi5 there is a second reason: the running
+service holds `index.db`, `jobs.db`, `manifests.db` and `probe.json` **open**. A second
+LibNodes started in this tree picks up `LIBNODES_STATE_DIR=<project>/var` by default and
+then both processes write those files and both ssh the whole fleet. `var/shot-profile/` is
+`tools/shot.py`'s chromium profile, holding its login cookie.
+
+`var/devices.yaml` is the real fleet: 9 devices, hand-edited, hot-reloaded. It was brought
+across from the old Pi once, by hand — and since pi5 now has a key there, from the pi5 side:
 
 ```bash
-ssh pi5 'mkdir -p ~/libnodes/var'
-ssh pi 'cat ~/libnodes/var/devices.yaml' | ssh pi5 'cat > ~/libnodes/var/devices.yaml'
+ssh pi 'cat ~/libnodes/var/devices.yaml' > ~/libnodes/var/devices.yaml
 ```
 
 The index, jobs and manifests were not: they rebuild. A first start therefore shows
 `PRESENT ON` blank everywhere until each device has been scanned once.
 
-Two things in that file remember the old host, and both are correct as they stand:
-`nexus10`'s target is `/sdcard/koreader/cache/webbrowser/192.168.1.33` — a path **on the
-tablet**, where the books already are; renaming it to `…/.32` would orphan them and force a
-full re-push.
+One thing in that file remembers the old host and is correct as it stands: `nexus10`'s
+target is `/sdcard/koreader/cache/webbrowser/192.168.1.33` — a path **on the tablet**, where
+the books already are; renaming it to `…/.32` would orphan them and force a full re-push.
 
 ## Outbound ssh from pi5
 
@@ -60,10 +102,56 @@ Every push and probe is `ssh` from pi5 to a node, so pi5's `~/.ssh/config` is pa
 deployment. It already carries `ControlMaster auto` / `ControlPersist 3600` — which
 `libnodes/probe.py` and the rsync `-e ssh` rely on for connection reuse — and the six
 port-2222 root entries for the termux and Kobo nodes. `thinkpad` (the `sync_mode: mirror`
-node, `User tigran`, port 22) had to be added; it was the one fleet member missing.
+node) has **no `~/.ssh/config` entry** and needs none: it is `192.168.1.3` in `/etc/hosts`,
+and `devices.yaml` supplies its `user: tigran` and `port: 22` on the command line, which is
+where every push and probe gets them anyway. It was off — no route — when this was checked
+on 2026-08-19, so mirror behaviour could not be re-verified against it that day.
 
 pi5's public key is installed on every registered node. Host keys are not pre-seeded, but
 `StrictHostKeyChecking=accept-new` in `ssh_argv` handles the first connection.
+
+## Looking at the UI on a host with no display
+
+pi5 has no X and no Wayland session, and development happens over ssh — so nobody, human or
+agent, sees the UI by opening a window here. Two ways it gets seen:
+
+- **From your own machine**, `http://pi5:8090/` over the LAN. This is the real thing, and the
+  password applies.
+- **`tools/shot.py`**, which drives the installed chromium (151.0.7922.137) headless over the
+  DevTools protocol and writes a PNG — or answers a question about the rendered page:
+
+```bash
+uv run tools/shot.py /devices                              # writes shots/devices.png
+uv run tools/shot.py /devices --show                       # ...and opens it on your screen
+uv run tools/shot.py /library shots/lib.png --full --theme light
+uv run tools/shot.py /devices - --eval \
+    "getComputedStyle(document.querySelector('.trow')).gridTemplateColumns"
+```
+
+`--show` hands the PNG to ImageMagick's `display`, which only means anything inside an
+X-forwarded session. Connect as `ssh -S none -4 -Y pi5`: `-Y` asks for forwarding (sshd here
+allows it and `xauth` is installed, which is the part that silently breaks it when absent),
+and **`-S none` is the load-bearing flag** — `~/.ssh/config` sets `ControlMaster auto` for
+`Host *`, so without it the session rides a master opened without forwarding and you get no
+`DISPLAY` and no explanation. Nothing outbound is affected: the connection reuse
+`libnodes/probe.py` and rsync depend on is pi5 → node, not this.
+
+The first argument is the **route**; the file is the second and is optional. `shot.py
+devices.png` therefore photographs the route `/devices.png` — which the tool now refuses by
+name, having once done it silently and exited 0.
+
+Three things about it are measured rather than chosen. It passes a private
+`--user-data-dir` (`var/shot-profile/`) because with Chromium's default profile the *same*
+screenshot takes **25.7 s** instead of **0.7 s** — the time goes on failing GCM registration
+against Google before the page will render. It waits for htmx to go quiet rather than for
+the load event, because every page here finishes assembling itself over HTMX. And it drives
+CDP rather than `chromium --headless --screenshot=…`, because the one-liner can neither carry
+a login cookie nor report a computed style.
+
+The password: `$LIBNODES_SHOT_PASSWORD`, or `~/.config/libnodes/shot-password` (mode 600),
+neither of which is in the tree. It logs in by filling the real form once; `remember` is
+checked by default and `LIBNODES_SESSION_DAYS` is 30, so the profile's cookie then serves for
+a month. With no password available it still runs and photographs the login card.
 
 ## There is no reverse proxy, and that is the decision
 
@@ -129,15 +217,21 @@ was not brought across.
   2.0 did. On pi5 the library is on PCIe NVMe and the NIC is separate, so the host is no
   longer the constraint; what is still shared is Wi-Fi airtime across the six wireless
   nodes, which is why it is 3 and not unbounded.
-- A full reindex walks 24,621 entries in **1.0 s** on a single background thread, measured
-  2026-08-17. The same walk took ~29 s on the Pi 3. It is safe to run during a transfer.
-- Expect ~64 MB RSS (63.5 MB measured, idle, index loaded). `MemoryMax=1G` in the unit is a
-  leak-catcher, not a budget.
+- A full reindex walks 24,621 entries (20,782 files, 248 GiB) in **0.61 s** on a single
+  background thread — measured 2026-08-19 on the Gen2 NVMe, three consecutive runs at
+  0.61/0.64/0.61 s. It was 1.0 s on the previous drive and ~29 s on the Pi 3. It is safe to
+  run during a transfer.
+- Expect ~65 MB RSS (67.4 MB measured, idle, index loaded, after four hours up).
+  `MemoryMax=1G` in the unit is a leak-catcher, not a budget.
+- The suite is **514 tests in ~20 s** here (`uv run pytest`), and needs no network. It was
+  ~17 s on the x86_64 workstation, which is the closest thing to a slowdown this move cost.
 - Logs are capped at `LIBNODES_LOG_RETENTION` (200) files under `var/logs/`.
 
 ## Environment
 
-Every setting is a `LIBNODES_`-prefixed environment variable or a line in `.env`:
+Every setting is a `LIBNODES_`-prefixed environment variable or a line in `.env`. The unit
+sets four of them (`LIBRARY_ROOT`, `STATE_DIR`, `CATALOG_DB`, `CONCURRENCY=3`) and reads
+`LIBNODES_PASSWORD` from `/etc/default/libnodes`; everything else runs at its default:
 
 | Variable | Default | Notes |
 |---|---|---|
@@ -159,7 +253,11 @@ Every setting is a `LIBNODES_`-prefixed environment variable or a line in `.env`
 LibNodes binds `0.0.0.0`, so without a password every host on the LAN can start transfers,
 abort them and delete history. Being LAN-only is not a substitute: the LAN is not a trust
 boundary — it holds six of the fleet's own nodes, and anything that joins the Wi-Fi is on
-it. With no reverse proxy in front, this password is the *only* guard. Set one:
+it. With no reverse proxy in front, this password is the *only* guard.
+
+**One is set.** `/etc/default/libnodes` exists, `root:root` `0600`, and the last start logged
+no warning — which is how you check, since the warning below is the only signal. Setting one
+from scratch:
 
 ```bash
 sudo install -m 600 /dev/null /etc/default/libnodes
@@ -170,7 +268,9 @@ sudo systemctl restart libnodes
 `libnodes.service` reads that file through `EnvironmentFile=-/etc/default/libnodes`. The
 leading `-` makes it optional, so the unit still starts on a machine that has no such file.
 
-**Do not put the password in `.env`.** `deploy.sh` syncs with `--delete` and does not
+**Do not put the password in `.env`.** That hazard is now hypothetical rather than routine —
+nothing rsyncs over this tree any more — but it is one edit away from being live again, and
+the failure is silent: `deploy.sh` syncs with `--delete` and does not
 exclude it, so a `.env` written on pi5 is deleted by the next deploy and the lock silently
 disappears. `/etc/default/libnodes` is outside `$DEST`, so rsync cannot reach it, and it
 never enters git. Mode `600` keeps it away from any other user on the host.

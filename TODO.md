@@ -43,15 +43,24 @@ what is left, with pointers into the code. Keep the two from contradicting each 
       already carries `# noqa: BLE001` (`libnodes/state.py:62`) — a linter was assumed and
       never wired up. Add the config, add ruff to `requirements-dev.in`, recompile.
 
-- [ ] **Add CI.** There is no `.github/`. The suite needs no network and runs in ~10 s, so a
-      workflow that does `uv pip sync requirements-dev.txt && pytest` costs almost nothing
-      and would catch the class of break that only shows up on a clean checkout.
+- [ ] **Add CI.** There is no `.github/`. The suite needs no network and runs in ~20 s on
+      pi5 (514 tests, measured 2026-08-19), so a workflow that does
+      `uv pip sync requirements-dev.txt && pytest` costs almost nothing and would catch the
+      class of break that only shows up on a clean checkout. Worth more now that dev happens
+      on the deployment host: nothing else exercises a clean tree.
 
 - [ ] **Resolve the dead schema fields.** `formats` (`libnodes/models.py:141`) and
       `rsync_flags` (`libnodes/models.py:150`, and in `Defaults`) are accepted and ignored.
       Someone who sets `rsync_flags:` today is silently misled into thinking it does
       something. Either surface them in the validation strip as *ignored*, or drop them and
       say so in the seed `devices.yaml` comment block.
+
+- [x] **Re-home the docs on pi5 as the dev host.** *(done 2026-08-19.)* Development moved
+      onto pi5, so `deploy.sh` is no longer the loop — edit, `sudo systemctl restart
+      libnodes`, look. `deploy.sh` was kept, for pushing to some *other* host, and given a
+      guard that refuses to run when its target is this tree; the alternative was deleting it
+      and losing the first-deploy and health-poll logic. `tools/shot.py` was added because
+      this host has no display, and the drive figures were re-measured on the new Gen2 NVMe.
 
 - [x] **`deploy/README.md` is out of date about the Pi bind mount.** *(done 2026-08-17, by
       the pi5 migration.)* All three copies of the stale claim are gone: the opening section

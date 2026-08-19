@@ -4,21 +4,39 @@ LibNodes pushes parts of a large content-addressed book library to a fleet of re
 devices over `ssh` + `rsync`. FastAPI + Jinja2 + HTMX, no build step, no client framework.
 
 `README.md` covers what it is and *why* it works this way — the CAS library, the rsync flag
-choices, the layout table. `deploy/README.md` covers the Pi, systemd and every environment
-variable. This file is what neither of those says: how to work in the tree.
+choices, the layout table. `deploy/README.md` covers pi5 itself: systemd, nginx, the
+password and every environment variable. This file is what neither of those says: how to
+work in the tree.
 
 ## Commands
 
+You are working **on pi5**, in the tree the service runs from. There is nothing to deploy:
+edit, restart, look.
+
 ```bash
-uv pip sync requirements-dev.txt                    # uv, not pip. /usr/local/bin/uv here
-uv run uvicorn libnodes.main:app --reload           # http://127.0.0.1:8000/devices
-uv run pytest                                       # 457 tests, ~17s, no network
+uv pip sync requirements-dev.txt                    # uv, not pip. ~/.local/bin/uv is the one PATH picks
+uv run pytest                                       # 514 tests, ~20s on pi5, no network
 uv run pytest tests/test_jobs.py::test_name -x
-./deploy/deploy.sh [--no-restart]                   # sync to pi5, uv pip sync, restart, poll /healthz
+sudo systemctl restart libnodes                     # ~1s, no password: /etc/sudoers.d/libnodes
+curl -s localhost:8090/healthz                      # and http://pi5:8090/ from the LAN
+journalctl -u libnodes -f
+uv run tools/shot.py /devices shots/devices.png     # see the UI: there is no display here
 ```
+
+There is deliberately **no dev-server line**. `uvicorn --reload` defaults to 8000, which
+urantia-library owns on this host; 8090 is the service's; and a second process in this tree
+would write the live `var/` out from under it. The restart is a second, and `var/probe.json`
+(saved at shutdown, restored at start) is what stops it blanking every dot. Run a second
+instance only with **both** `--port` and `LIBNODES_STATE_DIR` pointed somewhere else.
+
+`deploy/deploy.sh` still exists, but only for pushing to some *other* host — run here it
+refuses, because its target is this tree.
 
 Dependencies are declared in `requirements.in` / `requirements-dev.in` and compiled with
 `uv pip compile requirements.in -o requirements.txt`. Never hand-edit the `.txt` files.
+`uv pip sync requirements-dev.txt` is safe against the running service: the dev file starts
+with `-r requirements.in`, so it is a strict superset and cannot uninstall the `uvloop` and
+`httptools` the unit's ExecStart names.
 
 ## Invariants that break silently
 
@@ -253,8 +271,9 @@ are listed.
   `test_fragments_render_standalone` exists to forbid. The 401 is honoured because htmx
   acts on `HX-Redirect` *before* it consults the status code (verified in the vendored
   2.0.4). `/static` and `/healthz` are open on purpose — the login page would be unstyled
-  without the first, and `deploy.sh:60` gates every deploy on the second. The list is
-  `auth.OPEN_PATHS`.
+  without the first, and the restart check — `curl -s localhost:8090/healthz`, and
+  `deploy.sh:60` when that script is aimed at another host — gates on the second. The list
+  is `auth.OPEN_PATHS`.
 - **`AuthMiddleware` is pure ASGI, not `BaseHTTPMiddleware`.** The latter buffers the
   response body, which breaks `EventSourceResponse` — the dock would arrive in lumps,
   exactly as it does when nginx buffers `/jobs/stream`. It reads `scope` only and never
@@ -289,7 +308,11 @@ are listed.
   `--info=progress2` output so the runner, parser and SSE fan-out test end to end.
 - **When a change is visual, assert on computed style or a screenshot.** Asserting that
   `element.hidden` was set once passed happily while the UI was visibly broken, because a
-  `display: flex` rule outranks the UA's `[hidden]`.
+  `display: flex` rule outranks the UA's `[hidden]`. On this host that is `tools/shot.py`,
+  which does both against the running service — a PNG, and `--eval` for anything
+  `getComputedStyle` can answer. There is no display here, so it is not a convenience: it is
+  the only way the UI is ever seen. `tests/test_theme.py` covers the other half by parsing
+  `app.css` directly, which needs no browser and stays in the suite.
 
 ## Gotchas
 
@@ -297,19 +320,31 @@ are listed.
   gitignored. Do not delete it to "clean up", and never commit it.
 - `design_handoff_libnodes/` is gitignored and local-only. It has been consumed; the code is
   the artefact now. Do not add it back to git.
-- `.venv/` is x86_64 and pi5 builds its own aarch64 one. `deploy.sh` excludes `.venv/`,
-  `var/`, `tests/`, `.git/` and the design bundle, and creates the venv if the host has
-  none — otherwise `uv pip sync` has nothing to sync into on a first deploy.
-- **pi5 is the deployment target, not `pi`.** `ssh pi5` (192.168.1.32, aarch64, user
-  `tigran`, `/home/tigran/libnodes`, uv at `/usr/local/bin/uv`). It serves **8090** on
-  `0.0.0.0`, **LAN only** — no reverse proxy, 8090 not forwarded. urantia-library holds
-  8000 behind nginx on 443; 8080 is free. The dev default is 8000. It was briefly public at
-  `https://proxyai.ddns.net/` on 2026-08-17 and that was withdrawn the same evening — the
-  allowlist was pinned to a rotating home IP, so it would eventually have admitted whoever
-  the ISP handed the address to next. `deploy/README.md` has the full reasoning; do not
-  re-add a public vhost without reading it. The old Pi 3 (`ssh pi`, `/home/pi/libnodes`,
-  8090, uv at `~/.local/bin/uv`) is **still running its own copy** — nothing was stopped
-  there — so two instances can reach the same fleet. Drive transfers from one at a time.
+- `.venv/` is this host's aarch64 one (CPython 3.12.13) and the service **execs it**:
+  `ExecStart=/home/tigran/libnodes/.venv/bin/uvicorn`. It is not a dev sandbox — a
+  `uv pip sync` that dropped a runtime dep would take the fleet down at the next restart.
+  It is still excluded from `deploy.sh`'s rsync, along with `var/`, `tests/`, `.git/` and
+  the design bundle, for the case that script is now for: a *different* host.
+- **`var/` is live state, not a working copy.** The running service holds `index.db`,
+  `jobs.db`, `manifests.db` and `probe.json` open. A second LibNodes started in this tree
+  inherits `LIBNODES_STATE_DIR=<project>/var` by default, and then two processes fight over
+  those files and both ssh the whole fleet on their own schedules. `var/shot-profile/` is
+  `tools/shot.py`'s browser profile and holds its login cookie; it is gitignored with the
+  rest of `var/`.
+- **pi5 is the dev box *and* the deployment, and they are one tree.** 192.168.1.32,
+  aarch64, Debian 13, 4 cores, 15 GB, `/Books` and `/home/tigran/libnodes` on a 931 GB
+  NVMe (WD Blue SN570, PCIe Gen2 x1 per `dtparam=pciex1_gen=2` — 430 MB/s measured, up from
+  ~210 MB/s at Gen1). It serves **8090** on `0.0.0.0`, **LAN only** — no reverse proxy,
+  8090 not forwarded. urantia-library holds 8000 (behind nginx on 443); 8080 is free. It
+  was briefly public at `https://proxyai.ddns.net/` on 2026-08-17 and that was withdrawn
+  the same evening — the allowlist was pinned to a rotating home IP, so it would eventually
+  have admitted whoever the ISP handed the address to next. `deploy/README.md` has the full
+  reasoning; do not re-add a public vhost without reading it.
+- **The old Pi 3 has been stopped, not just superseded.** `ssh pi` (192.168.1.33,
+  `raspberrypi`, armv7l, `/home/pi/libnodes`) reports its unit **disabled and inactive**,
+  and 8090 there is connection-refused. That is what retires the "two instances can reach
+  one fleet" hazard — it is a fact about that host, not a policy, so starting it again
+  brings the hazard back: nothing in the code stops two hosts pushing to one device.
 - **LibNodes only works at the URL root.** ~64 template URLs are absolute
   (`hx-get="/jobs/dock"`), `asset()` emits `/static/…`, and `AuthMiddleware` matches
   `scope["path"]` against exact strings in `OPEN_PATHS`. That is why it gets its own
@@ -328,5 +363,8 @@ are listed.
 
 The module-by-module table is in `README.md` §Layout. Every module also opens with a
 docstring stating what it exists to guarantee — read that before changing one.
+
+`tools/` is host-side tooling that is not part of the app: `tools/shot.py` only. Its
+docstring carries the measured reason for every chromium flag it passes.
 
 Open work is tracked in `TODO.md`.

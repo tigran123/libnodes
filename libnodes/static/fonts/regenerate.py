@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Re-fetch the self-hosted webfonts and rewrite ../fonts.css.
 
-The Pi may sit on an isolated LAN, so nothing is loaded from a CDN at runtime. Run this
-on the workstation (it needs network) and commit the result; the Pi only ever sees the
-checked-in .woff2 files.
+The fleet may sit on an isolated LAN, so nothing is loaded from a CDN at runtime — the app
+only ever serves the checked-in .woff2 files. This script is the exception and needs outbound
+internet, which pi5 has, so it runs here like everything else now. Commit the result.
 
     python libnodes/static/fonts/regenerate.py
 """

@@ -13,11 +13,13 @@ FastAPI + Jinja2 + HTMX. No client framework, no build step, no Node, no ORM.
 
 ```bash
 uv pip sync requirements-dev.txt
-uv run uvicorn libnodes.main:app --reload      # http://127.0.0.1:8000/devices
 uv run pytest
+sudo systemctl restart libnodes                # then http://pi5:8090/devices
 ```
 
-Deploying to the Pi: [`deploy/README.md`](deploy/README.md).
+Development happens on the Pi itself, in the tree the service runs from, so there is no
+deploy step and no dev server — see [`deploy/README.md`](deploy/README.md) for the host, and
+`CLAUDE.md` for the loop.
 
 ## What it looks like
 
@@ -197,6 +199,9 @@ infer from its label is a bad action.
 | `yamlview.py` | token colouring for the read-only config view |
 | `routes/` | one module per view; full pages return the shell, everything else a fragment |
 
+Outside the package, `tools/shot.py` photographs and interrogates the running UI over the
+DevTools protocol — the Pi has no display, so it is how the UI is looked at at all.
+
 `static/app.css` is hand-written, not generated: its custom-property names mirror the
 Tailwind theme of the design bundle this UI was built from, so the two stay
 cross-readable. That bundle is not in the repository — it has been implemented, and the
@@ -213,8 +218,8 @@ them) so the machine works on an isolated LAN.
   rebuild runs on one background thread and publishes by atomic rename.
 - **Concurrency is the host's to declare, and defaults to one.** On the Pi 3 the NIC shared
   the USB bus with the library disk, so two transfers did not go twice as fast — they went
-  half as fast each. On NVMe and gigabit that reason is gone and the deployment sets three;
-  the code default stays one, for a host that has not said.
+  half as fast each. On the Pi 5's NVMe (430 MB/s measured) and gigabit that reason is gone
+  and the deployment sets three; the code default stays one, for a host that has not said.
 - **Every template except `base.html` and the page templates must render standalone.**
   That is the HTMX contract; `test_fragments_render_standalone` enforces it.
 
@@ -227,13 +232,15 @@ and the service says so at startup rather than pretending.
 
 The cookie is signed with a key derived from the password, so changing the password logs
 everyone out and there is no session store to keep. `/static` and `/healthz` stay open
-deliberately: the login page needs the first, and `deploy.sh` polls the second.
-`deploy/README.md` §Access says where to put the password on the Pi — not in `.env`, which
-a deploy deletes.
+deliberately: the login page needs the first, and the post-restart health check polls the
+second.
+`deploy/README.md` §Access says where to put the password on the Pi — `/etc/default/libnodes`,
+not `.env`, which an rsync deploy to another host would delete.
 
 ## Testing notes
 
-457 tests, no network required. Two fixtures encode lessons that cost real debugging:
+514 tests, ~20 s on the Pi 5, no network required. Two fixtures encode lessons that cost
+real debugging:
 
 - `tests/data_rsync_human.log` — verbatim output from a real transfer. `-avhP` includes
   `-h`, so rsync reported `734.38K` rather than `1,234,567`, and a parser tested only
@@ -244,7 +251,10 @@ a deploy deletes.
 
 When a change is visual, assert on computed style or a screenshot. Asserting that
 `element.hidden` was set once passed happily while the UI was visibly broken, because a
-`display: flex` rule outranks the UA's `[hidden]`.
+`display: flex` rule outranks the UA's `[hidden]`. The Pi has no display, so
+`tools/shot.py` does this against the running service — headless chromium over the DevTools
+protocol, a PNG or a `getComputedStyle` answer; `tests/test_theme.py` covers the palette by
+parsing `app.css`, which needs no browser.
 
 ## Status
 

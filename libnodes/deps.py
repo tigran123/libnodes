@@ -27,8 +27,9 @@ def base_context(request: Request, active: str) -> dict:
         "request": request,
         "active": active,
         # The library's own size, summed by the index walk (which stats through the CAS
-        # symlinks). statvfs would report the whole filesystem — on the Pi that disk
-        # also holds Audio, Kiwix and the work tree, so it read 894G for a 248G library.
+        # symlinks). statvfs would report the whole filesystem — on pi5 one 917G NVMe holds
+        # the library, urantia-library, the work trees and the OS, so it reads 282G used for
+        # a 248G library, and the error is in whichever direction the rest of the disk moves.
         "library_bytes": index_meta.total_bytes,
         "index_meta": index_meta,
         "theme": "light" if request.cookies.get("libnodes_theme") == "light" else "dark",

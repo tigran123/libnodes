@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# Push LibNodes to pi5 and restart it.
+# Push LibNodes to ANOTHER host and restart it there.
 #
-#   ./deploy/deploy.sh            # sync + deps + restart
-#   ./deploy/deploy.sh --no-restart
+#   LIBNODES_HOST=somehost ./deploy/deploy.sh
+#   LIBNODES_HOST=somehost ./deploy/deploy.sh --no-restart
 #
-# Deliberately does NOT sync var/ (index, jobs, manifests, logs, devices.yaml) or the
-# workstation's x86_64 .venv — pi5 is aarch64 and builds its own.
+# Development happens on pi5 itself now, in the tree the service runs from, so there is
+# nothing to deploy there: edit, `sudo systemctl restart libnodes`, look. Run with the
+# default target on pi5 this script refuses — see the guard below.
+#
+# Deliberately does NOT sync var/ (index, jobs, manifests, logs, devices.yaml) or .venv —
+# a venv is per-architecture and the target builds its own.
 set -euo pipefail
 
 HOST="${LIBNODES_HOST:-pi5}"
@@ -26,6 +30,33 @@ case "${1:-}" in
 esac
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Refuse to deploy this tree onto itself. pi5 is both the dev box and the deployment, so the
+# default target IS this machine, and the reflex `./deploy/deploy.sh` became a same-path
+# rsync --delete against a live tree while the service ran out of it. Today the excludes
+# happen to protect var/, tests/ and .venv/ from that deletion; one edit to the exclude list
+# is all that stands between a self-run and losing local state, which is why this is a guard
+# and not a note in the README.
+#
+# Both halves have to match before refusing: a genuine deploy to a different path on this
+# same host is unusual but legitimate, and so is deploying this path to a different host.
+target_ip="$(getent hosts "$HOST" | awk '{print $1; exit}')"
+if [[ "$HOST" == "$(hostname)" || "$HOST" == localhost || "$HOST" == 127.0.0.1 \
+      || ( -n "$target_ip" && -n "$(ip -o addr show | grep -Fw "$target_ip" || true)" ) ]] \
+   && [[ "$DEST" == "$here" ]]; then
+    cat >&2 <<EOF
+refusing: $HOST:$DEST is this tree on this machine ($(hostname)).
+
+There is nothing to deploy here — the service runs from this tree. To pick up changes:
+
+    sudo systemctl restart libnodes && curl -s localhost:${PORT}/healthz
+
+To deploy elsewhere, name the host:
+
+    LIBNODES_HOST=otherhost LIBNODES_DEST=/path/to/libnodes $(basename "$0")
+EOF
+    exit 2
+fi
 
 # mkdir -p, not just touch: on a host being deployed to for the first time $DEST does not
 # exist yet, and a bare touch fails there in a way indistinguishable from a permissions
@@ -55,7 +86,7 @@ rsync -az --delete \
     "$here/" "$HOST:$DEST/"
 
 # `uv pip sync` refuses to run without a target venv, and .venv/ is excluded from the
-# rsync above (the workstation's is x86_64), so on a host being deployed to for the first
+# rsync above (a venv is per-architecture), so on a host being deployed to for the first
 # time there is nothing for it to sync into. Create it if absent; uv reads .python-version.
 echo "==> installing dependencies"
 ssh -o BatchMode=yes "$HOST" \
