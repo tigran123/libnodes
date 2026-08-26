@@ -135,16 +135,6 @@ def test_normalise():
     assert normalise("Science//Physics") == "Science/Physics"
 
 
-def test_expanded_tree_opens_only_the_selected_path(index):
-    tree = index.expanded_tree("Science/Physics")
-    opened = {e.path for e, _, expanded in tree if expanded}
-    assert opened == {"Science", "Science/Physics"}
-    names = [e.path for e, _, _ in tree]
-    assert "Fiction" in names
-    # Fiction is closed, so its children are not materialised.
-    assert "Fiction/Joyce" not in names
-
-
 def test_reindex_is_atomic(index, settings):
     """A rebuild republishes by rename; the old file is never truncated in place."""
     before = settings.index_db.stat().st_ino
@@ -179,3 +169,11 @@ def test_recommended_is_a_category_not_a_place(settings, library):
     with pytest.raises(PathError):
         ix.require("Recommended/A recommended book.pdf")
     assert "Recommended" not in full_sync_sources(settings)
+
+
+def test_ancestors_are_root_first_and_exclude_the_leaf(index):
+    """The breadcrumb is now its only consumer, and it renders one link per entry — so a
+    self-referential last element would draw a link to the page you are already on."""
+    assert [e.path for e in index.ancestors("Science/Physics")] == ["Science"]
+    assert index.ancestors("Science") == []
+    assert index.ancestors("") == []

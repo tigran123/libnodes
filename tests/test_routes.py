@@ -14,7 +14,6 @@ FRAGMENTS = [
     "/devices/status",
     "/lib/pane",
     "/lib/list",
-    "/lib/tree",
     "/lib/selection",
     "/lib/index-status",
     "/jobs/rows",
@@ -313,37 +312,86 @@ async def test_missing_log_is_404(client):
     assert (await client.get("/jobs/9999/log")).status_code == 404
 
 
-# ------------------------------------------------------- library tree --
-
-async def test_tree_rows_carry_toggle_state(client):
-    """The disclosure needs depth and path to toggle a flat list client-side."""
-    r = await client.get("/lib/tree", params={"p": "Science/Physics"})
-    assert "data-tree-toggle" in r.text
-    assert 'data-depth="0"' in r.text
-    assert 'data-path="Science"' in r.text
-    # Ancestors of the selection open by default; siblings do not.
-    assert 'data-collapsed="0"' in r.text
-    assert 'data-collapsed="1"' in r.text
+# ------------------------------- library: the table is the navigator --
 
 
-async def test_tree_caret_is_separate_from_the_navigation_link(client):
-    """Clicking the triangle must not navigate — they are two controls, not one."""
-    r = await client.get("/lib/tree")
-    assert "<button class=\"tree-caret\"" in r.text
-    assert 'class="tree-link"' in r.text
+async def test_a_directory_row_is_a_link_and_a_file_row_is_not(client):
+    """Below 972px the tree pane was `display: none` with nothing in its place, so a
+    directory row could be ticked and pushed but never entered — a book three levels down
+    was unreachable on a tablet. The name is the way in; the rest of the row still ticks.
+    """
+    r = await client.get("/lib/pane")
+    rows = r.text.split('<div id="file-rows">')[1]
+
+    assert '<a class="file-name"' in rows, "no directory is enterable from the table"
+    for attr in (
+        'hx-get="/lib/pane?p=Science"',
+        'hx-target="#lib"',
+        'hx-swap="outerHTML"',
+        'hx-push-url="/library?p=Science"',
+        'href="/library?p=Science"',   # the half that works with no JS at all
+    ):
+        assert attr in rows, f"the directory link is missing {attr}"
+
+    deeper = await client.get("/lib/pane", params={"p": "Science/Physics"})
+    files = deeper.text.split('<div id="file-rows">')[1]
+    assert '<span class="file-name" title="Science/Physics/Feynman.djvu">' in files
+    assert "Feynman.djvu</a>" not in files, "a book is not a directory to walk into"
 
 
-async def test_tree_children_returns_one_level(client):
-    r = await client.get("/lib/tree/children", params={"p": "Science", "depth": 0})
-    assert r.status_code == 200
-    assert 'data-path="Science/Physics"' in r.text
-    assert 'data-depth="1"' in r.text
-    # One level only: grandchildren are not included.
-    assert "Science/Physics/" not in r.text
-    # A bare fragment, swappable straight into the flat list.
-    assert "<aside" not in r.text
+async def test_a_directory_link_carries_only_where_it_is_going(client):
+    """It drops q/fmt/sort, and that is not a judgement call: `children()` appends
+    `is_dir = 0` for a query and tests `fmt IN (...)`, which a directory's NULL fmt can
+    never match — so a directory row only exists when both are empty."""
+    for params in ({"q": "feyn"}, {"fmt": ["epub"]}):
+        r = await client.get("/lib/pane", params=params)
+        rows = r.text.split('<div id="file-rows">')[1]
+        assert '<a class="file-name"' not in rows, f"a directory row survived {params}"
 
 
-async def test_tree_children_rejects_paths_outside_the_index(client):
-    assert (await client.get("/lib/tree/children", params={"p": "../etc"})).status_code == 400
-    assert (await client.get("/lib/tree/children", params={"p": ".data"})).status_code == 400
+async def test_the_breadcrumb_is_one_link_per_ancestor_plus_a_root(client):
+    """The only way back up. `ancestors` was already in every library context and had
+    only ever been concatenated into an inert span."""
+    r = await client.get("/lib/pane", params={"p": "Science/Physics"})
+    crumb = r.text.split('class="pathline"')[1].split("</nav>")[0]
+
+    assert crumb.count("<a ") == 2, f"expected root + Science, got:\n{crumb}"
+    assert 'hx-get="/lib/pane"' in crumb, "no link back to the library root"
+    assert 'hx-get="/lib/pane?p=Science"' in crumb
+    # Where you already are is not a control.
+    assert 'hx-get="/lib/pane?p=Science/Physics"' not in crumb
+    assert 'aria-current="page"' in crumb and ">Physics<" in crumb
+
+    root = await client.get("/lib/pane")
+    top = root.text.split('class="pathline"')[1].split("</nav>")[0]
+    assert "<a " not in top, "the root offers a link to itself"
+    assert 'class="leaf"' in top
+
+
+async def test_the_only_reindex_control_survived_the_tree(client):
+    """It lived in the tree pane's header alone. Deleting that pane without moving it
+    would have left the route and the status chip working and no way to reach either."""
+    r = await client.get("/lib/pane")
+    assert 'hx-post="/lib/reindex"' in r.text
+    # In the filter bar, not orphaned somewhere below the table.
+    assert r.text.index('hx-post="/lib/reindex"') < r.text.index('class="lib-body"')
+
+
+async def test_the_pane_still_guards_the_paths_the_tree_route_used_to(client):
+    assert (await client.get("/lib/pane", params={"p": "../etc"})).status_code == 400
+    assert (await client.get("/lib/pane", params={"p": ".data"})).status_code == 400
+
+
+async def test_the_table_does_not_smuggle_its_own_directory_into_a_link(client):
+    """hx-include is inherited, and #sel-form carries `hx-include="#lib-params"` — that is
+    `p=<the directory we are in>`. Without hx-disinherit every link inside the table
+    appended it, so `hx-get="/lib/pane?p=Science/Aviation"` went out as
+    `?p=Science/Aviation&p=Science`; FastAPI binds the last value, so the server answered
+    with the directory you were already in while hx-push-url had already written the new
+    one to the address bar. The URL moved and the content did not, and nothing failed.
+    """
+    r = await client.get("/lib/pane")
+    form = r.text.split('<form id="sel-form"')[1].split(">")[0]
+    assert 'hx-disinherit="hx-include"' in form
+    # The form's own include is what the selection bar is built from and must survive.
+    assert 'hx-include="#lib-params"' in form

@@ -39,7 +39,7 @@ def hsize(num: int | float | None) -> str:
 
 
 def hsize_short(num: int | float | None) -> str:
-    """`21.4G` — the compact form used in the rail, tree and storage column."""
+    """`21.4G` — the compact form used in the rail, breadcrumb and storage column."""
     if num is None:
         return "—"
     val, unit = _scale(num, _SHORT_UNITS)

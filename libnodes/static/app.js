@@ -167,64 +167,6 @@
   document.body.addEventListener("htmx:afterSwap", applyDockState);
   document.addEventListener("DOMContentLoaded", applyDockState);
 
-  /* --- library tree: expand / collapse ------------------------------------ */
-
-  /* The tree is a flat list of rows carrying data-depth, so a subtree is just the
-     contiguous run of deeper rows that follows. Collapsing hides that run; expanding a
-     node whose children were never loaded fetches one level. Visibility is recomputed
-     from scratch each time, so a collapsed node nested inside another stays collapsed
-     when its parent reopens. */
-
-  function refreshTree() {
-    var rows = document.querySelectorAll(".tree-row[data-depth]");
-    var collapsed = []; // depths of collapsed ancestors
-    rows.forEach(function (row) {
-      var depth = parseInt(row.dataset.depth, 10);
-      while (collapsed.length && collapsed[collapsed.length - 1] >= depth) collapsed.pop();
-      row.hidden = collapsed.length > 0;
-      if (row.dataset.collapsed === "1") collapsed.push(depth);
-    });
-  }
-
-  function childRows(row) {
-    var depth = parseInt(row.dataset.depth, 10);
-    var out = [];
-    var next = row.nextElementSibling;
-    while (next && next.dataset && parseInt(next.dataset.depth, 10) > depth) {
-      out.push(next);
-      next = next.nextElementSibling;
-    }
-    return out;
-  }
-
-  document.addEventListener("click", function (e) {
-    var caret = e.target.closest("[data-tree-toggle]");
-    if (!caret) return;
-    e.preventDefault();
-    e.stopPropagation();
-
-    var row = caret.closest(".tree-row");
-    var willOpen = row.dataset.collapsed === "1";
-    row.dataset.collapsed = willOpen ? "0" : "1";
-    caret.textContent = willOpen ? "▾" : "▸";
-
-    if (willOpen && childRows(row).length === 0 && window.htmx) {
-      // Never opened before: ask for one level and drop it in after this row.
-      htmx.ajax(
-        "GET",
-        "/lib/tree/children?p=" +
-          encodeURIComponent(row.dataset.path) +
-          "&depth=" +
-          row.dataset.depth,
-        { target: row, swap: "afterend" }
-      );
-    }
-    refreshTree();
-  });
-
-  document.body.addEventListener("htmx:afterSwap", refreshTree);
-  document.addEventListener("DOMContentLoaded", refreshTree);
-
   /* --- row selection ------------------------------------------------------ */
 
   /* Per the design: "click toggles, shift-click selects a range". The whole row is the

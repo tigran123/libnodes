@@ -64,7 +64,7 @@ def test_directory_shows_partial_until_complete(settings, index):
 def test_every_view_counts_files_the_same_way(settings, index, app):
     """One directory, one file count, wherever it is displayed.
 
-    The tree, the PRESENT ON fraction and the job estimate must all mean "files". rsync
+    The DIR badge, the PRESENT ON fraction and the job estimate must all mean "files". rsync
     disagrees on purpose — its file list counts directories, so a directory of 234 files
     with 9 subdirectories is 244 entries to it — and letting that number leak into a
     view that says "files" is how the same directory came to read 234 in one place and

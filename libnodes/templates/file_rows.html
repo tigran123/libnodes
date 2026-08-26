@@ -18,7 +18,24 @@
     </div>
 
     <div data-label="Name">
-      <span class="file-name" title="{{ row.path }}">{{ row.label }}</span>
+      {% if row.is_dir %}
+        {# The way in. app.js's row-click handler returns early on anything inside
+           `a, button, select, textarea`, so this navigates without also ticking the box,
+           and every other part of the row still ticks it.
+           `p` and nothing else, exactly as the tree link carried. Not a judgement call:
+           `children()` appends `is_dir = 0` when `q` is set and tests `fmt IN (...)`,
+           which a directory's NULL fmt can never satisfy — so a directory row only exists
+           when both are empty, and there is no filter here to preserve. `sort` goes for
+           the tree's reason: entering a directory is a fresh listing. #}
+        <a class="file-name" title="{{ row.path }}"
+           href="/library?p={{ row.path|urlencode }}"
+           hx-get="/lib/pane?p={{ row.path|urlencode }}"
+           hx-target="#lib"
+           hx-swap="outerHTML"
+           hx-push-url="/library?p={{ row.path|urlencode }}">{{ row.label }}</a>
+      {% else %}
+        <span class="file-name" title="{{ row.path }}">{{ row.label }}</span>
+      {% endif %}
       {% if row.title and row.title != row.name %}
         <span class="file-title">{{ row.title }}{% if row.author %} · {{ row.author }}{% endif %}</span>
       {% endif %}
@@ -92,7 +109,7 @@
       {% if q %}
         Nothing matches <span class="mono">{{ q }}</span>{% if path %} under <span class="mono">{{ path }}</span>{% endif %}.
       {% elif not index_meta.ready %}
-        Index not built yet — press <span class="mono">⟳</span> in the tree header.
+        Index not built yet — press <span class="mono">⟳</span> in the filter bar.
       {% else %}
         Empty directory.
       {% endif %}

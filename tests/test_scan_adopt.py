@@ -108,11 +108,19 @@ def test_adopt_uses_size_only(app, settings):
 
 
 def test_a_normal_push_is_not_size_only(app, settings):
-    """--size-only is a deliberate, narrow concession — not the default."""
+    """--size-only is a deliberate, narrow concession — not the default.
+
+    There are now exactly two ways to earn it: an adopt, and a device that has declared
+    `stores_times: false`. A device that has declared neither must never see it, however
+    much a push that re-sends looks like it wants it — sizes usually match precisely
+    *because* content diverged in place.
+    """
     lib = app.state.lib
     device = lib.devices.config.by_id["kobo"]
+    assert device.stores_times is True, "the fixture device must not have opted out"
     argv = build_argv(device, lib.devices.config, ["Science"], settings)
     assert "--size-only" not in argv
+    assert "--no-times" not in argv
 
 
 async def test_adopt_job_is_recorded_as_such(client, app):
@@ -869,3 +877,56 @@ def test_a_termux_device_without_fs_still_gets_the_window(settings):
     )
     argv = build_argv(cfg.by_id["lg"], cfg, ["Audio"], settings)
     assert "--modify-window=1" in argv
+
+
+# ------------------------------- a target that cannot store a timestamp --
+
+
+def _no_times(device):
+    return device.model_copy(update={"stores_times": False})
+
+
+def test_a_device_that_cannot_store_times_gets_both_flags(app, settings):
+    """Neither flag works alone, which is why this is one setting and not two.
+
+    Measured on nexus10 against files byte-identical to the source: plain `-a` re-sends
+    them and exits 23; `--no-times` alone still re-sends them; `--size-only` alone stops
+    the re-send but still tries to stamp, so it still exits 23. Only the pair is clean.
+    """
+    lib = app.state.lib
+    argv = build_argv(
+        _no_times(lib.devices.config.by_id["kobo"]),
+        lib.devices.config,
+        ["Science"],
+        settings,
+    )
+    assert "--size-only" in argv
+    assert "--no-times" in argv
+
+
+def test_an_adopt_onto_such_a_device_says_size_only_once(app, settings):
+    """Adopt adds --size-only for its own reason and this adds it for another. rsync
+    would take it twice, but an argv the log header prints should read cleanly."""
+    lib = app.state.lib
+    argv = build_argv(
+        _no_times(lib.devices.config.by_id["kobo"]),
+        lib.devices.config,
+        ["Science"],
+        settings,
+        adopt=True,
+    )
+    assert argv.count("--size-only") == 1
+    assert "--no-times" in argv
+
+
+def test_the_opt_out_is_a_device_fact_not_a_filesystem_one(app, settings):
+    """nexus10 and the Kobo both declare `fs: vfat`, and the Kobo's is a real FAT card
+    whose timestamps work. What differs is the mount: Android's /sdcard is a FUSE
+    emulation whose daemon has no utimensat. Deriving this from `fs:` would break the
+    Kobo's mtime comparison, which is the thing --modify-window exists to make exact.
+    """
+    lib = app.state.lib
+    kobo = lib.devices.config.by_id["kobo"]
+    argv = build_argv(kobo, lib.devices.config, ["Science"], settings)
+    assert "--modify-window=1" in argv, "the FAT window is still per-filesystem"
+    assert "--size-only" not in argv

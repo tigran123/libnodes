@@ -47,7 +47,6 @@
   --row-offline: #0d0e11;
 
   --rail: 190px;
-  --tree: 300px;
   --bar: 44px;
   --row: 34px;
   --dock: 600px;
@@ -171,9 +170,6 @@
 }
 :root[data-theme="light"] .dot-accent {
   box-shadow: 0 0 0 3px rgba(98, 68, 207, 0.2);
-}
-:root[data-theme="light"] .tree-row.is-selected {
-  background: rgba(98, 68, 207, 0.1);
 }
 :root[data-theme="light"] .selbar {
   border-color: rgba(98, 68, 207, 0.35);
@@ -321,9 +317,10 @@ ul {
 }
 
 /* The UA's `[hidden] { display: none }` is a low-specificity rule, so ANY author rule
-   that sets `display` beats it. `.tree-row { display: flex }` did exactly that: rows
-   were marked hidden and stayed on screen, so collapsing a subtree changed the caret
-   and nothing else. */
+   that sets `display` beats it. The Library's old tree pane proved it: `.tree-row
+   { display: flex }` meant rows were marked hidden and stayed on screen, so collapsing a
+   subtree changed the caret and nothing else. That pane is gone; the trap is not specific
+   to it, and every `.trow`/`.card` here sets `display` too. */
 [hidden] {
   display: none !important;
 }
@@ -1305,120 +1302,15 @@ ul {
 /* --------------------------------------------------------------- library -- */
 
 .lib {
-  display: flex;
+  /* One panel. The tree pane that used to sit beside this — a fixed 300px aside — is
+     gone: the file table is the navigator now, so the same information was on screen
+     twice and only one of the two survived a viewport under 972px. `.lib-main` was
+     merged in here for the same reason; a flex row with one child is not a layout. */
   flex: 1;
+  min-width: 0;
+  /* .lib-body is the scroller and this is a flex child of .main, so without min-height
+     the content sets the height and the scrolling happens on the page instead. */
   min-height: 0;
-}
-
-.tree-pane {
-  width: var(--tree);
-  flex-shrink: 0;
-  background: var(--chrome);
-  border-right: 1px solid var(--line);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.tree-head {
-  height: var(--bar);
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 12px;
-  border-bottom: 1px solid var(--line);
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  font-weight: 600;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--dim);
-}
-
-.tree-body {
-  flex: 1;
-  overflow: auto;
-  padding: 8px;
-}
-
-.tree-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 8px;
-  border-radius: 3px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--ink-2);
-  border-left: 2px solid transparent;
-}
-
-.tree-row:hover {
-  background: var(--surface);
-}
-
-.tree-row.is-selected {
-  background: rgba(154, 140, 230, 0.13);
-  border-left-color: var(--accent);
-}
-
-.tree-row.is-selected .tree-size {
-  color: var(--accent);
-}
-
-.tree-row.is-hidden {
-  color: var(--faint);
-  pointer-events: none;
-}
-
-/* Its own control, with a hit area you can actually land on. */
-.tree-caret {
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--dim);
-  font-size: 10px;
-  border-radius: 3px;
-  background: none;
-  border: none;
-  padding: 0;
-}
-
-button.tree-caret:hover {
-  background: var(--border);
-  color: var(--ink);
-}
-
-/* The name fills the rest of the row, so clicking anywhere but the caret navigates. */
-.tree-link {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 1;
-  min-width: 0;
-}
-
-.tree-name {
-  flex: 1;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.tree-size {
-  font-size: 10.5px;
-  color: var(--faint);
-  white-space: nowrap;
-}
-
-.lib-main {
-  flex: 1;
-  min-width: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1452,26 +1344,69 @@ button.tree-caret:hover {
   padding: 14px var(--gutter) var(--gutter);
 }
 
+/* Sticky, because this is now the only way *out* of a directory and Science/ lists 1,452
+   of them — without it you scroll back to the top to go up one level. .lib-body is the
+   scroller, so the offset is measured from there. The opaque background is mandatory, not
+   decoration: rows read straight through a transparent crumb as they pass under it. */
 .pathline {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--bg);
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 10px;
+  column-gap: 10px;
+  row-gap: 6px;
   padding-bottom: 12px;
 }
 
-.pathline .parent {
+/* The segments wrap; they do not elide and they do not scroll. Measured against the live
+   index: 3,841 directories, the deepest 8 segments and 88 characters
+   (Science/Aviation/Boeing/PMDG-777/…/FMC-COROUTE), which is ~740px of 14px mono before
+   the /Books root — no single line holds it on an 800px tablet at any setting. A middle
+   ellipsis would hide precisely the ancestors this control exists to offer, and a
+   horizontal scroller inside a vertically scrolling page is a trap on touch.
+   overflow-wrap is for the other measurement: the longest single segment is 57 characters
+   (The-New-Schaff-Herzog-Encyclopedia-of-Religious-Knowledge), ~480px, against ~357px of
+   panel on a 412px phone — one directory name, wider than the screen. */
+.pathline .crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 4px;
+  row-gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-family: var(--font-mono);
   font-size: 14px;
-  color: var(--muted);
+}
+
+/* --ink-3, not the --muted the inert `.parent` span used to wear: these are the only
+   controls on the page whose job is to leave, and at --muted they still read as the
+   caption they were. 9.1:1 on --bg, and the light theme's pair clears 4.5:1, so neither
+   needs an override. */
+.pathline .crumbs a {
+  color: var(--ink-3);
+  text-decoration: none;
+}
+
+.pathline .crumbs a:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.pathline .sep {
+  color: var(--faint);
 }
 
 .pathline .leaf {
-  font-family: var(--font-mono);
-  font-size: 14px;
   font-weight: 600;
   color: var(--ink);
 }
 
+/* margin-left:auto right-aligns it on the crumb's line, and on a line of its own once the
+   crumb has wrapped past it. */
 .pathline .summary {
   margin-left: auto;
   font-family: var(--font-mono);
@@ -1576,6 +1511,28 @@ button.tree-caret:hover {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* A directory's name is the way into it, so it is an anchor; a file's name stays an inert
+   span. inline-block rather than the block above, and the difference is the hit area: at
+   block width the whole 1fr NAME cell would navigate, and a directory row — the one row
+   you most need to be able to *tick*, since ticking one is how a whole subtree gets
+   pushed — would have nothing left to click on but the 11px checkbox. inline-block still
+   ellipsises; it is the bare *inline* box the note above is about. vertical-align: top so
+   the line box gains no descender and the row does not grow by 3px.
+   --ink against the files' --ink-2 is the entire affordance: no icon, no underline until
+   hover. The trailing "/" that `Entry.label` already appends says which rows are which. */
+a.file-name {
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: top;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+a.file-name:hover {
+  color: var(--accent);
+  text-decoration: underline;
 }
 
 .file-title {
@@ -2351,21 +2308,35 @@ button.tree-caret:hover {
 }
 
 /* Each table stacks into cards at its own width, because each has a different amount of
-   room. The Library keeps a 300px tree beside its table, so at the same viewport its panel
-   is ~300px narrower than the Devices one and it runs out first: measured, Library clips
-   its PUSH column at 1200px while Devices is still clean at 1200px.
+   room. The Library used to run out first: it kept a 300px tree beside its table, so its
+   panel was ~300px narrower than the Devices one and it clipped PUSH at 1200px while
+   Devices was still clean. That tree is gone -- the file table is the navigator now -- so
+   the panel is 300px wider at every viewport and the same seven columns fit far further
+   down.
 
-   Below these widths the row was simply wider than .panel, and .panel's overflow: hidden
-   ate whatever hung off the right -- at 1200px of viewport the Devices table lost LAST
-   SYNC and ACTIONS, at 1100px STORAGE went too, and nothing on screen said so. The table
-   just looked as though it had four columns.
+   Two regimes, and the narrower viewport is the roomier one: above 972px the rail is
+   190px of flow, so the panel is `viewport / --scale(1.08) - 190 - 2x--gutter(18)`; at
+   972px and below the rail becomes position: fixed and leaves the flow entirely, and the
+   panel is `viewport / 1.08 - 2x12` of .lib-body padding. The seven track floors sum to
+   614px (26+140+60+64+84+100+140), so the wide regime needs 907px of viewport -- which,
+   being wide, it always has -- and the narrow one needs 689px. Measured with
+   tools/shot.py, sweeping with the breakpoint temporarily lowered: PUSH first hangs past
+   .panel's overflow: hidden edge at 689px of viewport exactly -- clean at 690, 1px over
+   at 689, 50px over at 640 -- so the arithmetic and the browser agree to the pixel.
 
-   The numbers are where each grid's minima stop fitting its panel, found with a headless
-   browser, so they must be re-measured if a column's min changes. Only one of these
-   tables is ever on screen at a time, which is why scoping by grid class is enough and
-   the three can differ. */
+   972, not the 689 floor: it is the width at which the rail leaves the flow, so the page
+   tells one story instead of two, and it leaves the slack that arithmetic ignores -- the
+   scrollbar .lib-body grows on a desktop, and the next column somebody adds. The payoff
+   is a Nexus 10 in landscape, 1280 CSS px, which the old number handed the stacked cards;
+   in portrait it is 800px and still gets them, which is the right read on a tablet held
+   upright. test_the_file_grid_stacks_before_it_runs_out_of_panel recomputes the floor
+   from this stylesheet, so the next column fails there rather than on somebody's screen.
 
-@media (max-width: 1280px) {
+   Below this the row was simply wider than .panel, and .panel's overflow: hidden ate
+   whatever hung off the right, with nothing on screen to say so -- the table just looked
+   as though it had fewer columns. */
+
+@media (max-width: 972px) {
   .thead.file-grid {
     display: none;
   }
@@ -2406,7 +2377,11 @@ button.tree-caret:hover {
   }
 }
 
-/* 1280px, the same breakpoint `.file-grid` stacks at, so all three tables now agree.
+/* 1280px. This used to be the same number `.file-grid` stacked at, and the two have
+   since parted: the Library lost its 300px tree, so its panel grew and its breakpoint
+   moved down to 972 while the Devices table's arithmetic did not change at all. They were
+   never one number for a shared reason -- each is its own grid's floor -- so they stack
+   at their own widths and only one of these tables is ever on screen at a time.
    Arithmetic, not taste: the device row's nine track floors sum to 1022px, and the panel
    gets `viewport - --rail(190) - 2x--gutter(18)`, so a single-line row needs 1248px of
    viewport. At the old 1200px there was a 36px band -- 1200 to 1236 -- where the row had
@@ -2458,7 +2433,9 @@ button.tree-caret:hover {
 /* 972px = the design's 900px breakpoint x --scale. A media query is matched against the
    real viewport and cannot read a custom property, so this one does not follow --scale by
    itself: zoomed content runs out of room at a *wider* viewport than before, and left at
-   900 the rail would overlap the tree for the 72px in between. Change the two together. */
+   900 the rail would overlap the content pane for the 72px in between. Change the two
+   together. This is also where the rail goes position: fixed and stops taking 190px out
+   of the flow, which is the second regime the .file-grid arithmetic above depends on. */
 @media (max-width: 972px) {
   body {
     font-size: 12.5px;
@@ -2551,9 +2528,17 @@ button.tree-caret:hover {
     vertical-align: middle;
   }
 
-  /* Tree collapses to a breadcrumb; the content pane owns the width. */
-  .tree-pane {
-    display: none;
+  /* The breadcrumb stacks above its totals rather than sharing their line: a deep path
+     wraps to two or three lines here, and on the same line the summary was squeezed off
+     the right edge in the one moment you need it. */
+  .pathline {
+    flex-direction: column;
+    align-items: flex-start;
+    row-gap: 4px;
+  }
+
+  .pathline .summary {
+    margin-left: 0;
   }
 
   .lib-body,
@@ -2635,8 +2620,48 @@ button.tree-caret:hover {
     min-height: 44px;
   }
 
-  .tree-row {
-    min-height: 44px;
+  /* The two controls that navigate, at 14px and 12px of mono text. line-height, not
+     padding: vertical padding on an inline-block does not grow the line box, so it would
+     overlap the row above instead of making the row taller. Each wrapped crumb line
+     becomes its own 44px band, and the segments take horizontal padding to match — "AI"
+     is 17px of text and needs more than that to land a thumb on. */
+  .pathline .crumbs {
+    line-height: 44px;
+    column-gap: 0;
+    row-gap: 0;
+  }
+
+  .pathline .crumbs a,
+  .pathline .leaf {
+    padding: 0 6px;
+  }
+
+  /* Only a *directory* row carries an <a class="file-name">, so file rows keep their own
+     height and a 2,000-row listing does not grow by a third to buy a target on the
+     handful of rows that are directories. */
+  a.file-name {
+    line-height: 44px;
+  }
+}
+
+/* A pointer that cannot hover, at any width -- which is every touch screen, including a
+   Nexus 10 in landscape at 1280 CSS px where the table does not stack and the rules above
+   never fire. The directory link's whole affordance elsewhere is --ink against the files'
+   --ink-2 plus a hover underline, and half of that does not exist here: on the tablet the
+   change was made for, a name you can open looks exactly like a name you cannot. So the
+   underline is drawn permanently, in --border-hi rather than the text colour so a column
+   of directories does not read as a column of errors. */
+@media (hover: none) {
+  a.file-name {
+    text-decoration: underline;
+    text-decoration-color: var(--border-hi);
+    text-underline-offset: 3px;
+  }
+
+  .pathline .crumbs a {
+    text-decoration: underline;
+    text-decoration-color: var(--border-hi);
+    text-underline-offset: 3px;
   }
 }
 

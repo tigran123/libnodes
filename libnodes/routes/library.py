@@ -1,4 +1,4 @@
-"""Library Explorer: cached tree, instant filter, per-row push targets."""
+"""Library Explorer: one panel — breadcrumb, instant filter, per-row push targets."""
 
 from __future__ import annotations
 
@@ -55,7 +55,6 @@ def library_context(
             "elapsed_ms": elapsed_ms,
             "oob": False,
             "index_meta": meta,
-            "tree": app.index.expanded_tree(path),
             "ancestors": app.index.ancestors(path),
             "by_id": app.devices.config.by_id,
             # Mirror nodes are not selection targets. `_resolve` cannot offer them .data/,
@@ -91,7 +90,8 @@ async def lib_pane(
     fmt: list[str] = Query(default=[]),
     sort: str = "name",
 ):
-    """Tree + content together — a tree click changes both."""
+    """The whole panel. A breadcrumb segment and a directory name both swap it, so the
+    listing, the crumb and the selection change together."""
     ctx = library_context(request, p, q, fmt, sort)
     return templates.TemplateResponse(request, "lib_pane.html", ctx)
 
@@ -108,30 +108,6 @@ async def lib_list(
     ctx = library_context(request, p, q, fmt, sort)
     ctx["oob"] = True
     return templates.TemplateResponse(request, "file_rows.html", ctx)
-
-
-@router.get("/lib/tree", response_class=HTMLResponse)
-async def lib_tree(request: Request, p: str = ""):
-    ctx = library_context(request, p)
-    return templates.TemplateResponse(request, "tree.html", ctx)
-
-
-@router.get("/lib/tree/children", response_class=HTMLResponse)
-async def lib_tree_children(request: Request, p: str = "", depth: int = 0):
-    """One level of subdirectories, for a disclosure the tree has not opened before.
-
-    Expanding is the only half of the toggle that needs the server: collapsing hides
-    rows that are already in the DOM.
-    """
-    app = state(request)
-    entry = app.index.require(p)
-    rows = [
-        (child, depth + 1, False)
-        for child in app.index.children(entry.path, dirs_only=True, limit=500)
-    ]
-    ctx = base_context(request, "library")
-    ctx.update({"rows": rows, "path": ""})
-    return templates.TemplateResponse(request, "tree_rows.html", ctx)
 
 
 @router.get("/lib/selection", response_class=HTMLResponse)

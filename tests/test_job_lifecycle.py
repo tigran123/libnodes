@@ -495,3 +495,112 @@ async def test_the_log_dialog_offers_one_way_to_the_raw_file(client, app, settin
     )
     r = await client.get("/jobs/77/log/view")
     assert r.text.count('href="/jobs/77/log"') == 1
+
+
+# ------------------------------------------- exit 23: files, or only attrs --
+
+
+def _rsync_exiting_23(tmp_path, name, extra_error=""):
+    """A stand-in rsync that delivers both files and then fails to stamp them.
+
+    The shape of the real thing: the @-lines and the xfr# counter say the data arrived,
+    and the only diagnostics are the two `failed to set times`.
+    """
+    script = tmp_path / name
+    script.write_text(
+        "#!/bin/sh\n"
+        "echo 'sending incremental file list'\n"
+        "echo '@480|Fiction/Aldiss/White-Mars.epub'\n"
+        "printf '        480 100%%    0.47MB/s    0:00:00 (xfr#1, to-chk=1/2)\\r'\n"
+        "echo ''\n"
+        "echo '@1580|Fiction/Joyce/Ulysses.pdf'\n"
+        "printf '       2,060 100%%    1.51MB/s    0:00:01 (xfr#2, to-chk=0/2)\\r'\n"
+        "echo ''\n"
+        "echo 'rsync: failed to set times on \"/sdcard/Books/Fiction/Aldiss/"
+        ".White-Mars.epub.rYNFG5\": Operation not permitted (1)'\n"
+        f"{extra_error}"
+        "echo 'sent 2,060 bytes  received 57 bytes  4,234.00 bytes/sec'\n"
+        "echo 'rsync error: some files/attrs were not transferred "
+        "(see previous errors) (code 23) at main.c(1347)'\n"
+        "exit 23\n"
+    )
+    script.chmod(0o755)
+    return script
+
+
+async def _run_to_completion(app, fake, monkeypatch, sources=None):
+    monkeypatch.setattr("libnodes.jobs.build_argv", lambda *a, **k: [str(fake)])
+    lib = app.state.lib
+    job = lib.jobs.submit(
+        lib.devices.config.by_id["kobo"], sources or ["Fiction"]
+    )
+    for _ in range(120):
+        if lib.jobs.get(job.id).finished:
+            break
+        await asyncio.sleep(0.05)
+    return lib.jobs.get(job.id)
+
+
+async def test_a_push_that_only_failed_to_stamp_times_is_a_success(
+    app, tmp_path, monkeypatch
+):
+    """Reported as "TRANSFER FAILED" in red having delivered every byte.
+
+    /sdcard is Android's FUSE emulation and its daemon does not implement utimensat, so
+    it returns EPERM to everyone -- root included. rsync spends exit 23 on both "some
+    files were not transferred" and "some attrs were not transferred", and on this fleet
+    it is always the second.
+    """
+    fake = _rsync_exiting_23(tmp_path, "r23")
+    async with app.router.lifespan_context(app):
+        job = await _run_to_completion(app, fake, monkeypatch)
+
+    assert job.state == "done", "an attrs-only exit 23 is not a failed transfer"
+    assert job.exit_code == 23, "the code is kept: something did go wrong"
+    assert job.error is None
+    assert job.pct == 100.0
+
+
+async def test_a_push_that_lost_a_file_still_fails(app, tmp_path, monkeypatch):
+    """The other half of exit 23, and the reason this is not just `code in (0, 23)`."""
+    fake = _rsync_exiting_23(
+        tmp_path,
+        "r23bad",
+        extra_error="echo 'rsync: link_stat \"/Books/Fiction/Gone.pdf\" failed: "
+        "No such file or directory (2)'\n",
+    )
+    async with app.router.lifespan_context(app):
+        job = await _run_to_completion(app, fake, monkeypatch)
+
+    assert job.state == "failed"
+    assert job.error == "rsync exited 23"
+
+
+async def test_an_attrs_only_push_records_what_it_delivered(
+    app, tmp_path, monkeypatch
+):
+    """The colour was the visible half. The costly half was the manifest: a failed job
+    takes _record_partial, which credits only `files_sent` names, so a push that placed a
+    whole directory was recorded as whatever rsync had counted when it gave up."""
+    fake = _rsync_exiting_23(tmp_path, "r23m")
+    async with app.router.lifespan_context(app):
+        job = await _run_to_completion(app, fake, monkeypatch)
+        held = {r.path for r in app.state.lib.manifests.rows_for("kobo")}
+
+    assert job.state == "done"
+    assert "Fiction/Aldiss/White-Mars.epub" in held
+    assert "Fiction/Joyce/Ulysses.pdf" in held
+
+
+async def test_the_dock_says_the_timestamps_were_refused(
+    client, app, tmp_path, monkeypatch
+):
+    """A plain green SYNC COMPLETE over an exit 23 would be its own small lie."""
+    fake = _rsync_exiting_23(tmp_path, "r23dock")
+    async with app.router.lifespan_context(app):
+        await _run_to_completion(app, fake, monkeypatch)
+        dock = await client.get("/jobs/dock")
+
+    assert "TRANSFER FAILED" not in dock.text
+    assert "SYNC COMPLETE" in dock.text
+    assert "TIMESTAMPS NOT SET" in dock.text

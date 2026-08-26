@@ -93,6 +93,28 @@ PROGRESS_RE = re.compile(
 # 1,482.40`. Both numbers are true and only one of them is what the link carried.
 SUMMARY_RE = re.compile(r"^sent ([\d,]+) bytes\s+received ([\d,]+) bytes")
 
+# rsync exit 23 is "some files/attrs were not transferred" -- one code for two outcomes
+# that could not be further apart. Every diagnostic it emits is a line starting `rsync:`,
+# so the two are separable: if all of them are attribute failures then no file's *data*
+# was missed, and the push delivered everything it was asked to.
+#
+# This is not a corner case, it is the standing outcome for any target on Android's
+# *emulated* storage. `/sdcard` is not a filesystem but a FUSE shim (`/dev/fuse`) with
+# nothing underneath, and its daemon does not implement utimensat: EPERM to everyone, root
+# included. Measured on nexus10 (Android 5.1) -- `touch -t` fails there as root, and job #1
+# delivered both files byte-exact (5,117,977 and 1,002,176, verified with stat on the
+# device) and still exited 23 with nothing but two `failed to set times` lines. It was
+# drawn as a red TRANSFER FAILED. A physical card is the other case and does not do this:
+# see Device.stores_times.
+#
+# The role tag is optional because it is the *receiver* that reports this, and the rsync
+# on the far side is whatever the device ships: 3.2+ prints `rsync: [generator] failed to
+# set times on ...`, older builds print `rsync: failed to set times on ...`.
+_RSYNC_PROBLEM_RE = re.compile(r"^rsync: ", re.MULTILINE)
+_ATTR_PROBLEM_RE = re.compile(
+    r"^rsync: (?:\[[^\]]+\] )?failed to set \w+", re.MULTILINE
+)
+
 _MULT = {"": 1, "K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4, "P": 1024**5}
 _SIZE_TOKEN_RE = re.compile(r"^([\d,]+(?:\.\d+)?)([KMGTP]?)$")
 
@@ -171,7 +193,8 @@ class Job:
     #: interrupted run names a file that never landed.
     files_sent: int = 0
     #: Files in the selection, from the index. Set once at submit and never overwritten,
-    #: so the denominator means the same thing in the dock, the tree and the manifest.
+    #: so the denominator means the same thing in the dock, the file table and the
+    #: manifest.
     files_total: int = 0
     #: File-list entries rsync has walked past, directories included. `to-chk` counts
     #: `Audio/` and its 9 subdirectories alongside its 234 files, which is why this is
@@ -510,6 +533,38 @@ def build_argv(
         # forcing --no-perms here too would quietly weaken an adopt onto ext4, where
         # the permissions are real and worth repairing.
         argv.append("--size-only")
+
+    # A target that cannot store an mtime at all — Android's emulated storage, declared
+    # with `stores_times: false` (a path fact, not a platform one: see Device.stores_times,
+    # where the physical-card case that works is written down beside it). Both flags,
+    # because neither works alone and each fixes a different half of the same fact.
+    # Measured on nexus10 against files byte-identical to the source, with `-n -i`:
+    #
+    #   -a                 <f..t......   re-sends every push   exit 23
+    #   -a --no-times      <f..T......   re-sends every push   exit 0
+    #   -a --size-only     .f..t......   sends nothing         exit 23
+    #   -a --size-only --no-times        sends nothing         exit 0
+    #
+    # `<` is data on its way; `.` is nothing sent. --size-only stops rsync comparing an
+    # mtime that can never match, and --no-times stops it then trying to write one it can
+    # never write — which is what the remaining exit 23 in row three is. Only the pair
+    # gives a clean run, which is why this is not two independent settings.
+    #
+    # --size-only is Adopt's alone everywhere else, and deliberately so: sizes usually
+    # match precisely *because* content diverged in place. The exception is confined to a
+    # node that has declared it cannot store the alternative, and the library being
+    # content-addressed is what makes it affordable — a changed book gets a new blake2b
+    # blob, and `scan`/Adopt compares those hashes rather than sizes.
+    #
+    # --modify-window is still emitted above and is inert here, times being uncompared.
+    # It stays: it is a fact about the filesystem, this is a fact about the mount, and
+    # tangling the two would make each harder to reason about than the dead flag is.
+    if not device.stores_times:
+        argv.append("--no-times")
+        if not adopt:
+            # Adopt has already added it, and rsync would take it twice happily enough;
+            # an argv that says a thing once is easier to read in the log header.
+            argv.append("--size-only")
 
     bandwidth = device.bandwidth_with(defaults)
     if bandwidth:
@@ -976,9 +1031,25 @@ class JobRunner:
         job.finished_at = time.time()
         self._emit(JobEvent("progress", job.id))
 
-        if code == 0:
+        # See _ATTR_PROBLEM_RE: exit 23 says "files/attrs", and when it is only the attrs
+        # the transfer did everything a transfer is for. Marking it failed cost more than
+        # a wrong colour -- a failed job takes _record_partial, which credits the manifest
+        # with `files_sent` names only, so a push that delivered a whole directory was
+        # recorded as whatever rsync happened to have counted when it gave up.
+        attrs_only = code == 23 and _attrs_only(log_path)
+
+        if code == 0 or attrs_only:
             job.state = "done"
             job.pct = 100.0
+            if attrs_only:
+                self._append_line(
+                    job,
+                    "every file landed; the device would not accept their timestamps "
+                    f"— rsync calls that exit {code}",
+                    "warn",
+                )
+                for hint in _hints(log_path, code):
+                    self._append_line(job, f"hint: {hint}", "warn")
             if job.dry_run:
                 # This line used to sit outside the guard, so a dry run signed off with
                 # "manifest updated" having updated nothing — the one job that cannot
@@ -1221,6 +1292,14 @@ _HINTS: list[tuple[str, str]] = [
         "no route to host",
         "the DHCP lease may have moved this node; try a hostname instead of an IP",
     ),
+    (
+        "failed to set times",
+        "this target cannot store timestamps — Android's emulated storage (/sdcard) has "
+        "no utimensat and refuses it even to root, though a physical card is fine. The "
+        "files landed, but every later push will re-send them, because the quick check "
+        "compares an mtime that can never match: declare `stores_times: false` for this "
+        "device",
+    ),
     ("no space left on device", "the device is full"),
     (
         "broken pipe",
@@ -1234,6 +1313,21 @@ _HINTS: list[tuple[str, str]] = [
     ("kex_exchange_identification", "dropbear may not offer a KEX this ssh accepts — "
      "pin one in ~/.ssh/config or in the node's extra ssh options"),
 ]
+
+
+def is_attrs_only(text: str) -> bool:
+    """True when rsync's exit 23 was about attributes alone, and every byte landed.
+
+    Deliberately conservative: it needs at least one diagnostic (an exit 23 with none at
+    all is not something we understand, so it stays a failure) and *every* one of them
+    has to be an attribute failure. A vanished source file, an unreadable book, a full
+    device -- each also exits 23, each prints an `rsync:` line that is not `failed to
+    set`, and each is a genuinely partial transfer that must keep saying so.
+    """
+    problems = _RSYNC_PROBLEM_RE.findall(text or "")
+    if not problems:
+        return False
+    return len(_ATTR_PROBLEM_RE.findall(text)) == len(problems)
 
 
 def hints_for_text(text: str, code: int) -> list[str]:
@@ -1251,6 +1345,14 @@ def _hints(log_path: Path, code: int) -> list[str]:
     except OSError:
         return []
     return hints_for_text(text, code)
+
+
+def _attrs_only(log_path: Path) -> bool:
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return is_attrs_only(text)
 
 
 def _apply_progress(job: Job, match: re.Match) -> None:
@@ -1291,7 +1393,7 @@ def _apply_progress(job: Job, match: re.Match) -> None:
     # files_total and bytes_total stay as _estimate set them, from the index. They are
     # the size of what was *selected*, and the queued card, the dock and the jobs table
     # all quote them; letting rsync redefine them mid-run is what made one directory
-    # read 234 files in the tree and 244 in the dock.
+    # read 234 files in the file table and 244 in the dock.
     job.eta = _eta(job)
 
 

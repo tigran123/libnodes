@@ -9,6 +9,10 @@
     <div class="dock-banner is-ok">
       <span class="dot dot-ok"></span>
       SYNC COMPLETE · {{ device.name if device else job.device_id }}
+      {#- Every byte landed, so this is a success and the manifest was updated — but the
+          device refused the timestamps, and a plain green banner over an exit 23 would
+          be its own small lie. See _ATTR_PROBLEM_RE in jobs.py. -#}
+      {% if job.exit_code == 23 %} · TIMESTAMPS NOT SET{% endif %}
       <button class="x"
               hx-post="/jobs/{{ job.id }}/dismiss"
               hx-target="#job-dock" hx-swap="innerHTML">✕</button>

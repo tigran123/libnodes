@@ -19,7 +19,7 @@
     </div>
 
     {# Files sent out of files selected. Both are files-only counts from the index, so
-       this agrees with the Library tree and the PRESENT ON fraction; rsync's own total
+       this agrees with the Library's DIR count and the PRESENT ON fraction; rsync's own total
        would count directories and disagree with all three. #}
     <div class="cell-r mono" data-label="Files"
          title="{% if job.entries_total %}{{ job.entries_done }}/{{ job.entries_total }} file-list entries checked, directories included{% endif %}">

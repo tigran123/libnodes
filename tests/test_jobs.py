@@ -134,7 +134,7 @@ def test_progress_never_overwrites_the_index_estimate():
     """files_total/bytes_total mean "what was selected" for the whole life of the job.
 
     Letting rsync redefine them mid-run is what made one directory read 234 files in the
-    Library tree and 244 in the dock — rsync counts its 9 subdirectories and itself.
+    Library's file table and 244 in the dock — rsync counts its 9 subdirectories and itself.
     """
     from libnodes.jobs import _apply_progress
 

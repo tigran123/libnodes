@@ -996,3 +996,48 @@ def test_the_stack_breakpoint_clears_the_row_floor():
         f"{floor}px of track floors need {needed}px of viewport, but the row stops "
         f"stacking at {stack}px — leaving {needed - stack}px with no working layout"
     )
+
+
+def test_the_file_grid_stacks_before_it_runs_out_of_panel():
+    """The Library table is the navigator now, so the width at which it stops being a
+    table is a navigation decision rather than a cosmetic one.
+
+    Its arithmetic has two regimes, which the device row's does not: at 972px the rail
+    goes position:fixed and stops taking 190px out of the flow, so the *narrower* viewport
+    is the roomier one. It also has to account for --scale, because a media query is
+    matched against the unzoomed viewport while every length inside the layout is zoomed.
+    """
+    css = (ROOT / "libnodes" / "static" / "app.css").read_text()
+
+    block = css.split(".file-grid {")[1].split("}")[0]
+    # The 26px checkbox track carries no minmax: it holds an 11px box and has nothing
+    # to give.
+    fixed = int(re.search(r"grid-template-columns:\s*\n?\s*(\d+)px", block).group(1))
+    floor = fixed + sum(int(n) for n in re.findall(r"minmax\((\d+)px", block))
+
+    rail = int(re.search(r"--rail:\s*(\d+)px", css).group(1))
+    gutter = int(re.search(r"--gutter:\s*(\d+)px", css).group(1))
+    scale = float(re.search(r"--scale:\s*([\d.]+)", css).group(1))
+
+    stack = int(
+        re.search(r"@media \(max-width: (\d+)px\) \{\s*\.thead\.file-grid", css).group(1)
+    )
+    # The block that takes the rail out of the flow; `body` is its first selector.
+    rail_floats = int(
+        re.search(r"@media \(max-width: (\d+)px\) \{\s*body", css).group(1)
+    )
+
+    if stack <= rail_floats:
+        # No rail in the flow, and that same block narrows .lib-body's padding to 12px.
+        needed = (floor + 2 * 12) * scale
+    else:
+        needed = (floor + rail + 2 * gutter) * scale
+
+    assert stack >= needed, (
+        f"{floor}px of track floors need {needed:.0f}px of viewport, but the row stops "
+        f"stacking at {stack}px — leaving {needed - stack:.0f}px with no working layout"
+    )
+
+    # A Nexus 10 in landscape is 1280 CSS px and used to get the stacked cards, because
+    # the breakpoint was set when a 300px tree stood beside this table.
+    assert stack < 1280, f"1280px landscape still gets cards at a {stack}px stack"

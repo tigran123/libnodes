@@ -29,10 +29,12 @@ background probe, so an unreachable e-reader costs the page nothing.
 
 ![The Devices view](docs/devices.png)
 
-**Library** — the tree and file list are served from a SQLite index rather than a live
-`stat()` walk, so filtering 20,000 entries stays interactive on a Pi. `PRESENT ON` shows
-which devices already hold each item, and hovering a chip says when we last had evidence
-for it. Both a dark and a light theme are built in.
+**Library** — one panel, served from a SQLite index rather than a live `stat()` walk, so
+filtering 20,000 entries stays interactive on a Pi. The file table is the navigator: a
+directory's name opens it, the rest of the row ticks it for a push, and the breadcrumb
+goes back up — which is what makes the view usable on a tablet, where a separate tree pane
+had nowhere to go. `PRESENT ON` shows which devices already hold each item, and hovering a
+chip says when we last had evidence for it. Both a dark and a light theme are built in.
 
 ![The Library view](docs/library.png)
 
@@ -72,17 +74,36 @@ itself because it depends on the exact behaviour of the flags:
 | `-O` | otherwise rsync stamps every directory's mtime and reports each as touched |
 | `--no-perms` | **only** where the target filesystem cannot store them |
 | `--modify-window=1` | **only** on FAT, whose seconds field counts in twos |
+| `--size-only --no-times` | **only** where the target cannot store an mtime at all |
 | `--delete` | **only** on a mirror, where a stale leftover is a divergence |
 
-Those last three are why devices declare facts — `fs:` (vfat, exfat, ext4, …) and
-`sync_mode:` — rather than a flag list: the filesystem and the node's purpose are the
-actual constraints, and device type is only a proxy for either. A Linux host with an exFAT
+Those last four are why devices declare facts — `fs:` (vfat, exfat, ext4, …),
+`stores_times:` and `sync_mode:` — rather than a flag list: the filesystem, the mount and
+the node's purpose are the actual constraints, and device type is only a proxy for any of
+them. A Linux host with an exFAT
 disk gets FAT treatment; an ext4 target keeps full archive semantics. See `FS_PROFILES` in
 `models.py`.
 
+`stores_times: false` is the narrowest of these and the least obvious. Android's
+*emulated* storage — `/sdcard`, `/storage/emulated/0` — is not a filesystem but a FUSE
+shim with nothing underneath, and its daemon has no `utimensat`: it returns EPERM even to
+root. rsync's quick check is size+mtime, so a destination whose mtime is always the moment
+of transfer can *never* match, and every push re-sends the whole selection while ending in
+exit 23. Neither flag fixes it alone: `--no-times` still re-sends, `--size-only` still
+tries to stamp and still exits 23. The pair is clean. Measured on nexus10 — an unchanged
+push went from 2 files and 33,531 bytes of wire, three attempts and a red banner, to 0
+files, 284 bytes, exit 0.
+
+It describes the *target path*, not the platform and not the filesystem, which is why it
+is its own key. A physical card is the other Android case and works fine: `lg`'s `~/sd` is
+a symlink to `/storage/D94C-6302/…`, a 466 GB vfat volume vold mounts with `allow_utime`,
+and `touch -t` succeeds there. So two `fs: vfat` Android nodes disagree, and the one that
+fails is not writing to a filesystem at all. Test the target, not the device.
+
 Deliberately absent: `-h` (we format numbers ourselves), `%i` in the out-format (it
 makes rsync log every unchanged file on a FAT target — 24,616 lines around 4 real
-transfers, measured), and `--size-only`, which belongs to Adopt alone — see below.
+transfers, measured), and `--size-only` on an ordinary push — it belongs to Adopt and to
+a node that has declared it cannot store the alternative, and to nothing else. See below.
 
 ### Two shapes: readers and mirrors
 
@@ -214,14 +235,20 @@ them) so the machine works on an isolated LAN.
   one blocking dialog in the app is the offline-push confirmation.
 - **Requests never probe a device.** A background task writes reachability into a dict;
   handlers read it. Otherwise six sleeping e-readers become a six-second page load.
-- **Never walk the library in a request.** The tree and file list come from the index; a
-  rebuild runs on one background thread and publishes by atomic rename.
+- **Never walk the library in a request.** The file list and breadcrumb come from the
+  index; a rebuild runs on one background thread and publishes by atomic rename.
 - **Concurrency is the host's to declare, and defaults to one.** On the Pi 3 the NIC shared
   the USB bus with the library disk, so two transfers did not go twice as fast — they went
   half as fast each. On the Pi 5's NVMe (430 MB/s measured) and gigabit that reason is gone
   and the deployment sets three; the code default stays one, for a host that has not said.
 - **Every template except `base.html` and the page templates must render standalone.**
   That is the HTMX contract; `test_fragments_render_standalone` enforces it.
+- **An exit code is read, not trusted.** rsync spends 23 on both "some files were not
+  transferred" and "some attrs were not transferred", and on an Android target it is
+  always the second — `/sdcard` is a FUSE mount whose daemon has no `utimensat`, so every
+  push there delivers every byte and still ends 23. Read as failure it drew a red banner,
+  recorded a partial manifest and retried the whole transfer twice. `is_attrs_only` reads
+  rsync's own diagnostics to tell the two apart.
 
 ## Locking it
 

@@ -1,7 +1,11 @@
 {% extends "base.html" %}
 {% block title %}Library · LibNodes{% endblock %}
 
-{% block crumb %}library / <b>{{ path or 'root' }}</b>{% endblock %}
+{# Constant, deliberately. It sits outside #lib, so the path it used to print went stale
+   on every navigation — and navigating is now the main thing this page does. The path is
+   carried by the real breadcrumb directly below, which is what the 640px rule in app.css
+   already says about hiding this on a phone. A crumb that never changes is never wrong. #}
+{% block crumb %}library{% endblock %}
 
 {% block topbar_right %}
   <span class="chip" id="index-status">{% include "fragments/index_status.html" %}</span>

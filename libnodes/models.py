@@ -180,6 +180,37 @@ class Device(BaseModel):
     #: only thing that may receive urantia-library/ -- see config.SKIP_TOPLEVEL, where
     #: that boundary is documented.
     sync_mode: SyncMode = "books"
+    #: Whether the target can store a modification time at all. Declare the fact; the
+    #: flags follow.
+    #:
+    #: A fact about the *target path*, not about the device, the OS or `fs:` — which is
+    #: the whole point of it being a separate key. Android splits into two cases and only
+    #: one of them fails:
+    #:
+    #:   emulated  `/sdcard`, `/storage/emulated/0`. Not a filesystem at all but a FUSE
+    #:             shim (`/dev/fuse`) with nothing underneath it, and its daemon does not
+    #:             implement utimensat: EPERM to everyone, root included. nexus10 has only
+    #:             this — its `/storage` holds `emulated` and a `sdcard0` alias of it, and
+    #:             nothing else.
+    #:
+    #:   a card    vold mounts the real volume (`/dev/block/vold/public:179,65` on lg, a
+    #:             466 GB vfat) with `allow_utime`, and times work straight through the
+    #:             FUSE view of it. lg's `~/sd` is a symlink to `/storage/D94C-6302/...`,
+    #:             so lg is a `vfat` Android node whose timestamps are fine.
+    #:
+    #: Verified 2026-08-26 with `touch -t` as root on a file root had just created: EPERM
+    #: on nexus10's target and on lg's `/sdcard`, OK on lg's actual target. So two Android
+    #: nodes that both declare `fs: vfat` differ, and the one that fails is not even
+    #: writing to a filesystem. Deriving this from `fs:` would drop lg and the Kobo to a
+    #: size-only comparison for no reason; test the target, not the platform.
+    #:
+    #: Leaving it true on such a node is not cosmetic. rsync's quick check is size+mtime,
+    #: so a destination whose mtime is always the moment of transfer can never match, and
+    #: every push re-sends the entire selection for ever. Measured with `-n -i` against
+    #: files byte-identical to the source: `<f..t......`, the `<` being data on its way.
+    #: See `build_argv`, which is also where the reason `--no-times` alone does not fix it
+    #: is written down.
+    stores_times: Bool = True
     #: A file on the device whose contents are the battery percentage, or unset for a
     #: node that has no battery worth reporting.
     #:

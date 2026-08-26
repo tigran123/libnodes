@@ -1,107 +1,153 @@
-{# Tree + content. A tree click swaps this whole element so selection state follows. #}
+{# One panel: the file table is the navigator. A directory name goes in, a breadcrumb
+   segment comes back out, and both swap this whole element so the listing, the crumb and
+   the selection change together — the same thing a tree click used to do. #}
 <div class="lib" id="lib">
 
-  {% include "tree.html" %}
+  <div class="filterbar">
+    <label class="field is-accent">
+      <span class="slash">/</span>
+      <input type="search" name="q" value="{{ q }}" autocomplete="off"
+             placeholder="filter this subtree"
+             hx-get="/lib/list"
+             hx-trigger="keyup changed delay:120ms, search"
+             hx-target="#file-rows"
+             hx-swap="innerHTML"
+             hx-include="#lib-params, [name=fmt]:checked, [name=sort]">
+    </label>
+    <span id="result-count" class="result-count">
+      {{ total_files|commafy }} → {{ match_count|commafy }} matches · {{ '%.0f'|format(elapsed_ms) }}ms
+    </span>
 
-  <div class="lib-main">
+    {# Hidden carriers so every fragment request knows where it is. #}
+    <span id="lib-params" style="display:none">
+      <input type="hidden" name="p" value="{{ path }}">
+    </span>
 
-    <div class="filterbar">
-      <label class="field is-accent">
-        <span class="slash">/</span>
-        <input type="search" name="q" value="{{ q }}" autocomplete="off"
-               placeholder="filter this subtree"
-               hx-get="/lib/list"
-               hx-trigger="keyup changed delay:120ms, search"
-               hx-target="#file-rows"
-               hx-swap="innerHTML"
-               hx-include="#lib-params, [name=fmt]:checked, [name=sort]">
-      </label>
-      <span id="result-count" class="result-count">
-        {{ total_files|commafy }} → {{ match_count|commafy }} matches · {{ '%.0f'|format(elapsed_ms) }}ms
-      </span>
+    <span class="segmented">
+      {% for f in ['epub', 'pdf', 'djvu'] %}
+        <label class="{{ 'is-active' if f in fmt }}">
+          <input type="checkbox" name="fmt" value="{{ f }}" hidden
+                 {{ 'checked' if f in fmt }}
+                 hx-get="/lib/list"
+                 hx-trigger="change"
+                 hx-target="#file-rows"
+                 hx-swap="innerHTML"
+                 hx-include="#lib-params, [name=q], [name=fmt]:checked, [name=sort]">
+          {{ f|upper }}
+        </label>
+      {% endfor %}
+    </span>
 
-      {# Hidden carriers so every fragment request knows where it is. #}
-      <span id="lib-params" style="display:none">
-        <input type="hidden" name="p" value="{{ path }}">
-      </span>
-
-      <span class="segmented">
-        {% for f in ['epub', 'pdf', 'djvu'] %}
-          <label class="{{ 'is-active' if f in fmt }}">
-            <input type="checkbox" name="fmt" value="{{ f }}" hidden
-                   {{ 'checked' if f in fmt }}
-                   hx-get="/lib/list"
-                   hx-trigger="change"
-                   hx-target="#file-rows"
-                   hx-swap="innerHTML"
-                   hx-include="#lib-params, [name=q], [name=fmt]:checked, [name=sort]">
-            {{ f|upper }}
-          </label>
-        {% endfor %}
-      </span>
-
-      <select class="btn" name="sort"
-              hx-get="/lib/list"
-              hx-trigger="change"
-              hx-target="#file-rows"
-              hx-swap="innerHTML"
-              hx-include="#lib-params, [name=q], [name=fmt]:checked">
-        <option value="name" {{ 'selected' if sort == 'name' }}>name ↑</option>
-        <option value="size" {{ 'selected' if sort == 'size' }}>size ↓</option>
-        <option value="modified" {{ 'selected' if sort == 'modified' }}>modified ↓</option>
-      </select>
-    </div>
-
-    <div class="lib-body">
-
-      <div class="pathline">
-        <span class="parent">{{ library_root }}/{% for a in ancestors %}{{ a.name }}/{% endfor %}</span>
-        {% if entry.path %}<span class="leaf">{{ entry.name }}</span>{% endif %}
-        {# Recursive totals for the directory, not just its direct children. #}
-        <span class="summary">
-          {{ entry.files|commafy }} files · {{ entry.size|hsize }} · mtime {{ entry.mtime|isodate }}
-        </span>
-      </div>
-
-      <div id="selbar"></div>
-
-      <form id="sel-form" data-selectable
-            hx-get="/lib/selection"
-            hx-trigger="change, selection-changed"
-            hx-target="#selbar"
+    <select class="btn" name="sort"
+            hx-get="/lib/list"
+            hx-trigger="change"
+            hx-target="#file-rows"
             hx-swap="innerHTML"
-            hx-include="#lib-params">
-        <div class="panel">
-          <div class="thead file-grid">
-            {# Deliberately unnamed: it sits inside #sel-form, and the selection bar is
-               nothing but an hx-include of the checked boxes — a name here would post a
-               phantom `path=on` alongside the real ones. It owns the rows currently in
-               the table, so with a filter active it selects the filtered set: what you
-               can see, which is the only set it can honestly claim. #}
-            <div class="cell-check">
-              <input class="check" type="checkbox" data-select-all
-                     aria-label="Select every row below"
-                     title="Select every row below">
-            </div>
-            <div>Name</div>
-            <div>Format</div>
-            <div class="cell-r">Size</div>
-            <div>Modified</div>
-            <div>Present on</div>
-            <div class="cell-r">Push</div>
+            hx-include="#lib-params, [name=q], [name=fmt]:checked">
+      <option value="name" {{ 'selected' if sort == 'name' }}>name ↑</option>
+      <option value="size" {{ 'selected' if sort == 'size' }}>size ↓</option>
+      <option value="modified" {{ 'selected' if sort == 'modified' }}>modified ↓</option>
+    </select>
+
+    {# This lived in the tree pane's header and moved here rather than dying with it: it
+       is the only manual reindex control in the app. Last in the bar, past the three
+       controls that act on what is on screen, because it acts on the index behind them.
+       Bordered rather than .btn-ghost — in a label strip a borderless glyph read as a
+       caption, but here it sits beside a bordered <select class="btn"> and has to read as
+       its peer. #}
+    <button class="btn btn-icon" type="button"
+            hx-post="/lib/reindex"
+            hx-target="#index-status"
+            hx-swap="innerHTML"
+            hx-disabled-elt="this"
+            title="Rebuild the index">⟳</button>
+  </div>
+
+  <div class="lib-body">
+
+    {# The only way back up now that the tree is gone. Each ancestor carries the same htmx
+       quartet the tree links did, and the `href` alone is a working navigation with no
+       JS at all. Only `p` is carried: entering or leaving a directory is a fresh
+       listing, which is exactly what a tree click did. #}
+    <nav class="pathline" aria-label="Location">
+      <span class="crumbs">
+        {% if path %}
+          <a href="/library"
+             hx-get="/lib/pane"
+             hx-target="#lib"
+             hx-swap="outerHTML"
+             hx-push-url="/library">{{ library_root }}</a>
+          {% for a in ancestors %}
+            <span class="sep" aria-hidden="true">/</span>
+            <a href="/library?p={{ a.path|urlencode }}"
+               hx-get="/lib/pane?p={{ a.path|urlencode }}"
+               hx-target="#lib"
+               hx-swap="outerHTML"
+               hx-push-url="/library?p={{ a.path|urlencode }}">{{ a.name }}</a>
+          {% endfor %}
+          <span class="sep" aria-hidden="true">/</span>
+          <span class="leaf" aria-current="page">{{ entry.name }}</span>
+        {% else %}
+          {# At the root there is nothing above to link to, so the root *is* the leaf. A
+             link to where you already are is a control that does nothing. #}
+          <span class="leaf" aria-current="page">{{ library_root }}</span>
+        {% endif %}
+      </span>
+      {# Recursive totals for the directory, not just its direct children. #}
+      <span class="summary">
+        {{ entry.files|commafy }} files · {{ entry.size|hsize }} · mtime {{ entry.mtime|isodate }}
+      </span>
+    </nav>
+
+    <div id="selbar"></div>
+
+    {# hx-disinherit, and it is load-bearing rather than tidiness. hx-include is an
+       inherited attribute, so every element inside this form was silently adding
+       `#lib-params` — that is `p=<the directory we are in>` — to its own request. On a
+       directory link that made `hx-get="/lib/pane?p=Science/Aviation"` arrive as
+       `?p=Science/Aviation&p=Science`; FastAPI binds the last value, so the server
+       answered with the directory you were already in while hx-push-url had already
+       written the new URL to the address bar. Measured with tools/shot.py on
+       htmx:configRequest: path `/lib/pane?p=Science/Aviation`, parameters `{p: Science}`.
+       The form reading its *own* hx-include is untouched — disinheritance only applies to
+       descendants — so the selection bar still posts exactly the checked boxes. #}
+    <form id="sel-form" data-selectable
+          hx-get="/lib/selection"
+          hx-trigger="change, selection-changed"
+          hx-target="#selbar"
+          hx-swap="innerHTML"
+          hx-include="#lib-params"
+          hx-disinherit="hx-include">
+      <div class="panel">
+        <div class="thead file-grid">
+          {# Deliberately unnamed: it sits inside #sel-form, and the selection bar is
+             nothing but an hx-include of the checked boxes — a name here would post a
+             phantom `path=on` alongside the real ones. It owns the rows currently in
+             the table, so with a filter active it selects the filtered set: what you
+             can see, which is the only set it can honestly claim. #}
+          <div class="cell-check">
+            <input class="check" type="checkbox" data-select-all
+                   aria-label="Select every row below"
+                   title="Select every row below">
           </div>
-          <div id="file-rows">
-            {% include "file_rows.html" %}
-          </div>
+          <div>Name</div>
+          <div>Format</div>
+          <div class="cell-r">Size</div>
+          <div>Modified</div>
+          <div>Present on</div>
+          <div class="cell-r">Push</div>
         </div>
-      </form>
-
-      <div class="statusline">
-        <span>row hover reveals push targets · first two devices inline, rest under <b>⋯</b></span>
-        <span>|</span>
-        <span>PRESENT ON is a cached view — what we last pushed or scanned, not a live look</span>
+        <div id="file-rows">
+          {% include "file_rows.html" %}
+        </div>
       </div>
+    </form>
 
+    <div class="statusline">
+      <span>a directory's name opens it · the rest of the row ticks it</span>
+      <span>|</span>
+      <span>PRESENT ON is a cached view — what we last pushed or scanned, not a live look</span>
     </div>
+
   </div>
 </div>

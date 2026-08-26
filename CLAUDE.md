@@ -94,6 +94,62 @@ are listed.
   content diverged in place. Pinned by
   `tests/test_scan_adopt.py::test_a_normal_push_is_not_size_only`. If a push seems to be
   re-sending too much, the dry run — now on every Library row — says what it would send.
+- **rsync exit 23 is two outcomes, and only the diagnostics tell them apart.** It means
+  "some files/attrs were not transferred" — a genuinely partial push, *or* a complete one
+  that could not stamp a timestamp. `is_attrs_only` (`libnodes/jobs.py`) splits them: every
+  line rsync prefixes with `rsync:` must be a `failed to set <attr>`, and there must be at
+  least one, or it stays a failure. Treating them alike is not a wrong colour, it is three
+  wrong things: the dock drew `TRANSFER FAILED` in red over a push that had delivered every
+  byte; the manifest took `_record_partial` (only `files_sent` names) instead of
+  `_update_manifest`; and the retry path ran the whole transfer twice more — job #1 reached
+  `attempt=3` re-sending two books that were already there, byte-exact. This is the *normal*
+  outcome on Android, not a corner case: `/sdcard` is the FUSE emulation layer and its
+  daemon does not implement `utimensat`, returning EPERM to everyone, root included
+  (measured on nexus10 — `touch -t` fails there as root). Pinned by
+  `tests/test_hints.py::test_an_attrs_only_exit_23_is_not_a_partial_transfer` beside
+  `::test_a_real_partial_transfer_still_says_so`, and end to end by
+  `tests/test_job_lifecycle.py::test_a_push_that_only_failed_to_stamp_times_is_a_success`.
+  The exit code is kept on the job and the banner says `TIMESTAMPS NOT SET`, because a
+  plain green `SYNC COMPLETE` over an exit 23 is its own small lie.
+- **`stores_times: false` needs both `--size-only` and `--no-times`, and neither alone.**
+  A device that cannot store an mtime re-sends its whole library on every push, because
+  rsync's quick check is size+mtime and a destination whose mtime is always the transfer
+  time can never match. Measured against nexus10 with `-n -i` on files identical to the
+  source — `<` is data on its way, `.` is nothing sent:
+
+  | flags | | |
+  |---|---|---|
+  | `-a` | `<f..t......` re-sends | exit 23 |
+  | `-a --no-times` | `<f..T......` re-sends | exit 0 |
+  | `-a --size-only` | `.f..t......` quiet | exit 23 |
+  | `-a --size-only --no-times` | quiet | exit 0 |
+
+  `--size-only` stops rsync comparing an mtime that can never match; `--no-times` stops it
+  then writing one it can never write, which is the exit 23 left in row three. Emitted
+  together in `build_argv` or not at all. End to end on nexus10: an unchanged push went
+  from 2 files, 33,531 bytes of wire, `attempt=3` and a red banner to 0 files, 284 bytes,
+  exit 0. Pinned by `tests/test_scan_adopt.py`
+  `::test_a_device_that_cannot_store_times_gets_both_flags`.
+  This is the *only* exception to the `--size-only` entry above, it is confined to a node
+  that declared it, and it is affordable because the library is content-addressed: a
+  changed book gets a new blake2b blob and `scan`/Adopt compares hashes, not sizes.
+- **`stores_times` describes the target path, not the device and never `fs:`.** Android
+  splits in two and only one half fails. *Emulated* storage — `/sdcard`,
+  `/storage/emulated/0` — is a FUSE shim with nothing underneath and no `utimensat`;
+  nexus10 has only this, its `/storage` holding `emulated` and an alias of it. A *physical
+  card* is mounted by vold as a real volume with `allow_utime` and works straight through:
+  lg's `~/sd` is a symlink to `/storage/D94C-6302/…`, 466 GB of vfat on
+  `/dev/block/vold/public:179,65`, where `touch -t` succeeds as root — while `/sdcard` on
+  that same phone gives EPERM. So two `fs: vfat` Android nodes disagree, and lg must *not*
+  carry the flag. Deriving this from `fs:` would drop lg and the Kobo to a size-only
+  comparison for nothing, including the device `--modify-window=1` exists to keep exact.
+  `--modify-window` is still emitted beside these flags and is inert there; it stays,
+  because tangling a filesystem fact with a path fact costs more than a dead flag. Test
+  the target, never the platform — `ssh -n <node> 'F=<target>/.ut; touch "$F" && (touch -t
+  202001010101 "$F" && echo OK || echo EPERM); rm -f "$F"'`, and note the `-n`, or ssh
+  eats the rest of a loop's stdin and the sweep stops after one node. Pinned by
+  `tests/test_scan_adopt.py`
+  `::test_the_opt_out_is_a_device_fact_not_a_filesystem_one`.
 - **`bytes_done` is the size of the files rsync handled, not network traffic.** Delta
   matching against the copy already on the device makes the two diverge by orders of
   magnitude — 4.38 GB of files across 6.7 MB of link, measured. `bytes_wire`
@@ -106,16 +162,37 @@ are listed.
   reported 35 files sent for a run that had sent 15. The `@` line is printed when a file
   *starts*, so the last one in an interrupted log names a file that never landed —
   `_record_partial` truncates to `files_sent` for exactly that reason.
-- **One directory, one file count, in every view.** The tree (`entries.files`), the
-  `PRESENT ON` fraction (`manifests.py`, `is_dir = 0`) and the dock all count files only.
+- **One directory, one file count, in every view.** The `DIR n` badge in the file table
+  (`entries.files`, `file_rows.html`), the `PRESENT ON` fraction (`manifests.py`,
+  `is_dir = 0`) and the dock all count files only.
   rsync does not — `Audio/` is 234 files to the index and 244 entries to rsync, being its
   9 subdirectories and itself — so nothing derived from `to-chk` may be labelled "files".
   Pinned by `tests/test_manifests.py::test_every_view_counts_files_the_same_way`.
-- **Never walk the library in a request.** The tree and file list come from the SQLite
-  index (`libnodes/library.py`); a rebuild runs on one background thread and publishes by
-  atomic rename. A full walk is 1.0 s on pi5 for 24,621 entries, and was ~29 s on the Pi 3
-  it replaced — the invariant survives the speedup, because a request must not depend on
-  the walk being fast on *any* host.
+- **The file table is the only navigator, and both halves of that are load-bearing.**
+  A directory row's name is an `<a>` (`file_rows.html`) and `.pathline` is a real
+  breadcrumb built from `index.ancestors()` (`lib_pane.html`) — down and up. There is no
+  tree pane any more; it was `display: none` below 972px with nothing in its place, so a
+  Nexus 10 in portrait (800 CSS px) could tick a directory and never enter one, and a book
+  three levels down was unreachable. Delete either half and navigation simply stops at
+  that width while the suite stays green and the page looks plausible. Pinned by
+  `tests/test_routes.py::test_a_directory_row_is_a_link_and_a_file_row_is_not` and
+  `::test_the_breadcrumb_is_one_link_per_ancestor_plus_a_root`.
+  The link carries `p` and nothing else, which is not a preference: `children()` appends
+  `is_dir = 0` for a query and tests `fmt IN (...)`, so a directory row only exists when
+  both are empty.
+- **`#sel-form` must keep `hx-disinherit="hx-include"`.** `hx-include` is inherited, and
+  the form's is `#lib-params` — `p=<the directory we are in>`. Every link inside the table
+  therefore appended it, so `hx-get="/lib/pane?p=Science/Aviation"` went out as
+  `?p=Science/Aviation&p=Science` and FastAPI bound the last value: the server answered
+  with the directory you were already in while `hx-push-url` had written the new one to
+  the address bar. The URL moved, the content did not, and nothing failed. Measured on
+  `htmx:configRequest` with `tools/shot.py`. Pinned by
+  `tests/test_routes.py::test_the_table_does_not_smuggle_its_own_directory_into_a_link`.
+- **Never walk the library in a request.** The file list and its breadcrumb come from the
+  SQLite index (`libnodes/library.py`); a rebuild runs on one background thread and
+  publishes by atomic rename. A full walk is 1.0 s on pi5 for 24,621 entries, and was
+  ~29 s on the Pi 3 it replaced — the invariant survives the speedup, because a request
+  must not depend on the walk being fast on *any* host.
 - **Requests never probe a device.** A background task writes reachability into a dict
   (`libnodes/probe.py`); handlers read it. Otherwise six sleeping e-readers become a
   six-second page load. `devices_context` calls `probe.note_interest()`, which is a

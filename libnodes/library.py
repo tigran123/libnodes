@@ -95,11 +95,6 @@ class Entry:
         )
 
     @property
-    def hidden(self) -> bool:
-        """Dot-entries render in `faint` with no affordances, per the design."""
-        return self.name.startswith(".")
-
-    @property
     def label(self) -> str:
         return self.name + "/" if self.is_dir else self.name
 
@@ -254,7 +249,6 @@ class LibraryIndex:
         fmts: Sequence[str] | None = None,
         sort: str = "name",
         limit: int = 2000,
-        dirs_only: bool = False,
     ) -> list[Entry]:
         """Rows for the file table.
 
@@ -279,8 +273,6 @@ class LibraryIndex:
             where.append("parent IS ?")
             params.append(path)
 
-        if dirs_only:
-            where.append("is_dir = 1")
         if fmts:
             where.append("fmt IN (%s)" % ",".join("?" * len(fmts)))
             params += [f.lower() for f in fmts]
@@ -372,30 +364,6 @@ class LibraryIndex:
             found = self.entry(acc)
             if found:
                 out.append(found)
-        return out
-
-    def expanded_tree(self, selected: str) -> list[tuple[Entry, int, bool]]:
-        """The tree pane: root's children plus every level along `selected`.
-
-        Returns `(entry, depth, expanded)`. Only the open path is materialised, so the
-        pane costs one small query per open level rather than a walk.
-        """
-        open_paths = {""}
-        acc = ""
-        for part in [p for p in selected.split("/") if p]:
-            acc = f"{acc}/{part}" if acc else part
-            open_paths.add(acc)
-
-        out: list[tuple[Entry, int, bool]] = []
-
-        def emit(parent: str, depth: int) -> None:
-            for child in self.children(parent, dirs_only=True, limit=500):
-                expanded = child.path in open_paths
-                out.append((child, depth, expanded))
-                if expanded:
-                    emit(child.path, depth + 1)
-
-        emit("", 0)
         return out
 
     def vault_totals(self) -> tuple[int, int]:
@@ -573,9 +541,10 @@ def _walk(
 ) -> None:
     """Walk the library, handing `flush` batches of index rows.
 
-    Directory rows carry recursive `files`/`size` aggregates so the tree pane can print
-    `4,812 · 61G` without a query per node. The recursion has to be depth-first to
-    compute those aggregates, so rows are pushed through a callback rather than yielded
+    Directory rows carry recursive `files`/`size` aggregates so the file table's
+    `DIR 4,812` badge and the breadcrumb's totals cost no query per node. The recursion
+    has to be depth-first to compute those aggregates, so rows are pushed through a
+    callback rather than yielded
     — a generator would have to flatten every level before emitting anything.
     """
     batch: list[tuple] = []
