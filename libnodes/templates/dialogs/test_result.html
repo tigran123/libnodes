@@ -29,4 +29,6 @@
    is on the page behind this dialog and would otherwise wait up to 10s for the table's
    own poll, showing the old free space beside a dialog that has just contradicted it.
    Top-level, because htmx only scans the response's own children for hx-swap-oob. #}
-{% if node %}{% include "device_row.html" %}{% endif %}
+{% if node %}
+  {% include "device_card.html" if view == 'grid' else "device_row.html" %}
+{% endif %}

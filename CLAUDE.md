@@ -294,6 +294,24 @@ are listed.
   it silently wraps the last cell onto a second line. `.subrow` is the one top-level div
   that is not a column and says so with `grid-column: 1 / -1`. Pinned by
   `tests/test_battery.py::test_the_grid_declares_a_track_for_every_cell`.
+- **`#device-rows` is two different containers, so anything aimed at it must know which.**
+  `devices.html` renders *either* the cards div or the rows div and gives both that id, and
+  the Devices layout is now remembered in the `libnodes_view` cookie (`routes/devices.py`),
+  so a browser stays in GRID instead of being reset to TABLE by every navigation. That
+  turned three table-only fragments from unreachable into routine: the filter box's
+  `hx-get`, `devices_rescan`'s template, and the card's Retry — which targeted
+  `#device-rows` with `innerHTML` and so replaced all 9 cards with the single row
+  `/device/{id}/probe` answered with. Each resolves through `resolved_view`, which trusts
+  the cookie because the cookie is only ever written from an explicit `?view=` and
+  therefore always agrees with the branch that rendered. The card body lives in
+  `device_card.html` for the same reason `device_row.html` exists — so one card can be
+  swapped as `outerHTML` — and the Test dialog's out-of-band refresh picks between them;
+  aimed at a `#node-<id>` that grid mode does not render, htmx dropped that swap silently.
+  Pinned by `tests/test_routes.py::test_the_devices_view_survives_a_trip_to_the_library`,
+  `::test_a_grid_page_keeps_its_cards_when_filtered_or_rescanned` and
+  `::test_a_retry_in_grid_replaces_one_card`. A bare `/devices` must keep writing no
+  cookie — `::test_a_bare_devices_page_does_not_pin_its_own_default` — or the rail link
+  freezes whichever default it just guessed.
 - **`Settings.concurrency` defaults to 1, and the default is not the deployment.** The 1 is
   a property of an unknown host: on the Pi 3 the NIC shared the USB 2.0 bus with the library
   disk, so two transfers went half as fast each. pi5 puts the library on PCIe NVMe and the

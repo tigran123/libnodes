@@ -610,14 +610,15 @@ def test_the_grid_and_the_table_draw_the_bar_the_same_way():
 
     bar = _re.compile(r'<div class="([^"]+)"[^>]*>\s*<i style="width:\{\{[^}]*used_pct')
     classes = {}
-    for name in ("device_row.html", "device_grid.html"):
+    # device_card.html holds the card body now; device_grid.html is just its wrapper.
+    for name in ("device_row.html", "device_card.html"):
         text = (TEMPLATES_DIR / name).read_text(encoding="utf-8")
         match = bar.search(text)
         assert match, f"{name}: no usage bar found"
         classes[name] = match.group(1).split()
 
-    assert classes["device_row.html"] == classes["device_grid.html"]
-    assert "disk-bar" not in classes["device_grid.html"]
+    assert classes["device_row.html"] == classes["device_card.html"]
+    assert "disk-bar" not in classes["device_card.html"]
 
 
 # ------------------------------------------------- the reading and its date --

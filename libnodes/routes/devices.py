@@ -64,6 +64,26 @@ _REACH_NOTES: list[tuple[str, str]] = [
 ]
 
 
+#: The Devices view choice, persisted per browser. A cookie rather than localStorage
+#: because devices.html picks the table/grid branch server-side -- localStorage would
+#: render TABLE and swap to GRID after paint, a flash plus a wasted poll on every load.
+#: A year, matching the theme cookie in app.js:25: both are display preferences, and
+#: neither is worth asking twice.
+VIEW_COOKIE = "libnodes_view"
+VIEW_MAX_AGE = 31536000
+
+
+def resolved_view(request: Request, view: str | None = None) -> str:
+    """Which of the two layouts this browser is on.
+
+    An explicit `?view=` wins -- the toggle just named one. Otherwise the cookie, which
+    is what carries the choice back through base.html's bare /devices rail link.
+    """
+    if view in ("table", "grid"):
+        return view
+    return "grid" if request.cookies.get(VIEW_COOKIE) == "grid" else "table"
+
+
 @dataclass
 class DeviceView:
     """One device row: config, live reachability, storage, and any running transfer."""
@@ -319,7 +339,9 @@ def _filtered(views: list[DeviceView], q: str | None) -> list[DeviceView]:
     ]
 
 
-def devices_context(request: Request, q: str | None = None) -> dict:
+def devices_context(
+    request: Request, q: str | None = None, view: str | None = None
+) -> dict:
     app = state(request)
     # A stamp, not a probe -- this stays inside "requests never probe a device". It tells
     # the background loop somebody is looking, which tightens the backoff ceiling from five
@@ -337,16 +359,39 @@ def devices_context(request: Request, q: str | None = None) -> dict:
             "total": total,
             "last_scan": app.probe.last_scan,
             "profiles": app.devices.config.profiles,
+            # Set here rather than in the page handler alone, so the fragments and the
+            # rescan agree with the branch devices.html rendered. They can trust the
+            # cookie because it is only ever written from an explicit `?view=`.
+            "view": resolved_view(request, view),
         }
     )
     return ctx
 
 
 @router.get("/devices", response_class=HTMLResponse)
-async def devices_page(request: Request, q: str | None = None, view: str = "table"):
-    ctx = devices_context(request, q)
-    ctx["view"] = view if view in ("table", "grid") else "table"
-    return templates.TemplateResponse(request, "devices.html", ctx)
+async def devices_page(request: Request, q: str | None = None, view: str | None = None):
+    """The Devices page, in whichever layout this browser last chose.
+
+    `view` defaults to None, not "table": the rail link in base.html is a bare /devices,
+    and a handler that cannot tell it from a click on TABLE would pin the cookie to its
+    own default -- which is the bug this cookie exists to fix, arriving from the far side.
+    """
+    ctx = devices_context(request, q, view)
+    response = templates.TemplateResponse(request, "devices.html", ctx)
+    if view in ("table", "grid"):
+        response.set_cookie(
+            VIEW_COOKIE,
+            view,
+            # No `secure`: LibNodes is served over plain http on the LAN, so a Secure
+            # cookie would never be stored -- the constraint routes/auth.py records for
+            # the session cookie. httponly because nothing on the client reads this one:
+            # the toggle is a navigation, so the server both writes and reads it.
+            httponly=True,
+            samesite="lax",
+            path="/",
+            max_age=VIEW_MAX_AGE,
+        )
+    return response
 
 
 @router.get("/devices/rows", response_class=HTMLResponse)
@@ -382,6 +427,17 @@ async def device_row(request: Request, device_id: str):
     return templates.TemplateResponse(request, "device_row.html", ctx)
 
 
+@router.get("/device/{device_id}/card", response_class=HTMLResponse)
+async def device_card(request: Request, device_id: str):
+    """The grid's answer to /device/{id}/row -- one card, swapped as outerHTML."""
+    node = _one(request, device_id)
+    if node is None:
+        return HTMLResponse("", status_code=404)
+    ctx = base_context(request, "devices")
+    ctx["node"] = node
+    return templates.TemplateResponse(request, "device_card.html", ctx)
+
+
 @router.post("/device/{device_id}/probe", response_class=HTMLResponse)
 async def device_probe(request: Request, device_id: str):
     """Re-probe one device.
@@ -397,6 +453,10 @@ async def device_probe(request: Request, device_id: str):
     await app.probe.probe(device)
     if app.probe.status(device_id).online:
         app.probe.probe_space_soon(device, force=True)
+    # The card's Retry swaps this into #card-<id> and the row's into #node-<id>. Answering
+    # with a row either way put one table row where every card had been.
+    if resolved_view(request) == "grid":
+        return await device_card(request, device_id)
     return await device_row(request, device_id)
 
 
@@ -411,7 +471,8 @@ async def devices_rescan(request: Request, q: str | None = None):
     app.probe.rescan_soon(force=True)
     ctx = devices_context(request, q)
     ctx["rescanning"] = True
-    return templates.TemplateResponse(request, "device_rows.html", ctx)
+    template = "device_grid.html" if ctx["view"] == "grid" else "device_rows.html"
+    return templates.TemplateResponse(request, template, ctx)
 
 
 def _shell(argv: list[str]) -> str:
@@ -617,6 +678,10 @@ async def device_test(request: Request, device_id: str):
             # the last poll's.
             "node": _one(request, device_id),
             "oob": True,
+            # Picks which shape the oob include emits. Without it the dialog refreshed a
+            # #node-<id> that grid mode does not render, and htmx dropped the swap
+            # silently -- the card kept the figures this test had just contradicted.
+            "view": resolved_view(request),
         }
     )
     return templates.TemplateResponse(request, "dialogs/test_result.html", ctx)

@@ -12,6 +12,7 @@ FRAGMENTS = [
     "/devices/rows",
     "/devices/grid",
     "/devices/status",
+    "/device/kobo/card",
     "/lib/pane",
     "/lib/list",
     "/lib/selection",
@@ -87,6 +88,79 @@ async def test_devices_filter(client):
     r = await client.get("/devices/rows", params={"q": "phone"})
     assert "Test Phone" in r.text
     assert "Test Kobo" not in r.text
+
+
+# ------------------------------------------------- the remembered devices layout --
+#
+# The toggle is a link, so the choice lived only in the query string, and base.html's
+# rail points at a bare /devices: picking GRID and walking to Library came back to TABLE.
+# A cookie carries it, and these pin both that and the fragments that have to agree with
+# the branch on screen -- #device-rows is the cards container in grid mode, so a table-only
+# fragment aimed at it replaced every card with rows.
+
+
+async def test_the_devices_view_survives_a_trip_to_the_library(client):
+    chosen = await client.get("/devices", params={"view": "grid"})
+    assert chosen.cookies["libnodes_view"] == "grid"
+
+    await client.get("/library")
+    back = await client.get("/devices")  # the rail link: no query at all
+    assert 'hx-get="/devices/grid"' in back.text
+    assert 'hx-get="/devices/rows"' not in back.text
+
+
+async def test_a_bare_devices_page_still_defaults_to_table(client):
+    r = await client.get("/devices")
+    assert 'hx-get="/devices/rows"' in r.text
+    assert 'hx-get="/devices/grid"' not in r.text
+
+
+async def test_a_bare_devices_page_does_not_pin_its_own_default(client):
+    """Arriving by the rail must not write the preference it just guessed.
+
+    With `view: str = "table"` the handler could not tell the rail link from a click on
+    TABLE, so the first bare /devices would have frozen TABLE in the cookie for good.
+    """
+    r = await client.get("/devices")
+    assert "libnodes_view" not in r.cookies
+    assert "libnodes_view" not in r.headers.get("set-cookie", "")
+
+
+async def test_an_unknown_view_falls_back_without_writing_a_cookie(client):
+    r = await client.get("/devices", params={"view": "nonsense"})
+    assert 'hx-get="/devices/rows"' in r.text
+    assert "libnodes_view" not in r.headers.get("set-cookie", "")
+
+
+async def test_a_grid_page_keeps_its_cards_when_filtered_or_rescanned(client):
+    client.cookies.set("libnodes_view", "grid")
+
+    page = await client.get("/devices")
+    assert 'hx-get="/devices/grid"' in page.text, "the filter box still names the table"
+
+    rescan = await client.post("/devices/rescan")
+    assert 'class="cards"' in rescan.text
+    assert 'class="trow' not in rescan.text
+    # ...and the follow-up that collects the sweep has to come back as cards too.
+    assert 'hx-get="/devices/grid"' in rescan.text
+
+
+async def test_a_retry_in_grid_replaces_one_card(client):
+    client.cookies.set("libnodes_view", "grid")
+    r = await client.post("/device/kobo/probe")
+    assert 'id="card-kobo"' in r.text
+    assert 'id="node-kobo"' not in r.text
+
+
+async def test_a_retry_in_table_still_replaces_one_row(client):
+    r = await client.post("/device/kobo/probe")
+    assert 'id="node-kobo"' in r.text
+    assert 'id="card-kobo"' not in r.text
+
+
+async def test_switching_view_keeps_the_filter(client):
+    r = await client.get("/devices", params={"q": "phone", "view": "table"})
+    assert "/devices?view=grid&amp;q=phone" in r.text
 
 
 async def test_library_lists_real_entries(client):

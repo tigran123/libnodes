@@ -1,101 +1,28 @@
-{# Card variant of the devices table. Same states, same colours, different geometry. #}
+{# Card variant of the devices table. Same states, same colours, different geometry.
+   Polled every 10s and swapped wholesale, exactly as device_rows.html is. #}
+{% if rescanning %}
+  {# The sweep runs in the background; collect its result once, shortly. #}
+  <div hx-get="/devices/grid{% if q %}?q={{ q|urlencode }}{% endif %}"
+       hx-trigger="load delay:2.5s"
+       hx-target="#device-rows"
+       hx-swap="innerHTML"
+       style="display:none"></div>
+{% endif %}
 <div class="cards">
 {% for node in nodes %}
-  <div class="card {{ 'is-active' if node.state == 'syncing' }}{{ 'is-offline' if node.offline }}"
-       id="card-{{ node.device.id }}">
-
-    <div class="card-head">
-      <span class="dot {{ node.dot_class }}"></span>
-      <span class="card-title">{{ node.device.name }}</span>
-      {% if node.state == 'syncing' %}
-        <span class="badge badge-accent">{{ '%.0f'|format(node.job.pct) }}%</span>
-      {# The badge names the state, which is all it can honestly do in this space; the
-         card has no room for the error, so it goes in the tooltip rather than nowhere. #}
-      {% elif node.offline %}
-        <span class="badge badge-err" title="{{ node.reach.error }}: {{ node.reach_note }}">OFFLINE</span>
-      {% elif node.sleeping %}
-        <span class="badge badge-warn" title="{{ node.reach.error }}: {{ node.reach_note }}">ASLEEP</span>
-      {% else %}
-        <span class="badge">{{ node.device.type|upper }}</span>
-      {% endif %}
-      {# Outside the branch above, not inside it: the state badge replaces the type badge,
-         but what kind of node this is does not stop being true because it is asleep — and
-         a card whose MIRROR came and went with reachability would be the more confusing
-         of the two. #}
-      {% if node.device.is_mirror %}
-        <span class="badge" title="sync_mode: mirror — replicates the library verbatim and
-                                   prunes with --delete">MIRROR</span>
-      {% endif %}
-    </div>
-
-    <div class="mono nowrap">{{ node.device.host }}:{{ node.device.effective_port }}</div>
-    <div class="mono t-muted nowrap"><span title="{{ node.device.target }}">{{ node.device.display_target }}</span></div>
-
-    <div>
-      <div class="stat" style="line-height:1.4">
-        <span>{{ node.last_sync|reltime }}</span>
-        {# used / total and `.track`, both matching device_row.html: same datum, same
-           reading, same colour. The card used `.disk-bar`, whose fill is --faint, beside
-           a table drawing the identical number in --accent. #}
-        <b{% if node.used is not none %} title="{{ node.used|hsize }} used · {{ node.free|hsize }} free of {{ node.capacity|hsize }}"{% endif %}>
-          {%- if node.used is not none -%}
-            {{ node.used|hsize_short }}{% if node.capacity %} / {{ node.capacity|hsize_short }}{% endif %}
-          {%- else -%}—{%- endif -%}
-        </b>
-      </div>
-      <div class="track track-2 track-disk" style="margin-top:7px">
-        <i style="width:{{ '%.1f'|format(node.used_pct) }}%"></i>
-      </div>
-
-      {# Same age the table's LAST SEEN column prints, from the same property: a card and a
-         row showing the same figures must agree about how old they are. #}
-      <div class="stat" style="line-height:1.4;margin-top:7px">
-        <span class="t-muted">seen</span>
-        <b title="{{ node.seen_note }}">{{ node.seen_at|reltime }}</b>
-      </div>
-
-      {# Battery, on the same terms as the table cell: shown only for a device that
-         declares where to read it, same thresholds, same tint. #}
-      {% if node.has_battery %}
-        <div class="stat" style="line-height:1.4;margin-top:7px">
-          <span class="t-muted">battery</span>
-          <b{% if node.battery_note %} title="{{ node.battery_note }}"{% endif %}>
-            {%- if node.battery.percent is not none -%}
-              {% if node.bolt_class %}{% include "charging_bolt.html" %}{% endif %}{{ node.battery.percent }}%
-            {%- else -%}—{%- endif -%}
-          </b>
-        </div>
-        {% if node.battery.percent is not none %}
-          <div class="track track-2 {{ node.battery_class }}" style="margin-top:7px">
-            <i style="width:{{ '%.1f'|format(node.battery_pct) }}%"></i>
-          </div>
-        {% endif %}
-      {% endif %}
-    </div>
-
-    <div class="card-actions">
-      {% if node.state == 'syncing' %}
-        <button class="btn" hx-get="/jobs/{{ node.job.id }}/log/view"
-                hx-target="#notices" hx-swap="beforeend">Open log</button>
-        <button class="btn btn-danger"
-                hx-post="/jobs/{{ node.job.id }}/abort"
-                hx-swap="none" hx-disabled-elt="this">Abort</button>
-      {% elif not node.online %}
-        <button class="btn"
-                hx-post="/device/{{ node.device.id }}/probe"
-                hx-target="#device-rows" hx-swap="innerHTML"
-                hx-disabled-elt="this">Retry</button>
-        <button class="btn is-disabled" disabled
-                title="not answering — Retry first">Actions</button>
-      {% else %}
-        <button class="btn btn-default"
-                hx-get="/device/{{ node.device.id }}/menu"
-                hx-target="#notices" hx-swap="beforeend">Actions</button>
-      {% endif %}
-    </div>
-
-  </div>
+  {% include "device_card.html" %}
 {% else %}
-  <div class="card"><span class="t-dim">No devices configured.</span></div>
+  {# Filtering reaches the grid too, so the empty state has to tell a filter that matched
+     nothing from a fleet with nothing in it -- the same two cases device_rows.html names. #}
+  <div class="card">
+    <span class="t-dim">
+      {% if q %}
+        No device matches <span class="mono">{{ q }}</span>.
+      {% else %}
+        No devices configured yet — add entries to
+        <span class="mono">{{ settings.resolved_devices_file }}</span>.
+      {% endif %}
+    </span>
+  </div>
 {% endfor %}
 </div>

@@ -508,7 +508,9 @@ async def test_both_views_draw_the_same_bolt(client, app):
     """One include, so a bolt cannot come to mean different things in TABLE and GRID."""
     from libnodes.templating import TEMPLATES_DIR
 
-    for name in ("device_row.html", "device_grid.html"):
+    # device_card.html, not device_grid.html: the card body moved out of the grid's loop
+    # into its own fragment so /device/{id}/card can answer a Retry with one card.
+    for name in ("device_row.html", "device_card.html"):
         text = (TEMPLATES_DIR / name).read_text(encoding="utf-8")
         assert '{% include "charging_bolt.html" %}' in text, name
         assert "<svg" not in text, f"{name} drew its own bolt instead of including it"

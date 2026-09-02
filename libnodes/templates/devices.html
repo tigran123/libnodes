@@ -28,17 +28,24 @@
     <div class="titlebar-right">
       <label class="field" style="width:230px">
         <span class="slash">/</span>
+        {# The fragment has to match the branch on screen: #device-rows is the cards
+           container in grid mode, so a fixed /devices/rows swapped table rows into it. #}
         <input type="search" name="q" value="{{ q }}"
                placeholder="filter devices, types, addresses"
-               hx-get="/devices/rows"
+               hx-get="/devices/{{ 'grid' if view == 'grid' else 'rows' }}"
                hx-trigger="keyup changed delay:120ms, search"
                hx-target="#device-rows"
                hx-swap="innerHTML">
       </label>
 
+      {# Naming the view explicitly is what writes the cookie -- a bare /devices reads it
+         and writes nothing, so arriving by the rail cannot pin a default. `q` rides along
+         because switching layout is not a request to forget what you filtered for. #}
       <div class="segmented">
-        <a class="{{ 'is-active' if view != 'grid' }}" href="/devices?view=table">TABLE</a>
-        <a class="{{ 'is-active' if view == 'grid' }}" href="/devices?view=grid">GRID</a>
+        <a class="{{ 'is-active' if view != 'grid' }}"
+           href="/devices?view=table{% if q %}&amp;q={{ q|urlencode }}{% endif %}">TABLE</a>
+        <a class="{{ 'is-active' if view == 'grid' }}"
+           href="/devices?view=grid{% if q %}&amp;q={{ q|urlencode }}{% endif %}">GRID</a>
       </div>
 
       <a class="btn btn-primary" href="/device/new">+ Add device</a>
