@@ -261,6 +261,16 @@
 html {
   /* See --scale. On the root so every length below it scales together. */
   zoom: var(--scale);
+
+  /* Chrome on Android inflates the text of blocks it takes for a page's main column,
+     and it does it per block rather than per page: on the Nexus 10 the Library's SIZE
+     and MODIFIED cells came out around half again the size of the NAME beside them, so
+     every "2026-05-20" wrapped to two lines while "Art/" did not. It is not a zoom -- the
+     row heights doubled around text the stylesheet had sized to fit. --scale is how this
+     app decides how big it should be, and the autosizer is a second opinion on top of it.
+     No-op everywhere else; there is nothing to switch off on a desktop. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 html,
@@ -1443,13 +1453,20 @@ ul {
 
 /* minmax for the same reason as .device-grid. The checkbox column stays fixed: it holds
    an 11px box and has nothing to give. */
+/* SIZE and MODIFIED carry a formatted string of known width, so their floors are that
+   string and not a guess: `hsize` emits up to "136.1 MB" and `isodate` always ten
+   characters, measured at 55px and 69px in 11.5px JetBrains Mono, plus 2x12px of padding. At the old
+   64/84 floors both fitted at their 84/108 maxima and neither fitted once the tracks were
+   squeezed -- measured at 980 CSS px, the width Chrome's "Desktop site" gives a Nexus 10,
+   where "136.1 MB" broke after the number. Every other column holds elements that can
+   shrink or elide; these two hold text that cannot. */
 .file-grid {
   grid-template-columns:
     26px
     minmax(140px, 1fr)
     minmax(60px, 76px)
-    minmax(64px, 84px)
-    minmax(84px, 108px)
+    minmax(82px, 84px)
+    minmax(96px, 108px)
     minmax(100px, 150px)
     minmax(140px, 190px);
 }
@@ -2662,6 +2679,98 @@ a.file-name:hover {
     text-decoration: underline;
     text-decoration-color: var(--border-hi);
     text-underline-offset: 3px;
+  }
+}
+
+/* Tablet zoom -------------------------------------------------------------- *
+ *
+ * A 10" tablet has roughly twice a monitor's CSS pixels per inch, so every length in this
+ * file renders at about half the size it was drawn at. Measured on the Nexus 10 (2560x1600
+ * over 8.53 x 5.33in): device-width portrait is 800 CSS px across 5.33in and landscape
+ * 1280 across 8.53in -- 150 per inch either way, against a desktop monitor's ~96. Chrome's
+ * "Desktop site" is worse, not better: it widens the layout viewport to 980 CSS px on that
+ * same 5.33in edge, 184 per inch, and lands 8px above the 972px breakpoint that would have
+ * taken the rail out of the flow. So the tablet got the desktop layout at half scale, with
+ * 190px of permanent nav still in it -- three card columns of 227px on a screen that had
+ * room for two comfortable ones.
+ *
+ * Two clauses, because neither alone covers both modes. `hover: none and pointer: coarse`
+ * is a real touch screen; the pointer half is not redundant, because a browser with no
+ * pointing device at all also reports `hover: none` -- headless chromium does, measured, so
+ * without it every narrow tools/shot.py capture would render this layout instead of the
+ * desktop one it was asked for. The `min-resolution` clause is the fallback for "Desktop
+ * site", which may hand a tablet a mouse's media features along with the wider viewport:
+ * the Nexus 10 is 2dppx natively and 1.63 under it. That clause is deliberately broad and
+ * will also catch a high-DPI laptop windowed below 1280 -- acceptable here, where the app
+ * is one person's on a LAN and a tablet that misses the zoom costs more than a desktop
+ * window that gains it. Width alone would be wrong either way: a window dragged to 1100px
+ * is still 96 per inch and must not be zoomed.
+ *
+ * 1280 is the ceiling because that is where the device row stops stacking, and its nine
+ * track floors (1022px) do not fit a zoomed panel above it. Below the ceiling everything
+ * still fits: the file grid's floors are 614px against 980/1.35 - 24 = 702px of panel, so
+ * the Library stays a table -- and the file table is the only navigator there is. */
+@media (max-width: 1280px) and (hover: none) and (pointer: coarse),
+       (max-width: 1280px) and (min-resolution: 1.5dppx) {
+  :root {
+    --scale: 1.35;
+  }
+}
+
+/* The zoom costs horizontal room and the rail is what pays for it -- 190px of nav that a
+   tablet reaches by the toggle instead, which is exactly what the 972px block already does
+   for narrower screens. This repeats those rules rather than widening that block's query,
+   because only some of it belongs here: this band wants the rail gone and the toolbar
+   wrapped, but two card columns where a phone wants one.
+   `test_the_tablet_band_hides_the_rail_the_way_the_narrow_one_does` pins the repeat.
+
+   The two changes are a wash on content width and pure gain on type: 980/1.08 - 190 - 36 =
+   681 scaled px of cards before, 980/1.35 - 36 = 690 after, at a third the size again. */
+@media (min-width: 973px) and (max-width: 1280px) and (hover: none) and (pointer: coarse),
+       (min-width: 973px) and (max-width: 1280px) and (min-resolution: 1.5dppx) {
+  .rail {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 45;
+    transform: translateX(-100%);
+    transition: transform 0.15s ease-out;
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.6);
+  }
+
+  .shell.rail-open .rail {
+    transform: none;
+  }
+
+  .rail-toggle {
+    display: inline-flex;
+    font-size: 15px;
+    color: var(--ink-3);
+    padding: 4px 8px;
+  }
+
+  /* Same reason as the 972px block: the segmented control falls off the edge otherwise. */
+  .titlebar {
+    flex-wrap: wrap;
+    row-gap: 10px;
+  }
+
+  .titlebar-right {
+    margin-left: 0;
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  /* Not the 972px block's `flex: 1 1 100%`: that gives a phone's filter its own row, and
+     here the row has 690px for a 230px field, the segmented control and one button. */
+  .titlebar-right .field {
+    flex: 1 1 240px;
+    width: auto !important;
+  }
+
+  /* Two, not the phone's one: 690 scaled px is 345 per card, within a hair of the 369 a
+     1440px desktop gives them. Three was the 227px the screenshot was taken of. */
+  .cards {
+    grid-template-columns: repeat(2, 1fr);
   }
 }
 

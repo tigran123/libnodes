@@ -294,6 +294,33 @@ are listed.
   it silently wraps the last cell onto a second line. `.subrow` is the one top-level div
   that is not a column and says so with `grid-column: 1 / -1`. Pinned by
   `tests/test_battery.py::test_the_grid_declares_a_track_for_every_cell`.
+- **`--scale` has a second value, and the tablet regime is a third layout.** A 10" tablet
+  is ~150 CSS px per inch against a monitor's ~96 — 184 under Chrome's "Desktop site",
+  which widens the layout viewport to 980 CSS px and lands 8px above the 972px breakpoint
+  that would have taken the rail out of the flow. So the fleet's own tablets got the
+  desktop layout at half size with 190px of nav still in it. `app.css` raises `--scale` to
+  1.35 for touch screens up to 1280px and repeats the 972px block's rail rules for the band
+  above 972, where the rail is still in flow; the two are a wash on content width and a
+  third larger on type. Three things are load-bearing and each has a test: the repeat can
+  drift (`test_the_tablet_band_hides_the_rail_the_way_the_narrow_one_does`), the zoom must
+  leave the Library a table because the file table is the only navigator there is
+  (`::test_the_tablet_zoom_leaves_the_library_a_table`), and 1280 is the ceiling because
+  above it the device row unstacks and its 1022px of track floors will not fit a zoomed
+  panel (`::test_the_tablet_band_stops_where_the_device_row_stops_stacking`). The touch
+  clause is `hover: none` **and** `pointer: coarse`: a browser with no pointing device at
+  all also reports `hover: none` — headless chromium does, measured — so without the
+  pointer half every narrow `tools/shot.py` capture renders the tablet layout instead of
+  the desktop one it was asked for.
+  Two things ride with the zoom, and both are invisible from this host. Chrome on Android
+  inflates text per block rather than per page, so the Library's SIZE and MODIFIED came out
+  half again the size of the NAME beside them and wrapped — `text-size-adjust: 100%` on
+  `html` is the off switch, pinned by
+  `::test_the_stylesheet_switches_off_chromes_text_autosizer`. And those two columns hold a
+  formatted string that can only break, never elide, so their track floors are that string
+  measured — 55px for `136.1 MB`, 69px for `2026-05-20` in 11.5px JetBrains Mono, plus
+  2x12px of padding. They fitted at their maxima and wrapped only once squeezed, which is
+  why a desktop showed nothing wrong. Pinned by
+  `::test_the_size_and_date_columns_cannot_wrap`.
 - **`#device-rows` is two different containers, so anything aimed at it must know which.**
   `devices.html` renders *either* the cards div or the rows div and gives both that id, and
   the Devices layout is now remembered in the `libnodes_view` cookie (`routes/devices.py`),

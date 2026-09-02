@@ -1043,3 +1043,142 @@ def test_the_file_grid_stacks_before_it_runs_out_of_panel():
     # A Nexus 10 in landscape is 1280 CSS px and used to get the stacked cards, because
     # the breakpoint was set when a 300px tree stood beside this table.
     assert stack < 1280, f"1280px landscape still gets cards at a {stack}px stack"
+
+
+# ----------------------------------------------------- the tablet's zoom --
+
+
+def _media_block(css: str, needle: str) -> str:
+    """The body of the first @media block whose query contains `needle`."""
+    open_brace = css.index("{", css.index(needle))
+    depth, i = 1, open_brace + 1
+    while depth:
+        if css[i] == "{":
+            depth += 1
+        elif css[i] == "}":
+            depth -= 1
+        i += 1
+    return css[open_brace + 1 : i - 1]
+
+
+def _rule(block: str, selector: str) -> str:
+    """One rule's declarations, whitespace-normalised, for comparing two copies."""
+    body = block.split(selector + " {")[1].split("}")[0]
+    return " ".join(body.split())
+
+
+def test_the_tablet_band_hides_the_rail_the_way_the_narrow_one_does():
+    """The tablet band repeats the 972px block's rail rules instead of widening its query,
+    because only some of that block belongs to a tablet -- it wants two card columns where
+    a phone wants one. A repeat can drift, so it is pinned: an off-canvas rail that opens
+    in one regime and not the other is a nav that half works, and nothing else would say so.
+    """
+    css = (ROOT / "libnodes" / "static" / "app.css").read_text()
+
+    narrow = _media_block(css, "@media (max-width: 972px) {\n  body")
+    tablet = _media_block(css, "@media (min-width: 973px) and (max-width: 1280px)")
+
+    for selector in (".rail", ".shell.rail-open .rail", ".rail-toggle"):
+        assert _rule(narrow, selector) == _rule(tablet, selector), selector
+
+    # The half that must differ, and the reason the query was not simply widened.
+    assert _rule(narrow, ".cards") == "grid-template-columns: 1fr;"
+    assert _rule(tablet, ".cards") == "grid-template-columns: repeat(2, 1fr);"
+
+
+def test_the_tablet_zoom_leaves_the_library_a_table():
+    """The file table is the only navigator, so the zoom must not over-constrain it.
+
+    The tablet band is above 972px, where the file grid has not stacked -- so its seven
+    track floors have to fit a panel that the zoom has made narrower. They do, and the
+    margin is what this checks: at the band's narrow end the rail is already out of the
+    flow, so the panel is `viewport / --scale - 2x12` of .lib-body padding.
+    """
+    css = (ROOT / "libnodes" / "static" / "app.css").read_text()
+
+    block = css.split(".file-grid {")[1].split("}")[0]
+    fixed = int(re.search(r"grid-template-columns:\s*\n?\s*(\d+)px", block).group(1))
+    floor = fixed + sum(int(n) for n in re.findall(r"minmax\((\d+)px", block))
+
+    tablet = _media_block(css, "@media (max-width: 1280px) and (hover: none)")
+    scale = float(re.search(r"--scale:\s*([\d.]+)", tablet).group(1))
+    assert scale > float(re.search(r"--scale:\s*([\d.]+)", css).group(1)), (
+        "the tablet block no longer zooms anything"
+    )
+
+    needed = (floor + 2 * 12) * scale
+    assert needed <= 973, (
+        f"{floor}px of track floors need {needed:.0f}px at {scale}x zoom, but the tablet "
+        f"band starts at 973px — the Library would have no working layout on a tablet"
+    )
+
+
+def test_the_tablet_band_stops_where_the_device_row_stops_stacking():
+    """The zoom's ceiling is not a taste: above it the device row is a single line again,
+    and its nine track floors (1022px) do not fit a panel the zoom has shrunk. Holding the
+    two numbers equal is what keeps the band entirely inside the stacked regime.
+    """
+    css = (ROOT / "libnodes" / "static" / "app.css").read_text()
+
+    stack = int(
+        re.search(r"@media \(max-width: (\d+)px\) \{\s*\.thead\.device-grid", css).group(1)
+    )
+    ceiling = int(
+        re.search(r"@media \(max-width: (\d+)px\) and \(hover: none\)", css).group(1)
+    )
+    assert ceiling <= stack, (
+        f"the tablet zooms up to {ceiling}px but the device row stops stacking at {stack}px"
+    )
+
+
+def test_the_size_and_date_columns_cannot_wrap():
+    """SIZE and MODIFIED hold a formatted string of known width, so their track floors are
+    that string rather than a guess.
+
+    Every other column holds something that can shrink or elide; these two hold text that
+    can only break. At the old 64/84 floors both fitted at their 84/108 maxima and neither
+    fitted once the tracks were squeezed -- so the columns were correct on a desktop and
+    broke at 980 CSS px, the width Chrome's "Desktop site" hands a Nexus 10.
+
+    The widths are measured, not derived: "136.1 MB" is 55px and "2026-05-20" is 69px in
+    the 11.5px JetBrains Mono these cells use. The font is self-hosted (static/fonts), so
+    that advance is the same on every device the fleet has.
+    """
+    css = (ROOT / "libnodes" / "static" / "app.css").read_text()
+
+    block = css.split(".file-grid {")[1].split("}")[0]
+    floors = [int(n) for n in re.findall(r"minmax\((\d+)px", block)]
+    # NAME, FORMAT, SIZE, MODIFIED, PRESENT ON, PUSH -- the 26px checkbox carries no minmax.
+    _, _, size, modified, _, _ = floors
+
+    padding = css.split(".file-grid > * {")[1].split("}")[0]
+    side = int(re.search(r"padding:\s*\d+px\s+(\d+)px", padding).group(1))
+
+    for name, floor, text in (("SIZE", size, 55), ("MODIFIED", modified, 69)):
+        needed = text + 2 * side
+        assert floor >= needed, (
+            f"{name}'s widest value needs {needed}px but the track floors at {floor}px — "
+            f"it will break onto a second line wherever the grid is squeezed"
+        )
+
+
+def test_the_stylesheet_switches_off_chromes_text_autosizer():
+    """Chrome on Android inflates the text of blocks it takes for a page's main column,
+    per block rather than per page -- so the Library's SIZE and MODIFIED came out half
+    again the size of the NAME beside them and wrapped, while the desktop stayed perfect.
+
+    --scale is how this app decides how big it should be; the autosizer is a second opinion
+    on top of it. There is no way to see this one from here: it needs the device, which is
+    exactly why it is pinned rather than left to be noticed again.
+    """
+    css = (ROOT / "libnodes" / "static" / "app.css").read_text()
+
+    root = css.split("html {")[1].split("}")[0]
+    # The lookbehind matters: the prefixed name *contains* the unprefixed one, so a plain
+    # substring test for the standard property passes on the vendored one alone.
+    assert re.search(r"(?<![-\w])text-size-adjust:\s*100%", root), (
+        "the standard property is missing"
+    )
+    assert re.search(r"-webkit-text-size-adjust:\s*100%", root), (
+        "the prefixed property is missing, and it is the one Chrome honours"
+    )
