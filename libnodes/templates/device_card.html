@@ -83,21 +83,37 @@
       <button class="btn btn-danger"
               hx-post="/jobs/{{ node.job.id }}/abort"
               hx-swap="none" hx-disabled-elt="this">Abort</button>
-    {% elif not node.online %}
-      {# #card-<id>, not #device-rows: that id belongs to the cards container here, so
-         innerHTML put the one row the probe answered with where every card had been.
-         Mirrors the table's own Retry in device_row.html. #}
-      <button class="btn"
-              hx-post="/device/{{ node.device.id }}/probe"
-              hx-target="#card-{{ node.device.id }}"
-              hx-swap="outerHTML"
-              hx-disabled-elt="this">Retry</button>
-      <button class="btn is-disabled" disabled
-              title="not answering — Retry first">Actions</button>
     {% else %}
-      <button class="btn btn-default"
-              hx-get="/device/{{ node.device.id }}/menu"
-              hx-target="#notices" hx-swap="beforeend">Actions</button>
+      {# Test sits in the card for the same reason it sits in the row: it is the only
+         action that changes nothing, so it needs no command strip to read first, and it
+         stays enabled when the dot is red because that is precisely when you want it.
+         See device_row.html for the full reasoning. It was missing here from the day the
+         cards were written -- the grid offered every *writing* action and withheld the
+         one that is safe, so a red node could be retried but not diagnosed without
+         switching to TABLE. `test_the_card_offers_every_action_the_row_does` pins it. #}
+      <button class="btn"
+              hx-post="/device/{{ node.device.id }}/test"
+              hx-target="#notices"
+              hx-swap="beforeend"
+              hx-disabled-elt="this"
+              title="{{ node.test_command }}">Test</button>
+
+      {% if not node.online %}
+        {# #card-<id>, not #device-rows: that id belongs to the cards container here, so
+           innerHTML put the one row the probe answered with where every card had been.
+           Mirrors the table's own Retry in device_row.html. #}
+        <button class="btn"
+                hx-post="/device/{{ node.device.id }}/probe"
+                hx-target="#card-{{ node.device.id }}"
+                hx-swap="outerHTML"
+                hx-disabled-elt="this">Retry</button>
+        <button class="btn is-disabled" disabled
+                title="not answering — Retry first">Actions</button>
+      {% else %}
+        <button class="btn btn-default"
+                hx-get="/device/{{ node.device.id }}/menu"
+                hx-target="#notices" hx-swap="beforeend">Actions</button>
+      {% endif %}
     {% endif %}
   </div>
 

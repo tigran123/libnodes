@@ -1182,3 +1182,26 @@ def test_the_stylesheet_switches_off_chromes_text_autosizer():
     assert re.search(r"-webkit-text-size-adjust:\s*100%", root), (
         "the prefixed property is missing, and it is the one Chrome honours"
     )
+
+
+def test_the_card_offers_every_action_the_row_does():
+    """TABLE and GRID are two renderings of one fleet, not two feature sets.
+
+    The card was written without Test and stayed that way: the grid offered every action
+    that *writes* -- Full Sync, Adopt, Scan, all behind Actions -- and withheld the only
+    one that changes nothing. So a red node in GRID could be retried but not diagnosed
+    without switching back to TABLE, which is the one moment the diagnosis is wanted.
+    Compared by endpoint rather than by label, because that is what an action *is*.
+    """
+    templates = ROOT / "libnodes" / "templates"
+
+    def endpoints(name: str) -> set[str]:
+        text = (templates / name).read_text(encoding="utf-8")
+        return set(re.findall(r'hx-(?:post|get)="([^"]+)"', text))
+
+    row = endpoints("device_row.html")
+    card = endpoints("device_card.html")
+
+    assert row, "device_row.html has no actions at all — the regex has stopped matching"
+    assert row - card == set(), f"the card cannot reach {sorted(row - card)}"
+    assert card - row == set(), f"the row cannot reach {sorted(card - row)}"

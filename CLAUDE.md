@@ -339,6 +339,11 @@ are listed.
   `::test_a_retry_in_grid_replaces_one_card`. A bare `/devices` must keep writing no
   cookie — `::test_a_bare_devices_page_does_not_pin_its_own_default` — or the rail link
   freezes whichever default it just guessed.
+  TABLE and GRID are two renderings of one fleet, not two feature sets, and the card was
+  written without Test — it offered every action that *writes*, all behind Actions, and
+  withheld the only one that changes nothing, so a red node in GRID could be retried but
+  not diagnosed. `test_the_card_offers_every_action_the_row_does` compares the two
+  templates by endpoint rather than by label, because that is what an action is.
 - **`Settings.concurrency` defaults to 1, and the default is not the deployment.** The 1 is
   a property of an unknown host: on the Pi 3 the NIC shared the USB 2.0 bus with the library
   disk, so two transfers went half as fast each. pi5 puts the library on PCIe NVMe and the
