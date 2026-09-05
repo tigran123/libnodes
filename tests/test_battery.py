@@ -1131,6 +1131,130 @@ def test_the_tablet_band_stops_where_the_device_row_stops_stacking():
     )
 
 
+def test_the_stacked_row_pairs_its_cells():
+    """The stacked device row is the fallback for every narrow screen, not a phone layout.
+
+    Nine label/value lines per device is what a 27" 2.5K monitor turned portrait shows --
+    1152 CSS px at 125%, well under the 1348px a single-line row needs -- and nine devices
+    then go past a 2560px screen one at a time. Two-up halves it.
+
+    The width it starts at is the row's own arithmetic, and the first attempt was not: 768
+    was picked as a tidy tablet number, and a Galaxy Tab S4 turned out to report 700 CSS px
+    where a Nexus 10 of identical size and resolution reports 800 -- Samsung's Screen zoom
+    moves the density, so the breakpoint fell between two tablets of the same panel. So it is
+    derived from the widest thing in the row that has no tooltip to fall back on: the address,
+    124px at 11.5px mono. A column is that plus the label, the gap and the cell's side
+    padding, and two of them plus .view's padding have to fit the narrowest regime that can
+    reach this rule -- a touch screen under 972px, where the rail is already out of flow and
+    --scale is 1.35.
+    """
+    css = (ROOT / "libnodes" / "static" / "app.css").read_text()
+
+    start = int(
+        re.search(r"@media \(min-width: (\d+)px\) and \(max-width: 1280px\)", css).group(1)
+    )
+    two_up = _media_block(css, f"@media (min-width: {start}px) and (max-width: 1280px)")
+    assert "grid-template-columns: 1fr 1fr;" in two_up
+
+    # The Actions cell floors at 320px -- failure text plus three buttons -- so it takes the
+    # whole row rather than half of one, exactly as .subrow does.
+    assert "grid-column: 1 / -1;" in _rule(
+        two_up, ".trow.device-grid .cell-actions,\n  .trow.jobs-grid .cell-actions"
+    )
+
+    stacked = _media_block(css, "@media (max-width: 1280px) {")
+    gap = int(re.search(r"> \* \{[^}]*gap: (\d+)px", stacked, re.S).group(1))
+    side = int(re.search(r"> \* \{[^}]*padding: \d+px (\d+)px", stacked, re.S).group(1))
+
+    # Two-up narrows the label, because 92px was never its text: "LAST SEEN" is the widest at
+    # 60.7 layout px, measured in the 9.5px mono these labels use. Anything under that wraps
+    # the label onto a second line and grows every row.
+    wide = int(re.search(r"::before \{[^}]*width: (\d+)px", stacked, re.S).group(1))
+    label = int(re.search(r"::before,[^{]*\{\s*width: (\d+)px", two_up).group(1))
+    assert 61 <= label <= wide, f"a {label}px label cannot hold LAST SEEN's 60.7px"
+
+    scale = float(
+        re.search(r"--scale:\s*([\d.]+)",
+                  _media_block(css, "@media (max-width: 1280px) and (hover: none)")).group(1)
+    )
+    narrow = _media_block(css, "@media (max-width: 972px) {\n  body")
+    pad = int(re.search(r"\.lib-body,\n  \.view \{\s*padding-left: (\d+)px", narrow).group(1))
+
+    column = label + gap + 2 * side + 124
+    panel = start / scale - 2 * pad
+    assert panel >= 2 * column, (
+        f"two {column}px columns need {2 * column:.0f}px, but a touch screen at the {start}px "
+        f"breakpoint has {panel:.0f}px — the address would clip with nothing to recover it"
+    )
+    # ...and the tablet this was measured on has to be inside the band, not beside it.
+    assert start <= 700, f"a Galaxy Tab S4 is 700 CSS px and the band starts at {start}"
+
+
+def test_the_touch_minimum_survives_the_zoom():
+    """44px is a physical rule -- 0.27" is what a thumb needs -- and the zoom multiplies it.
+
+    A 10" tablet in portrait is 800 CSS px, so it lands in the 972px block written for a
+    phone while --scale 1.35 is still on: 44 x 1.35 = 59.4 CSS px, 0.41" on a screen with
+    143.5 CSS px to the inch. The touch block divides the zoom back out, and that this
+    product still lands on 44 is the entire point of the change -- neither number means
+    anything without the other, and nothing else would notice either one drifting.
+    """
+    css = (ROOT / "libnodes" / "static" / "app.css").read_text()
+
+    narrow = _media_block(css, "@media (max-width: 972px) {\n  body")
+    touch = _media_block(css, "@media (max-width: 972px) and (hover: none)")
+    scale = float(
+        re.search(r"--scale:\s*([\d.]+)",
+                  _media_block(css, "@media (max-width: 1280px) and (hover: none)")).group(1)
+    )
+
+    # var(--bar) elsewhere in the narrow block carries no px literal, so the first of these
+    # is the touch-target rule in both blocks.
+    base = int(re.search(r"min-height: (\d+)px", narrow).group(1))
+    shrunk = int(re.search(r"min-height: (\d+)px", touch).group(1))
+
+    assert abs(shrunk * scale - base) <= 1, (
+        f"{shrunk}px x {scale} = {shrunk * scale:.1f}px, but the physical target is {base}px"
+    )
+    # The type is not what was oversized: it is already smaller here than on a desktop.
+    assert "font-size" not in touch, "the touch block started resizing text"
+
+
+def test_a_tablet_in_portrait_fits_two_cards():
+    """One card column across a 10" tablet was half the screen empty.
+
+    The floor is the card's own, measured against the running service by forcing the columns
+    narrower and narrower: content first overflows the box at 210px and the Test/Retry/Actions
+    strip at 200px, so 220 is the floor and the declared value keeps a margin over it. The
+    first attempt borrowed 256px from the desktop's narrowest three-up card instead, which
+    needed 736 real px for a second column -- and a Galaxy Tab S4 is 700 CSS px, not the 800
+    a Nexus 10 of the same size and resolution reports, so one tablet got two columns and the
+    other stayed at one. Both directions matter: a bigger floor loses the S4's second column,
+    a smaller one gives a phone two cards of nothing.
+    """
+    css = (ROOT / "libnodes" / "static" / "app.css").read_text()
+
+    touch = _media_block(css, "@media (max-width: 972px) and (hover: none)")
+    floor = int(re.search(r"\.cards \{[^}]*minmax\((\d+)px", touch, re.S).group(1))
+    gap = int(re.search(r"^\.cards \{[^}]*gap: (\d+)px", css, re.S | re.M).group(1))
+    scale = float(
+        re.search(r"--scale:\s*([\d.]+)",
+                  _media_block(css, "@media (max-width: 1280px) and (hover: none)")).group(1)
+    )
+    narrow = _media_block(css, "@media (max-width: 972px) {\n  body")
+    pad = int(re.search(r"\.lib-body,\n  \.view \{\s*padding-left: (\d+)px", narrow).group(1))
+
+    assert floor >= 220, f"a card's content overflows its box below 220px, and this is {floor}"
+
+    def columns(viewport: float) -> int:
+        room = viewport / scale - 2 * pad
+        return int((room + gap) // (floor + gap))
+
+    assert columns(700) == 2, "a Galaxy Tab S4 in portrait is 700 CSS px and wants two"
+    assert columns(800) == 2, "a Nexus 10 in portrait is 800 CSS px and wants two"
+    assert columns(412) == 1, "a phone must not be given two columns of 130px"
+
+
 def test_the_size_and_date_columns_cannot_wrap():
     """SIZE and MODIFIED hold a formatted string of known width, so their track floors are
     that string rather than a guess.

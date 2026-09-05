@@ -321,6 +321,46 @@ are listed.
   2x12px of padding. They fitted at their maxima and wrapped only once squeezed, which is
   why a desktop showed nothing wrong. Pinned by
   `::test_the_size_and_date_columns_cannot_wrap`.
+- **In portrait that same tablet is 800 CSS px, so the zoom lands on the *phone* block.**
+  The 972px rules were drawn for a 412px screen, and two of them are wrong once `--scale`
+  1.35 is on top: one card column (the two-column rule lives in the 973–1280 band and so
+  fires only in landscape), and a 44px touch minimum multiplied into 59.4 CSS px — 0.40" on
+  a Nexus 10 (800 CSS px across a 5.33" edge is 150 to the inch) and 0.47" on an S4 (700
+  across 5.56" is 126), against the 0.27" a thumb needs. The 44 is a *physical* rule, so it
+  is divided by the zoom that follows it: 33 x 1.35 = 44.6, in a `max-width: 972px` + touch
+  block that repeats the zoom band's two clauses so it is on exactly where the zoom is. Type
+  is deliberately not in it — the same arithmetic puts it at 0.112" and 0.134" against a
+  desktop's 0.141", so `font-size` never appears there and
+  `::test_the_touch_minimum_survives_the_zoom` asserts it does not. The cards take a floor
+  rather than a third breakpoint — `minmax(230px, 1fr)`, so `auto-fill` gives both tablets
+  two columns and a phone one (`::test_a_tablet_in_portrait_fits_two_cards`).
+- **A tablet's CSS width is a user setting, so a fallback's floor must be measured on the
+  thing it holds.** Two 10" tablets, both 2560x1600: a Nexus 10 is exactly 800 CSS px, and a
+  Galaxy Tab S4 is **700**, because Samsung's Screen zoom moves the density and dpr with it
+  (2.286 against 2.0 — measured off two screenshots against the 16.2px of `.view` padding
+  both had to draw; Chrome for Android's own page-zoom menu moves it again, 80% taking the
+  S4 to 875). Both first attempts here were tidy numbers borrowed from somewhere roomier —
+  a 256px card floor from the desktop's narrowest three-up, a 768px two-up breakpoint from
+  "tablet" — and both landed in the 100px between the two tablets, so the Nexus 10 got the
+  new layout and the S4 kept the old one. The floors that replaced them are measurements of
+  the content: a card's own box overflows below 220px (forced narrower and narrower against
+  the running service, `tools/shot.py --eval` on `scrollWidth`), and the stacked row's widest
+  untooltipped value is the 124px address. Size a fallback from what it must hold, never from
+  the screen you think it is on.
+- **The stacked device row is the fallback for every narrow screen, not a phone layout.**
+  It is what a 27" 2.5K monitor turned portrait gets — 1152 CSS px at 125%, against the
+  1348px a single-line row needs (1022px of track floors + 190 rail + 36 gutter, x `--scale`)
+  — and nine label/value lines per device put nine devices past a 2560px screen one at a
+  time. Above 660px it goes two-up, five lines, and the pairs are the row's own grouping:
+  Device with Type, Address with Target, Storage with Battery, and the two ages side by side
+  where they already belong. Actions spans, its floor being 320px of failure text plus three
+  buttons. 660 is the address, which is the widest value here with no tooltip to fall back on
+  — 124px at 11.5px mono — plus the label, the 8px gap and 2x12px of padding, twice, in the
+  binding regime of a touch screen under 972px: `2 x (76 + 8 + 24 + 124) + 24 = 488` layout
+  px is 660 real px at `--scale` 1.35. The label is 76px here and 92px when it has a row to
+  itself, because 92 was never its text — "LAST SEEN" is 60.7px — and two-up cannot afford
+  31px of dead space per column. Pinned by
+  `tests/test_battery.py::test_the_stacked_row_pairs_its_cells`.
 - **`#device-rows` is two different containers, so anything aimed at it must know which.**
   `devices.html` renders *either* the cards div or the rows div and gives both that id, and
   the Devices layout is now remembered in the `libnodes_view` cookie (`routes/devices.py`),

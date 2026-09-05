@@ -14,6 +14,7 @@ Run it through the venv, which is where `websockets` lives (it arrives with
     uv run tools/shot.py /devices out.png --theme light
     uv run tools/shot.py /library shots/lib.png --full
     uv run tools/shot.py /devices - --eval "getComputedStyle(document.querySelector('.trow')).gridTemplateColumns"
+    uv run tools/shot.py '/devices?view=grid' shots/s4.png --size 800x1280 --dpr 2 --touch
 
 The first argument is the *route*, the second the file. That order is a trap when the file
 is the only thing on your mind, so it is defended twice: an output-looking first argument is
@@ -85,9 +86,12 @@ FLAGS = [
 class Browser:
     """One chromium, one CDP socket, closed on the way out."""
 
-    def __init__(self, profile: Path, size: tuple[int, int]) -> None:
+    def __init__(self, profile: Path, size: tuple[int, int],
+                 dpr: float = 1, touch: bool = False) -> None:
         self.profile = profile
         self.size = size
+        self.dpr = dpr
+        self.touch = touch
         self._id = 0
 
     def __enter__(self) -> "Browser":
@@ -126,7 +130,13 @@ class Browser:
         # The window size above sizes the OS window; this sizes the layout viewport, which
         # is what the screenshot and every media query actually see.
         self.call("Emulation.setDeviceMetricsOverride",
-                  width=self.size[0], height=self.size[1], deviceScaleFactor=1, mobile=False)
+                  width=self.size[0], height=self.size[1],
+                  deviceScaleFactor=self.dpr, mobile=self.touch)
+        # `mobile` alone does not move `hover`/`pointer`: Chrome derives those from whether
+        # touch is emulated, so the app.css clause that is *only* about a thumb needs this
+        # call as well. See --touch in main().
+        if self.touch:
+            self.call("Emulation.setTouchEmulationEnabled", enabled=True, maxTouchPoints=5)
         return self
 
     def __exit__(self, *exc) -> None:
@@ -174,6 +184,17 @@ def main() -> int:
     ap.add_argument("out", nargs="?", default=None,
                     help="PNG to write; default shots/<route>.png, '-' writes none")
     ap.add_argument("--size", default="1440x900", help="viewport, WxH (default 1440x900)")
+    # Two flags for one regime, because app.css matches it two ways and each clause needs
+    # its own switch. Without them this browser reports dpr 1 and a mouse, so the tablet
+    # band — --scale 1.35 and everything under `hover: none` — could never be photographed
+    # from here at all, which is the whole reason this file exists. --dpr alone satisfies
+    # the `min-resolution: 1.5dppx` clause (the "Desktop site" fallback) and makes the PNG
+    # come out at the device's real pixel size, 800x1280 at dpr 2 being a Galaxy Tab S4 in
+    # portrait; --touch satisfies the primary `hover: none and pointer: coarse` one.
+    ap.add_argument("--dpr", type=float, default=1,
+                    help="devicePixelRatio (default 1; a 10\" tablet is 2)")
+    ap.add_argument("--touch", action="store_true",
+                    help="emulate a touch screen: hover:none, pointer:coarse")
     ap.add_argument("--full", action="store_true",
                     help="capture the whole page, not just the viewport")
     ap.add_argument("--theme", choices=("dark", "light"),
@@ -206,7 +227,7 @@ def main() -> int:
                                   PROJECT_ROOT / "var" / "shot-profile"))
 
     t0 = time.time()
-    with Browser(profile, (int(width), int(height))) as br:
+    with Browser(profile, (int(width), int(height)), args.dpr, args.touch) as br:
         if args.theme:
             host = base.split("//", 1)[-1].split(":")[0]
             br.call("Network.setCookie", name="libnodes_theme", value=args.theme,

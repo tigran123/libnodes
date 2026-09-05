@@ -11,7 +11,11 @@
   <div data-label="Device">
     <span class="node-name">
       <span class="dot {{ node.dot_class }}"></span>
-      <span class="nowrap">{{ node.device.name }}</span>
+      {# .nowrap ellipsises, and the stacked row pairs its cells above 660px -- 139px of
+         value at a Galaxy Tab S4's 700 CSS px, against the ~168px "ThinkPad T450s
+         (Ubuntu 26)" measures. The title is what keeps a clipped name readable, as the
+         Target cell below already does. #}
+      <span class="nowrap" title="{{ node.device.name }}">{{ node.device.name }}</span>
     </span>
   </div>
 

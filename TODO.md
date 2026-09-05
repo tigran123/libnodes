@@ -29,6 +29,20 @@ what is left, with pointers into the code. Keep the two from contradicting each 
 
 ## Engineering hygiene
 
+- [ ] **The device row's stack breakpoint does not account for `--scale`.**
+      `test_the_stack_breakpoint_clears_the_row_floor` (`tests/test_battery.py`) computes
+      `1022 + 190 + 36 = 1248` and checks it against the 1280px breakpoint, but never
+      multiplies by `--scale` — unlike its sibling
+      `::test_the_file_grid_stacks_before_it_runs_out_of_panel`, which explains at length why
+      it must, a media query being matched against the unzoomed viewport while every length
+      inside the layout is zoomed. The real requirement is 1248 x 1.08 = 1348px, so
+      1281–1348 is a live band where the row has stopped stacking and cannot lay out, and
+      pays for it by wrapping the Actions buttons — the same 36px band that moving 1200 to
+      1280 was meant to close. Left deliberately for now: raising the breakpoint to 1348
+      moves the desktop layout for a band nobody on this fleet is sitting in, and the
+      two-up stacked row (app.css, `min-width: 768px`) has made the fallback it would land
+      in a good one. Fix the test and the breakpoint together, or neither.
+
 - [ ] **`Scanner` and `JobRunner` deregister a subprocess while being cancelled**, the same
       way `DeviceProbe` did before it was fixed. `scan.py:205` (`self._procs.pop(...)` in a
       `finally`) and `jobs.py:862` run on the `CancelledError` path too, so the proc leaves

@@ -2447,6 +2447,54 @@ a.file-name:hover {
   }
 }
 
+/* Two-up, above 660px. The stacked row above is the fallback for *every* narrow screen and
+   not a phone layout: this fleet reads itself on a 10" tablet at 700 CSS px and on a 27"
+   2.5K monitor turned portrait, which at 125% is 1152 -- both far below the 1348px a
+   single-line row needs (1022px of track floors + 190 rail + 36 gutter, x --scale), and both
+   wide enough to hold two label/value pairs. One column there printed nine lines per device,
+   so nine devices went past a 2560px-tall screen one at a time. Measured on that monitor:
+   9 lines per device to 5.
+
+   The pairs are the row's own grouping rather than an accident of source order -- Device
+   with Type, Address with Target, Storage with Battery, and the two ages side by side, which
+   is where LAST SEEN and LAST SYNC already sit for the reason given at .device-grid. Actions
+   spans, its floor being 320px of failure text plus three buttons; .subrow already spans.
+
+   660 is measured, and the first attempt at it was not: 768 was picked as a tidy tablet
+   number and a Galaxy Tab S4 turned out to be 700 CSS px, not the 800 its 2560x1600 panel
+   suggests -- Samsung's Screen zoom setting moves the density, so dpr is 2.286 there against
+   a Nexus 10's exactly 2.0 on identical hardware dimensions. Two tablets of the same size
+   and resolution, 100 CSS px apart, and the breakpoint fell between them. So this one is
+   derived from the row instead: the address is the widest thing here that has no tooltip to
+   fall back on -- 124px at 11.5px mono -- and a column is that plus the label, the 8px gap
+   and 2x12px of padding. Two of those need 2 x (76 + 8 + 24 + 124) + 24 = 488 layout px,
+   which is 660 real px at --scale 1.35. Below it the address starts clipping: measured 1px
+   short at 700 with the 92px label, and that slack is where the label change comes from.
+
+   The label is 76px here rather than the 92px it takes when it has a whole row to itself.
+   92 was never its text -- "LAST SEEN" is the widest at 60.7 layout px -- so two-up spends
+   31px of dead space per column on a screen that has none to spare. 76 keeps 15px over the
+   widest label and hands 16px back to every value.
+   Pinned by test_the_stacked_row_pairs_its_cells. .jobs-grid rides along exactly as it does
+   in the block above: same fallback, same treatment -- Job with Target, Source with Files,
+   Bytes with Started, State spanning, and every one of its labels shorter than LAST SEEN. */
+@media (min-width: 660px) and (max-width: 1280px) {
+  .trow.device-grid,
+  .trow.jobs-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .trow.device-grid > [data-label]::before,
+  .trow.jobs-grid > [data-label]::before {
+    width: 76px;
+  }
+
+  .trow.device-grid .cell-actions,
+  .trow.jobs-grid .cell-actions {
+    grid-column: 1 / -1;
+  }
+}
+
 /* 972px = the design's 900px breakpoint x --scale. A media query is matched against the
    real viewport and cannot read a custom property, so this one does not follow --scale by
    itself: zoomed content runs out of room at a *wider* viewport than before, and left at
@@ -2771,6 +2819,77 @@ a.file-name:hover {
      1440px desktop gives them. Three was the 227px the screenshot was taken of. */
   .cards {
     grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* Touch chrome, after the zoom ---------------------------------------------- *
+ *
+ * The band above is landscape. In *portrait* a 10" tablet is 700 to 800 CSS px -- a Nexus 10
+ * is exactly 800 and a Galaxy Tab S4 is 700, for the reason set out at the card floor below
+ * -- which lands it in the 972px block, written for a phone, while the zoom above is still
+ * on. Two things follow, and both are the phone rule meeting the tablet's --scale rather
+ * than anything either one got wrong alone.
+ *
+ * The 44px minimum in that block is a *physical* rule: 0.27" is what a thumb needs. The zoom
+ * then multiplies it, and 44 x 1.35 = 59.4 CSS px is 0.40" on the Nexus 10 -- 800 CSS px
+ * across its 5.33" edge is 150 to the inch -- and 0.47" on the S4, where 700 across 5.56" is
+ * 126. Half again the target and more, in padding, on every button, field, crumb and
+ * directory link. So it is divided back out: 33 x 1.35 = 44.6 CSS px, which is 0.30" and
+ * 0.35" -- the size the rule meant. font-size is deliberately not repeated here, because the
+ * type is not what is oversized: the same arithmetic puts it at 0.112" on the Nexus 10 and
+ * 0.134" on the S4, against a desktop's 12.5 x 1.08 / 96 = 0.141". Only padding is
+ * reclaimed. It applies at every touch width, phones included: the double-count is the same
+ * arithmetic at 412px as at 800px.
+ *
+ * And the cards get a floor instead of a second breakpoint -- but the floor has to be the
+ * card's own, not a number borrowed from somewhere roomier. The first attempt used the
+ * desktop's narrowest three-up card, 256px, and a Galaxy Tab S4 stayed at one column:
+ * its 2560x1600 panel is 700 CSS px, not the 800 a Nexus 10 of the same size and resolution
+ * reports, because Samsung's Screen zoom moves the density and dpr with it (2.286 against
+ * exactly 2.0, measured off the two screenshots against the 16.2px of .view padding both
+ * had to draw). 256 needed 736 real px for a second column and fell between the two.
+ * 230 is what a card measures instead: forced narrower and narrower against the running
+ * service, its content first overflowed its box at 210px and the Test/Retry/Actions strip at
+ * 200px, so 220 is the floor and 230 keeps ten of margin. It takes a second column at
+ * (2 x 230 + 12 + 24) x 1.35 = 670 real px, so both tablets get two -- 700 gives 241 per
+ * card, 800 gives 278 -- while a 412px phone has 281 and keeps one. Landscape is untouched
+ * above. Pinned by test_the_touch_minimum_survives_the_zoom and
+ * ::test_a_tablet_in_portrait_fits_two_cards. */
+@media (max-width: 972px) and (hover: none) and (pointer: coarse),
+       (max-width: 972px) and (min-resolution: 1.5dppx) {
+  .btn,
+  .segmented > *,
+  .nav-item,
+  .target-pick {
+    min-height: 33px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+
+  .field {
+    min-height: 33px;
+  }
+
+  /* line-height for the same reason the 972px block used it: vertical padding on an
+     inline-block does not grow the line box. */
+  .pathline .crumbs {
+    line-height: 33px;
+  }
+
+  a.file-name {
+    line-height: 33px;
+  }
+
+  .cards {
+    grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  }
+
+  /* Not the phone's `1 1 100%`: 240 + 128 (segmented) + 110 (+ Add device) + gaps is ~498
+     in 569 scaled px, so the filter stops claiming a row of its own. On a phone the basis
+     cannot fit and the row wraps exactly as it did. */
+  .titlebar-right .field {
+    flex: 1 1 240px;
+    width: auto !important;
   }
 }
 
