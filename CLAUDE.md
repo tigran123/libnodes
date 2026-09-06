@@ -88,6 +88,37 @@ are listed.
   to a second early and the exact comparison re-sends the file for ever: 8,786 of 24,620
   files on a real FAT32 card, 0 with the window. Do not promote it to `BASE_FLAGS` — on
   ext4 the timestamps are exact and the exact comparison is the point.
+- **`FsProfile.perms: False` means no owner either, and the three flags travel together.**
+  `build_argv` answers it with `--no-perms --no-owner --no-group`. `--no-perms` alone
+  cancels only `-a`'s `-p` and leaves `-o` and `-g`, and every node but the ThinkPad
+  connects as root — so rsync calls `chown` on every directory and every temp file, and a
+  FAT driver returns EPERM to root like everyone else. The Kobo's `/mnt/onboard` is
+  `vfat rw,noatime,fmask=0022,dmask=0022` with no `uid=` at all: ownership is a mount
+  constant with nothing on disk behind it, so there is never anything for `-o`/`-g` to
+  write. The wrong red banner is the cheap half — **a file whose `chown` fails never gets
+  its mtime stamped either**, keeps the *transfer* time, fails the next push's size+mtime
+  quick check, and is re-sent for ever. That is the re-send loop of the entry above,
+  reached from the owner side instead of the timestamp side. Measured against the live
+  Kobo on 5 books already byte-identical: `--no-perms` alone `xfr#5`, 105,310 B, exit 23;
+  all three `xfr#5`, 103,915 B, exit 0 (that run is the *repair* — it writes the mtimes);
+  again `xfr#0`, **415 B**, exit 0. Do not "fix" this in `is_attrs_only` instead: that
+  whitelist knows only `failed to set <attr>`, and forgiving the exit would paint the
+  banner green while leaving the re-send loop running. Android's emulated storage is why
+  it survived so long — sdcardfs fakes `chown` as a silent no-op, so every nexus10 log is
+  clean and only a real FAT driver ever said so. Pinned by
+  `tests/test_progress_real.py::test_a_filesystem_without_perms_gets_no_owner_either`,
+  with the ext4 half asserted beside it in `::test_perms_are_kept_for_a_real_filesystem`.
+- **`-W` is not the answer to a FAT device re-sending, and neither is `--size-only`.** Both
+  look like the fix and both cost more than they save. `--size-only` does not even reach
+  this bug — `chown` runs whatever rsync decides to send, so the exit 23 and the three
+  attempts survive it — and the re-send it targets is already at zero once the owner flags
+  and `--modify-window` are right (415 B, above). `-W` throws away delta resume, which
+  this fleet leans on: `--partial` is in `BASE_FLAGS` because the Nexus 10 drops off Wi-Fi
+  whenever its screen goes off, so interrupted pushes are routine, not exceptional.
+  Measured on `lg`, one 22,070,669-byte book interrupted at 90%: delta sends 2.23 MB
+  (19,860,392 matched), `-r -W --size-only` sends 22.08 MB (0 matched) — **9.9x the
+  wire**. `-v` is inert here for a third reason: `INFO_FLAGS` is appended after the
+  transfer flags and wins over it.
 - **A push is size+mtime; `--size-only` is Adopt's alone.** It looks like the fix whenever
   a push re-sends files the device already has, and it is not: on FAT the real cause is
   the modify window above, and everywhere else the sizes match precisely *because* the
