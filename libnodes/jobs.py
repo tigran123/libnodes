@@ -510,8 +510,40 @@ def build_argv(
 
     # The target filesystem decides, not the device type: an ext4 Linux node keeps full
     # archive semantics, a FAT card does not get chmod attempts it can only fail.
+    #
+    # All three, because a filesystem with no permission bits has no owner or group
+    # either -- FAT takes both from the mount's uid=/gid= (the Kobo's /mnt/onboard is
+    # `vfat rw,noatime,fmask=0022,dmask=0022`, no uid= at all), so there is nothing on
+    # disk for -a's -o and -g to write. Left in, rsync -- as root, which is every node
+    # here but the ThinkPad -- calls chown on every directory and every temp file, and
+    # the vfat driver returns EPERM to root like everyone else.
+    #
+    # The exit 23 is the cheap half. The expensive half is that a file whose chown
+    # failed never gets its mtime stamped either, so it is left carrying the *transfer*
+    # time, fails the next push's size+mtime quick check, and is re-sent -- for ever,
+    # exactly like the FAT rounding --modify-window exists to stop, reached from the
+    # other side. Measured against the live Kobo on 5 books already byte-identical:
+    #
+    #   --no-perms                              xfr#5, 105,310 B wire, exit 23
+    #   --no-perms --no-owner --no-group        xfr#5, 103,915 B wire, exit 0   (repairs)
+    #   ... and again                           xfr#0,     415 B wire, exit 0
+    #
+    # Three runs, because the middle one is the repair: the mtimes it finally wrote are
+    # what makes the third quiet. Job #9 had gone the other way -- 5 books delivered
+    # byte-for-byte, 8 `rsync: chown ... failed: Operation not permitted (1)` lines,
+    # exit 23, retried to attempt=3, and the whole transfer queued to happen again next
+    # time.
+    #
+    # Not caught by is_attrs_only, and deliberately not taught to it: that whitelist
+    # only knows `failed to set <attr>`, and forgiving the exit would have left the
+    # re-send loop untouched. The fix for a syscall that cannot succeed on this
+    # filesystem is to stop making it.
+    #
+    # Android's emulated storage is why this took until now to show up: sdcardfs fakes
+    # chown as a silent no-op, so every nexus10 push in the log has 0 of these lines.
+    # A real FAT driver is the honest one.
     if not device.fs_profile.perms:
-        argv.append("--no-perms")
+        argv += ["--no-perms", "--no-owner", "--no-group"]
 
     # FAT stores the seconds field in units of two, so a timestamp rsync wrote reads back
     # up to a second earlier and rsync's exact comparison calls the file changed. Left

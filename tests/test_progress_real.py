@@ -199,6 +199,28 @@ def test_perms_are_skipped_on_filesystems_that_cannot_store_them(app, settings):
         assert "--no-perms" in argv, device_id
 
 
+def test_a_filesystem_without_perms_gets_no_owner_either(app, settings):
+    """--no-perms alone leaves -a's -o and -g on, and FAT cannot store those either.
+
+    The Kobo's vfat driver returns EPERM to chown even for root, so job #9 delivered all
+    5 books byte-for-byte and still exited 23 on 8 `rsync: chown ... failed: Operation
+    not permitted (1)` lines — one per directory and one per temp file — then retried to
+    attempt=3. Worse than the exit code: a file whose chown failed keeps the transfer
+    time as its mtime, so it fails the next quick check and is re-sent for ever.
+    Measured against the live device on 5 identical books — `--no-perms` alone re-sent
+    all 5 (xfr#5, exit 23); with all three the same run repaired the mtimes (xfr#5, exit
+    0) and the one after it sent 415 bytes (xfr#0). Android's sdcardfs fakes chown as a
+    no-op, which is why every nexus10 log is clean and this survived until a real FAT
+    driver saw it. All three flags or none.
+    """
+    from libnodes.jobs import build_argv
+
+    cfg = app.state.lib.devices.config
+    for device_id in ("kobo", "phone"):
+        argv = build_argv(cfg.by_id[device_id], cfg, ["Science"], settings)
+        assert {"--no-perms", "--no-owner", "--no-group"} <= set(argv), device_id
+
+
 def test_perms_are_kept_for_a_real_filesystem(app, settings, devices_file):
     """A Linux target has real permissions worth preserving."""
     from libnodes.models import parse_devices
@@ -210,6 +232,10 @@ def test_perms_are_kept_for_a_real_filesystem(app, settings, devices_file):
     )
     argv = build_argv(cfg.by_id["mirror"], cfg, ["Science"], settings)
     assert "--no-perms" not in argv
+    # The owner half of that decision travels with it: ext4 stores a real uid/gid and
+    # -a is there to preserve it.
+    assert "--no-owner" not in argv
+    assert "--no-group" not in argv
 
 
 def test_the_filesystem_decides_not_the_device_type(app, settings):

@@ -48,9 +48,14 @@ class FsProfile(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    #: Can it store unix permissions? On FAT rsync's chmod fails on every run and it
-    #: then counts every file as changed: measured on a real Android SD card, one
-    #: directory reported 43 items needing work with perms on and 0 with them off.
+    #: Can it store unix ownership and permissions? On FAT rsync's chmod fails on every
+    #: run and it then counts every file as changed: measured on a real Android SD card,
+    #: one directory reported 43 items needing work with perms on and 0 with them off.
+    #: One field, not two, because no filesystem here stores an owner without a mode —
+    #: FAT takes both from the mount's uid=/gid=, so `build_argv` answers a False here
+    #: with --no-perms --no-owner --no-group together. The owner half is the one that
+    #: bit: the Kobo's vfat driver refuses chown even to root, so a push that delivered
+    #: every byte still exited 23 and was retried three times.
     perms: bool = True
     #: Largest single file, if the filesystem imposes one. FAT32 stops at 4 GiB - 1.
     max_file: int | None = None
