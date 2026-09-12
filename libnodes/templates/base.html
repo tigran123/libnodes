@@ -82,10 +82,32 @@
           <button class="btn btn-icon" type="submit" title="Log out">Log out</button>
         </form>
         {% endif %}
+        {# Drawn as SVG rather than ☾/☼, and for a measured reason: U+263E is in none
+           of the Nexus 10's 91 /system/fonts (cmaps checked, Android 5.1), so that tablet
+           drew a tofu box here for as long as the glyph did. Its only moon is U+1F319 in
+           NotoColorEmoji -- the colour-emoji trap the login page's eye already documents.
+           U+263C survives only because NotoSansSymbols-Subsetted and NotoSerif carry it,
+           which is why the sun looked fine and the moon did not.
+           Which of the two is drawn is CSS keyed off data-theme (see .theme-toggle in
+           app.css), so the pair is written once here and not re-rendered by app.js. #}
         <button class="btn btn-icon theme-toggle" type="button"
                 data-theme-toggle
                 title="Switch to {{ 'dark' if theme == 'light' else 'light' }} theme"
-                aria-label="Switch theme">{{ '☾' if theme == 'light' else '☼' }}</button>
+                aria-label="Switch theme">
+          {# Crescent, offered in light: press it and you get dark. #}
+          <svg class="theme-moon" viewBox="0 0 16 16" width="15" height="15" fill="none"
+               stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"
+               aria-hidden="true">
+            <path d="M14 8.53A6 6 0 1 1 7.47 2 4.67 4.67 0 0 0 14 8.53z"/>
+          </svg>
+          {# Sun, offered in dark. #}
+          <svg class="theme-sun" viewBox="0 0 16 16" width="15" height="15" fill="none"
+               stroke="currentColor" stroke-width="1.4" stroke-linecap="round"
+               aria-hidden="true">
+            <circle cx="8" cy="8" r="3.2"/>
+            <path d="M8 1.1V2.5M8 13.5v1.4M1.1 8h1.4M13.5 8h1.4M3.66 3.66l.99.99M11.35 11.35l.99.99M12.34 3.66l-.99.99M4.65 11.35l-.99.99"/>
+          </svg>
+        </button>
       </div>
     </div>
 

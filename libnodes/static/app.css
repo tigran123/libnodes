@@ -849,19 +849,37 @@ ul {
  * cascade to .btn on both count and order, so its font-size was inert for as long as it
  * existed -- see the note where it used to be.
  *
- * ☾ / ☼ rather than ◐ / ◑ because the icon should name the mode you get, not the one you
- * are in, and because neither has an emoji presentation: U+2600 would have rendered as a
- * colour emoji on Android without a variation selector to suppress it. */
+ * A crescent / a sun because the icon should name the mode you get, not the one you are
+ * in -- ◐ / ◑ name neither. Both are drawn as SVG, because on Android 5.1 no glyph says
+ * "moon": U+263E and U+263D are in none of the Nexus 10's 91 /system/fonts, and the only
+ * moon it has is U+1F319 in NotoColorEmoji, which would go colour exactly as U+2600 does
+ * without a variation selector. The sun escaped it -- NotoSansSymbols-Subsetted and
+ * NotoSerif both carry U+263C -- so for as long as the pair was glyphs the tablet drew a
+ * tofu box beside a perfectly good ☼ and nothing said why. See base.html.
+ *
+ * line-height: 0 because the box is now the 15px svg and not a 17px line box; without it
+ * the button keeps the strut of the text it no longer contains and stands ~3px taller
+ * than the Log out button beside it. */
 .theme-toggle {
-  font-size: 17px;
-  line-height: 1;
-  padding: 1px 7px;
+  line-height: 0;
+  padding: 4px 7px;
   border-color: transparent;
   color: var(--ink-2);
 }
 
 .theme-toggle:hover {
   color: var(--accent-hi);
+}
+
+/* Which of the two is drawn, keyed off the attribute the server stamps on <html> and
+   app.js toggles. Dark is the default -- no attribute -- and the default offers the sun. */
+.theme-toggle .theme-moon,
+[data-theme="light"] .theme-toggle .theme-sun {
+  display: none;
+}
+
+[data-theme="light"] .theme-toggle .theme-moon {
+  display: block;
 }
 
 /* Segmented control ------------------------------------------------------- */

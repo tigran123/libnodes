@@ -198,21 +198,52 @@ def test_the_theme_toggle_outranks_btn_on_the_cascade():
     assert css.index("\n.theme-toggle:hover {") > hover
 
 
-def test_the_theme_icon_names_the_mode_you_get():
-    """The glyph is the affordance: in dark you are offered the sun, in light the moon.
-    Rendered server-side and swapped again in app.js, so the two have to agree."""
+#: Moons the Nexus 10 has no font for, suns that have one, and the emoji-presentation
+#: pair that would go colour on Android -- none of them may reach the page.
+NO_FONT_FOR_THESE = ("☾", "☽", "☼", "☀", "🌙", "🌜", "◐", "◑")
+
+
+def test_the_theme_icon_is_drawn_and_not_typed():
+    """The icon is the affordance: in dark you are offered the sun, in light the moon.
+    Both are SVG, and that is not decoration. U+263E is in none of the Nexus 10's 91
+    /system/fonts (Android 5.1, cmaps checked), so a glyph pair drew a tofu box on the
+    fleet's own tablet beside a ☼ that rendered fine -- NotoSansSymbols-Subsetted and
+    NotoSerif carry U+263C and nothing there carries a moon. The only moon on that device
+    is U+1F319 in NotoColorEmoji, which is the colour-emoji trap, not the fix."""
     from pathlib import Path
 
     root = Path(__file__).resolve().parent.parent / "libnodes"
     base = (root / "templates" / "base.html").read_text()
     js = (root / "static" / "app.js").read_text()
+    css = (root / "static" / "app.css").read_text()
 
-    assert "'☾' if theme == 'light' else '☼'" in base
-    # Same pair in the client-side swap, and the opposite of the theme just applied.
-    assert 'light ? "☾" : "☼"' in js
-    # Neither glyph has an emoji presentation; U+2600 does, and would have gone colour
-    # on Android without a variation selector.
-    assert "☀" not in base and "☀" not in js
+    start = base.index('<button class="btn btn-icon theme-toggle"')
+    toggle = base[start : base.index("</button>", start)]
+    assert '<svg class="theme-moon"' in toggle
+    assert '<svg class="theme-sun"' in toggle
+    # Nothing stands in for either one in the markup or the script. The Jinja comment
+    # above the button names the glyphs it is explaining, which is why this reads the
+    # button and not the file -- and why the rendered page is checked separately below.
+    for text in (toggle, js):
+        for glyph in NO_FONT_FOR_THESE:
+            assert glyph not in text, glyph
+
+    # Which icon shows is CSS off data-theme, so app.js no longer re-renders a pair the
+    # server also renders -- the two used to have to hold the same glyphs by hand.
+    assert "theme-moon" not in js and "theme-sun" not in js
+    assert ".theme-toggle .theme-moon,\n[data-theme=\"light\"] .theme-toggle .theme-sun {" in css
+    assert '[data-theme="light"] .theme-toggle .theme-moon {' in css
+
+
+async def test_both_theme_icons_are_always_in_the_dom(client):
+    """CSS picks between them, so both ship on every page and in either theme. If only
+    the current one were rendered the client toggle would have nothing to switch to."""
+    for cookie in ({}, {"libnodes_theme": "light"}):
+        r = await client.get("/devices", cookies=cookie)
+        assert 'class="theme-moon"' in r.text and 'class="theme-sun"' in r.text
+        # And no character the tablet would have to find a font for reaches it.
+        for glyph in NO_FONT_FOR_THESE:
+            assert glyph not in r.text, glyph
 
 
 async def test_unknown_cookie_value_falls_back_to_dark(client):
