@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Settings · LibNodes{% endblock %}
+{% block crumb %}system / <b>settings</b>{% endblock %}
+
+{% block body %}
+<div class="view">
+
+  <div class="titlebar">
+    <h1 class="title">Settings</h1>
+    <span class="title-meta">this browser only</span>
+  </div>
+
+  {# A plain form: no hx-*, no JS. The page works with scripting off, like the login form
+     and Log out, and a 303 back here is what shows the saved state. #}
+  <form class="panel" method="post" action="/settings"
+        style="padding:14px;max-width:620px;display:flex;flex-direction:column;gap:12px">
+
+    <div>
+      <div class="section-label" style="margin:0 0 4px">Device cards</div>
+      <div class="t-dim" style="line-height:1.6">
+        What each card shows in the <b>GRID</b> view. Untick what you are not watching and
+        more of the fleet fits on one screen: on a 10" tablet held upright, a full card is
+        273px and four of them fit — with only Battery left it is 167px and eight do.
+      </div>
+    </div>
+
+    {% for key, label, note in card_fields %}
+      <label class="opt">
+        <input class="check" type="checkbox" name="show" value="{{ key }}"
+               {% if card_show[key] %}checked{% endif %}>
+        <span>
+          {{ label }}
+          <span class="opt-note">{{ note }}</span>
+        </span>
+      </label>
+    {% endfor %}
+
+    <div style="display:flex;gap:8px;align-items:center">
+      <button class="btn btn-primary" type="submit">Save</button>
+      {# Not a preview card here: one would carry live Test and Abort buttons and a second
+         copy of a card id the Devices page targets. A link to the real thing instead. #}
+      <a class="btn" href="/devices?view=grid">View grid</a>
+    </div>
+
+    <div class="t-dim" style="line-height:1.6;font-size:11px">
+      Kept in a cookie on this browser, like the light/dark theme — the tablet can be a
+      battery wall while the desktop keeps full cards. They do not apply to the
+      <b>TABLE</b> view, whose columns are a fixed grid.
+    </div>
+  </form>
+
+  {# Rescued from the Keys page, which was a stub and is gone. The fact is still true and
+     still the first thing anyone wonders about when a device will not answer. #}
+  <div class="panel" style="padding:14px;max-width:620px;margin-top:12px">
+    <div class="section-label" style="margin:0 0 4px">SSH</div>
+    <div class="t-dim" style="line-height:1.6">
+      Identities live in the service user's <span class="mono">~/.ssh</span>. LibNodes
+      never handles passwords — every connection is made with
+      <span class="mono">BatchMode=yes</span>, so a missing key fails fast instead of
+      hanging on a prompt you cannot see.
+    </div>
+  </div>
+
+</div>
+{% endblock %}

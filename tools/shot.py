@@ -199,6 +199,12 @@ def main() -> int:
                     help="capture the whole page, not just the viewport")
     ap.add_argument("--theme", choices=("dark", "light"),
                     help="stamp the libnodes_theme cookie before loading")
+    # The display preferences are httpOnly -- the server both writes and reads them -- so
+    # --eval cannot set one from inside the page, and without this there is no way to
+    # photograph a card with fields ticked off. Repeatable.
+    ap.add_argument("--cookie", action="append", default=[], metavar="NAME=VALUE",
+                    help="stamp an arbitrary cookie before loading (repeatable), "
+                         "e.g. --cookie libnodes_card_hide=addr.seen")
     ap.add_argument("--eval", metavar="JS", help="run JS in the page and print the result")
     ap.add_argument("--settle-ms", type=int, default=400,
                     help="quiet time after htmx stops before capturing (default 400)")
@@ -228,10 +234,13 @@ def main() -> int:
 
     t0 = time.time()
     with Browser(profile, (int(width), int(height)), args.dpr, args.touch) as br:
+        host = base.split("//", 1)[-1].split(":")[0]
         if args.theme:
-            host = base.split("//", 1)[-1].split(":")[0]
             br.call("Network.setCookie", name="libnodes_theme", value=args.theme,
                     domain=host, path="/")
+        for pair in args.cookie:
+            name, _, value = pair.partition("=")
+            br.call("Network.setCookie", name=name, value=value, domain=host, path="/")
         br.goto(url, args.settle_ms)
 
         if br.js("location.pathname") == "/login":

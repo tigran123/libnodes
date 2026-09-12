@@ -1,4 +1,9 @@
-"""The devices.yaml view, plus placeholders for the Stage 2 nav destinations."""
+"""The devices.yaml view, plus the one remaining Stage 2 placeholder.
+
+`_stub` had three users; /presets and /keys were deleted once they had spent long enough
+saying "planned for stage 2" in the rail without ever saying anything else. /device/new
+is the survivor, and it is still linked from the "+ Add device" button.
+"""
 
 from __future__ import annotations
 
@@ -112,27 +117,6 @@ def _stub(request: Request, active: str, title: str, note: str) -> HTMLResponse:
     ctx = base_context(request, active)
     ctx.update({"stub_title": title, "stub_note": note})
     return templates.TemplateResponse(request, "stub.html", ctx)
-
-
-@router.get("/presets", response_class=HTMLResponse)
-async def presets(request: Request):
-    return _stub(
-        request,
-        "presets",
-        "Presets",
-        "Saved selections you can re-push in one action. Planned for stage 2.",
-    )
-
-
-@router.get("/keys", response_class=HTMLResponse)
-async def keys(request: Request):
-    return _stub(
-        request,
-        "keys",
-        "Keys",
-        "SSH identities live in the service user's ~/.ssh. LibNodes never handles "
-        "passwords — BatchMode=yes makes a missing key fail fast instead of hanging.",
-    )
 
 
 @router.get("/device/new", response_class=HTMLResponse)

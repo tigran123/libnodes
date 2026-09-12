@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi import Request
 
+from .cardprefs import resolved_cards
 from .host import host_stats
 from .state import AppState
 
@@ -45,6 +46,12 @@ def base_context(request: Request, active: str) -> dict:
         # job's device up by id, and without this it fell back to the raw yaml id — a
         # dry run to "OLD LG G4 (Android 6)" announced itself as `lg2`.
         "by_id": app.devices.config.by_id,
+        # Which parts of a GRID card to draw. Here and not in `devices_context` because
+        # the card renders from six places and that function covers three: /device/{id}/card
+        # and the Test dialog's out-of-band include build their context from base_context
+        # alone, and the second of those is the swap that fails *silently* when a name is
+        # missing -- the failure already recorded against #device-rows in CLAUDE.md.
+        "card_show": resolved_cards(request),
     }
     # Namespaced under `dock` rather than merged: the Jobs page has its own `jobs`
     # variable (the whole history table), which would otherwise clobber the dock's

@@ -23,7 +23,7 @@ FRAGMENTS = [
     "/devices.yaml/panel",
 ]
 
-PAGES = ["/devices", "/library", "/jobs", "/devices.yaml", "/presets", "/keys"]
+PAGES = ["/devices", "/library", "/jobs", "/devices.yaml", "/settings"]
 
 
 async def test_root_redirects_to_devices(client):

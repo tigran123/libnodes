@@ -18,6 +18,7 @@ from .routes import config_view as config_routes
 from .routes import devices as devices_routes
 from .routes import jobs as jobs_routes
 from .routes import library as library_routes
+from .routes import settings as settings_routes
 from .state import AppState
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -127,6 +128,7 @@ def create_app() -> FastAPI:
     app.include_router(library_routes.router)
     app.include_router(jobs_routes.router)
     app.include_router(config_routes.router)
+    app.include_router(settings_routes.router)
     app.include_router(auth_routes.router)
     return app
 

@@ -74,8 +74,7 @@ PAGES = frozenset(
         "/library",
         "/jobs",
         "/devices.yaml",
-        "/presets",
-        "/keys",
+        "/settings",
         "/device/new",
     }
 )

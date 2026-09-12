@@ -429,6 +429,28 @@ are listed.
   withheld the only one that changes nothing, so a red node in GRID could be retried but
   not diagnosed. `test_the_card_offers_every_action_the_row_does` compares the two
   templates by endpoint rather than by label, because that is what an action is.
+  The Settings tick that hides the card's button row is the one exception, and it is
+  narrower than it looks: `device_card.html` draws the row anyway unless the node is green
+  *and* idle. A red card keeps Retry, which is the only per-device re-probe GRID has, and
+  a syncing one keeps Abort, which is the only way to stop a push — so the tick takes
+  buttons off the cards that have nothing wrong with them, which is where the space was
+  wanted, and never off the one you are looking at because something is. Pinned by
+  `tests/test_card_prefs.py::test_a_red_card_keeps_its_buttons_whatever_the_tick_says`
+  and `::test_a_syncing_card_keeps_abort_whatever_the_tick_says`.
+
+- **A GRID card's fields are per browser, and the cookie names what is *hidden*.**
+  `libnodes/cardprefs.py`, ticked at `/settings`, read once in `deps.base_context` so all
+  six paths that render a card get it — `/devices/grid`, `/device/{id}/card`,
+  `/device/{id}/probe` and the Test dialog's out-of-band include among them; the last of
+  those is the swap that fails silently. The polarity is the load-bearing part: no cookie
+  then means the card as it always was, and a field added later is visible by default
+  rather than silently missing from every card. Nothing is hidden with CSS — `.card` is
+  `display: flex`, which outranks an `.is-hidden` class and the UA's `[hidden]` alike, so
+  the template omits the block and a rendered-HTML test can see it. The separator is a
+  **dot**: a comma is not a cookie-octet, so `set_cookie` quoted the value and escaped it
+  to `"addr\054seen"`, which comes back unsplittable and reads as "nothing hidden".
+  TABLE is untouched and must stay so — its nine tracks, nine `<thead>` cells and nine
+  `data-label` cells have to agree in number, which is the entry above.
 - **`Settings.concurrency` defaults to 1, and the default is not the deployment.** The 1 is
   a property of an unknown host: on the Pi 3 the NIC shared the USB 2.0 bus with the library
   disk, so two transfers went half as fast each. pi5 puts the library on PCIe NVMe and the

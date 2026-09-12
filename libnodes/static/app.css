@@ -1302,6 +1302,60 @@ ul {
   font-weight: 600;
 }
 
+/* Address and target on one line -- addr left, target right. They were two `.card`
+   children, which cost a whole line box plus 10px of gap for two short strings.
+ *
+ * Measured on the live fleet (tools/shot.py --eval on scrollWidth, layout px). A card
+ * gives its content 331px on a 1440px desktop, 249px on a Nexus 10 in portrait and 212px
+ * on a Galaxy Tab S4 -- 700 CSS px, not 800, because its Screen zoom moves the density.
+ * The widest pair any one card actually holds is the Kobo's `192.168.1.81:2222` beside
+ * `webcache-pi`, 203px with the gap, so nothing here is clipped even at 212. Do not read
+ * that off the two columns separately: the widest address (117px) and the widest target
+ * (90px, `/sdcard/Books`) are on different devices, and adding them gives 217 and an
+ * elision that does not happen.
+ *
+ * When it does run out -- a longer hostname, a deeper target -- the address holds and the
+ * target gives. `.nowrap` on the target sets overflow:hidden, which zeroes a flex item's
+ * automatic minimum size, so it shrinks and ellipsises rather than taking a second line
+ * back. That is the right way round: the address is the widest value in the card with
+ * nothing behind it, while the target already carries its whole path in a title. The same
+ * mechanism `.cell-actions .nowrap` exists to *defeat* in the table, wanted here.
+ *
+ * `.card-host` rather than :first-child, because with the address ticked off the target
+ * becomes the first child and would inherit the rule that must never apply to it. */
+.card-addr {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.card-host {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* The stat lines and their bars. The 7px was `style="margin-top:7px"` on each member
+   below the first, which is a margin belonging to the element above the space it makes --
+   so hiding any one of them left its neighbour's behind, and hiding the first left none
+   at all. A gap on the wrapper cannot get that wrong. */
+.card-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.card-stats .stat {
+  line-height: 1.4;
+}
+
+/* The storage line is last-sync on the left and used/total on the right. With last sync
+   ticked off the value is the only child, and space-between would park it at the start,
+   under a label that is no longer there. */
+.card-stats .stat > b:only-child {
+  margin-left: auto;
+}
+
 .card.is-active {
   background: var(--row-active);
   border-color: rgba(154, 140, 230, 0.35);

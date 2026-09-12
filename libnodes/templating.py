@@ -12,6 +12,8 @@ from pathlib import Path
 
 from fastapi.templating import Jinja2Templates
 
+from .cardprefs import ALL_VISIBLE
+
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -182,6 +184,13 @@ def build_templates() -> Jinja2Templates:
     # A global, not a filter: it is a URL builder, not a formatter, and base.html calls it
     # as asset('app.js').
     env.globals["asset"] = asset
+    # The card as it was before the Settings ticks existed. A context value overrides a
+    # global in Jinja, so a real per-request map always wins -- this is only what a
+    # handler that forgot to build one falls back to, and falling back to "show
+    # everything" is the half of that mistake a rendered-HTML test can still see. The
+    # other half, an undefined name, is falsy for every key and draws a card with nothing
+    # in it but the title.
+    env.globals["card_show"] = ALL_VISIBLE
     return templates
 
 

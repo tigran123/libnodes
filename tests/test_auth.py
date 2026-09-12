@@ -432,5 +432,9 @@ def test_the_password_is_not_printable(locked):
 
 async def test_the_password_is_not_in_a_page(locked):
     await _login(locked)
-    for path in ("/devices", "/library", "/jobs", "/devices.yaml"):
+    # /settings is in here for a specific reason: `base_context` puts the whole Settings
+    # object -- password included -- into every template context, which is why the field
+    # is a SecretStr. A page actually called Settings is the one most likely to grow a
+    # dump of it.
+    for path in ("/devices", "/library", "/jobs", "/devices.yaml", "/settings"):
         assert PASSWORD not in (await locked.get(path)).text

@@ -12,20 +12,21 @@ what is left, with pointers into the code. Keep the two from contradicting each 
       watcher will fire on our own save, so the reload path must tolerate seeing its own
       write come back.
 
-- [ ] **Presets.** Saved selections that can be re-pushed in one action. Stub at
-      `libnodes/routes/config_view.py:117`; the nav item is already live and linked at
-      `libnodes/templates/base.html:34`, so the empty page is reachable from every view.
+- [ ] **Presets.** Saved selections that can be re-pushed in one action. The stub page
+      and its nav item were removed — they had said "planned for stage 2" in the rail for
+      long enough without ever saying anything else — so this now needs a route and a view
+      as well as the feature.
 
 - [ ] **Wake-on-LAN.** Needs a `mac:` field on `Device` (`libnodes/models.py`) and a row
       action next to the existing ones. It pairs with the *sleeping* state the probe already
       computes from `sleeping_window` — a device that answered recently but not now is
       exactly the one worth waking.
 
-- [ ] **Keys page.** Currently an informational stub
-      (`libnodes/routes/config_view.py:127`). It could list the identities in the service
-      user's `~/.ssh` and offer a per-device "test key" that runs the existing
-      `ssh_argv` (`libnodes/probe.py:448`) and reports the exit status — the machinery is
-      already there, only the view is missing.
+- [ ] **Keys page.** The informational stub is gone; what it said about `~/.ssh` and
+      `BatchMode=yes` now sits at the foot of `/settings`. The real feature is still
+      wanted: list the identities in the service user's `~/.ssh` and offer a per-device
+      "test key" that runs the existing `ssh_argv` (`libnodes/probe.py:448`) and reports
+      the exit status — the machinery is already there, only the view is missing.
 
 ## Engineering hygiene
 

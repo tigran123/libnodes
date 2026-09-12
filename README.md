@@ -217,6 +217,7 @@ infer from its label is a bad action.
 | `auth.py` | the shared-password lock: signed cookie, middleware, what stays open |
 | `watch.py` | inotify on `devices.yaml`, so edits appear without polling |
 | `host.py` | `/proc` telemetry for the rail footer |
+| `cardprefs.py` | which parts of a GRID card this browser draws; the Settings ticks |
 | `yamlview.py` | token colouring for the read-only config view |
 | `routes/` | one module per view; full pages return the shell, everything else a fragment |
 

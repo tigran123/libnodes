@@ -15,9 +15,8 @@ PAGES = {
     "/devices": "Devices",
     "/library": "Library",
     "/jobs": "Jobs",
-    "/presets": "Presets",
     "/devices.yaml": "devices.yaml",
-    "/keys": "Keys",
+    "/settings": "Settings",
 }
 
 NAV_ITEM = re.compile(

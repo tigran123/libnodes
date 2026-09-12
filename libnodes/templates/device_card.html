@@ -31,36 +31,55 @@
     {% endif %}
   </div>
 
-  <div class="mono nowrap">{{ node.device.host }}:{{ node.device.effective_port }}</div>
-  <div class="mono t-muted nowrap"><span title="{{ node.device.target }}">{{ node.device.display_target }}</span></div>
+  {# Two lines became one: address left, target right, wrapping back to two only where
+     they stop fitting -- see .card-addr in app.css for the measurement. #}
+  {% if card_show.addr or card_show.target %}
+  <div class="card-addr mono">
+    {% if card_show.addr %}<span class="card-host">{{ node.device.host }}:{{ node.device.effective_port }}</span>{% endif %}
+    {% if card_show.target %}<span class="t-muted nowrap" title="{{ node.device.target }}">{{ node.device.display_target }}</span>{% endif %}
+  </div>
+  {% endif %}
 
-  <div>
-    <div class="stat" style="line-height:1.4">
-      <span>{{ node.last_sync|reltime }}</span>
+  {# .card-stats, and the 7px between these lines is its `gap` rather than a margin on
+     each: a margin belongs to the element above the space it makes, so hiding any one of
+     these would leave its neighbour's behind. #}
+  {% if card_show.sync or card_show.space or card_show.seen or (card_show.battery and node.has_battery) %}
+  <div class="card-stats">
+    {% if card_show.sync or card_show.space %}
+    <div class="stat">
+      {% if card_show.sync %}<span>{{ node.last_sync|reltime }}</span>{% endif %}
       {# used / total and `.track`, both matching device_row.html: same datum, same
          reading, same colour. The card used `.disk-bar`, whose fill is --faint, beside
          a table drawing the identical number in --accent. #}
-      <b{% if node.used is not none %} title="{{ node.used|hsize }} used · {{ node.free|hsize }} free of {{ node.capacity|hsize }}"{% endif %}>
+      {% if card_show.space %}<b{% if node.used is not none %} title="{{ node.used|hsize }} used · {{ node.free|hsize }} free of {{ node.capacity|hsize }}"{% endif %}>
         {%- if node.used is not none -%}
           {{ node.used|hsize_short }}{% if node.capacity %} / {{ node.capacity|hsize_short }}{% endif %}
         {%- else -%}—{%- endif -%}
-      </b>
+      </b>{% endif %}
     </div>
-    <div class="track track-2 track-disk" style="margin-top:7px">
+    {% endif %}
+    {# The {% raw %}{% if %}{% endraw %} stays outside this div and out of its class attribute:
+       tests/test_probe.py compares the card's bar classes with the table's, matching only
+       whitespace between the div and its <i>. #}
+    {% if card_show.space %}
+    <div class="track track-2 track-disk">
       <i style="width:{{ '%.1f'|format(node.used_pct) }}%"></i>
     </div>
+    {% endif %}
 
     {# Same age the table's LAST SEEN column prints, from the same property: a card and a
        row showing the same figures must agree about how old they are. #}
-    <div class="stat" style="line-height:1.4;margin-top:7px">
+    {% if card_show.seen %}
+    <div class="stat">
       <span class="t-muted">seen</span>
       <b title="{{ node.seen_note }}">{{ node.seen_at|reltime }}</b>
     </div>
+    {% endif %}
 
     {# Battery, on the same terms as the table cell: shown only for a device that
        declares where to read it, same thresholds, same tint. #}
-    {% if node.has_battery %}
-      <div class="stat" style="line-height:1.4;margin-top:7px">
+    {% if card_show.battery and node.has_battery %}
+      <div class="stat">
         <span class="t-muted">battery</span>
         <b{% if node.battery_note %} title="{{ node.battery_note }}"{% endif %}>
           {%- if node.battery.percent is not none -%}
@@ -69,13 +88,19 @@
         </b>
       </div>
       {% if node.battery.percent is not none %}
-        <div class="track track-2 {{ node.battery_class }}" style="margin-top:7px">
+        <div class="track track-2 {{ node.battery_class }}">
           <i style="width:{{ '%.1f'|format(node.battery_pct) }}%"></i>
         </div>
       {% endif %}
     {% endif %}
   </div>
+  {% endif %}
 
+  {# Tickable, but only on a card that is green and idle -- which is where the space is
+     wanted anyway. A red node keeps Retry, the only per-device re-probe GRID has, and a
+     syncing one keeps Abort, the only way to stop a push. Hiding either would put back
+     the exact hole that put Test on the card in the first place. #}
+  {% if card_show.actions or not node.online or node.state == 'syncing' %}
   <div class="card-actions">
     {% if node.state == 'syncing' %}
       <button class="btn" hx-get="/jobs/{{ node.job.id }}/log/view"
@@ -116,5 +141,6 @@
       {% endif %}
     {% endif %}
   </div>
+  {% endif %}
 
 </div>

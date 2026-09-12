@@ -34,7 +34,6 @@
           Jobs
           {% if job_count %}<span class="nav-count">{{ job_count }}</span>{% endif %}
         </a>
-        <a class="nav-item {% if active == 'presets' %}is-active{% endif %}" href="/presets">Presets</a>
       </div>
 
       {% block rail_extra %}{% endblock %}
@@ -42,7 +41,7 @@
       <div class="rail-group">
         <div class="section-label">System</div>
         <a class="nav-item {% if active == 'config' %}is-active{% endif %}" href="/devices.yaml">devices.yaml</a>
-        <a class="nav-item {% if active == 'keys' %}is-active{% endif %}" href="/keys">Keys</a>
+        <a class="nav-item {% if active == 'settings' %}is-active{% endif %}" href="/settings">Settings</a>
       </div>
     </nav>
 

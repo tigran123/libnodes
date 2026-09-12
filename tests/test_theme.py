@@ -175,7 +175,7 @@ async def test_light_cookie_is_rendered_server_side(client):
 
 
 async def test_toggle_is_present_on_every_page(client):
-    for path in ("/devices", "/library", "/jobs", "/devices.yaml", "/keys"):
+    for path in ("/devices", "/library", "/jobs", "/devices.yaml", "/settings"):
         r = await client.get(path)
         assert "data-theme-toggle" in r.text, path
 
