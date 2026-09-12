@@ -429,14 +429,18 @@ are listed.
   withheld the only one that changes nothing, so a red node in GRID could be retried but
   not diagnosed. `test_the_card_offers_every_action_the_row_does` compares the two
   templates by endpoint rather than by label, because that is what an action is.
-  The Settings tick that hides the card's button row is the one exception, and it is
-  narrower than it looks: `device_card.html` draws the row anyway unless the node is green
-  *and* idle. A red card keeps Retry, which is the only per-device re-probe GRID has, and
-  a syncing one keeps Abort, which is the only way to stop a push — so the tick takes
-  buttons off the cards that have nothing wrong with them, which is where the space was
-  wanted, and never off the one you are looking at because something is. Pinned by
-  `tests/test_card_prefs.py::test_a_red_card_keeps_its_buttons_whatever_the_tick_says`
-  and `::test_a_syncing_card_keeps_abort_whatever_the_tick_says`.
+  The Settings tick that hides the card's button row is the one exception, and it is a
+  *whole-fleet* exception on purpose. It first exempted a red or syncing card, on exactly
+  the reasoning above — and that was wrong here, where six of ten nodes are red at any
+  moment: the tick left the buttons on most of the cards and was reported as doing nothing
+  at all, on two browsers. A preference that holds only for the cards you were not looking
+  at is not a preference. Neither action is lost, only moved, which is what makes the tick
+  affordable: Rescan in the topbar re-probes every node, and a running job keeps its Abort
+  in the dock. Pinned by
+  `tests/test_card_prefs.py::test_the_tick_takes_the_buttons_off_every_card`,
+  `::test_a_syncing_card_drops_them_too_and_keeps_its_badge` and
+  `::test_abort_is_still_reachable_with_the_buttons_off`, which checks the claim in that
+  last sentence rather than assuming it.
 
 - **A GRID card's fields are per browser, and the cookie names what is *hidden*.**
   `libnodes/cardprefs.py`, ticked at `/settings`, read once in `deps.base_context` so all

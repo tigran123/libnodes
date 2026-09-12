@@ -164,37 +164,54 @@ async def test_the_storage_line_survives_losing_either_half(client, app):
 # ------------------------------------------------------------------ actions --
 
 
-async def test_a_green_idle_card_can_drop_its_buttons(client, app):
+async def test_the_tick_takes_the_buttons_off_every_card(client, app):
+    """Whatever the dot says.
+
+    This first exempted a red or a syncing card, on the reasoning that Retry is the only
+    per-device re-probe in GRID and Abort the only way to stop a push. On this fleet six
+    of ten nodes are red at any moment, so the tick left the buttons on most of the cards
+    and read as doing nothing at all -- which is what it was reported as, on two different
+    browsers. A preference that holds only for the cards you were not looking at is not a
+    preference.
+    """
     _wake(app)
-    html = await _grid(client, "actions")
-    assert not _shows(html, "actions")
-    assert "/device/kobo/test" not in html
-
-
-async def test_a_red_card_keeps_its_buttons_whatever_the_tick_says(client, app):
-    """Retry is the only per-device re-probe GRID has. A red node that could not be
-    retried or diagnosed is the exact hole that put Test on the card in the first place,
-    and a display preference must not dig it again."""
     lib = app.state.lib
+
+    green = await _grid(client, "actions")
+    assert not _shows(green, "actions")
+    assert "/device/kobo/test" not in green
+
     lib.probe._slot("kobo").reach = Reachability(
         state="offline", last_ok=None, checked_at=time.time(), error="timed out"
     )
-    html = await _grid(client, "actions")
-    assert _shows(html, "actions")
-    assert "/device/kobo/probe" in html, "the Retry went with the tick"
-    assert "/device/kobo/test" in html
+    red = await _grid(client, "actions")
+    assert not _shows(red, "actions"), "a red card kept the row the tick removed"
+    assert "/device/kobo/probe" not in red
 
 
-async def test_a_syncing_card_keeps_abort_whatever_the_tick_says(client, app, monkeypatch):
-    """Abort is the only way to stop a running push."""
+async def test_a_syncing_card_drops_them_too_and_keeps_its_badge(client, app, monkeypatch):
+    """The percentage is what a card still owes you while a job runs; Abort is in the
+    dock, which is open whenever anything is running."""
     _wake(app)
     lib = app.state.lib
     job = SimpleNamespace(id="j1", device_id="kobo", state="running", pct=42.0)
     monkeypatch.setattr(lib.jobs, "active", lambda: [job])
 
     html = await _grid(client, "actions")
-    assert _shows(html, "actions")
-    assert "/jobs/j1/abort" in html
+    assert not _shows(html, "actions")
+    assert "/jobs/j1/abort" not in html
+    assert "42%" in html, "the card stopped saying how far along it is"
+
+
+def test_abort_is_still_reachable_with_the_buttons_off():
+    """The claim the tick's note makes, checked rather than assumed: hiding the card's
+    buttons moves Abort, it does not remove it."""
+    from libnodes.templating import TEMPLATES_DIR
+
+    dock = (TEMPLATES_DIR / "dock_card.html").read_text(encoding="utf-8")
+    assert "/abort" in dock
+    devices = (TEMPLATES_DIR / "devices.html").read_text(encoding="utf-8")
+    assert "/devices/rescan" in devices
 
 
 # ----------------------------------------------------------------- the page --

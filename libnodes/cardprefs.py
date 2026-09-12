@@ -43,9 +43,9 @@ CARD_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("seen", "Last seen", "how old the readings above are"),
     ("battery", "Battery", "charge, charging bolt and the bar — shown only for a device "
                            "that declares where to read it"),
-    ("actions", "Test / Actions", "the button row. Kept anyway on a card that is red or "
-                                  "syncing: Retry is the only per-device re-probe in "
-                                  "GRID, and Abort the only way to stop a push"),
+    ("actions", "Test / Actions", "the button row, on every card. Rescan still re-probes "
+                                  "the fleet, and a running job keeps its Abort in the "
+                                  "dock"),
 )
 
 #: Named for its polarity. `libnodes_card=addr.target` reads 50/50 as "show these", and

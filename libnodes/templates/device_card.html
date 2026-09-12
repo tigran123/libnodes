@@ -96,11 +96,13 @@
   </div>
   {% endif %}
 
-  {# Tickable, but only on a card that is green and idle -- which is where the space is
-     wanted anyway. A red node keeps Retry, the only per-device re-probe GRID has, and a
-     syncing one keeps Abort, the only way to stop a push. Hiding either would put back
-     the exact hole that put Test on the card in the first place. #}
-  {% if card_show.actions or not node.online or node.state == 'syncing' %}
+  {# The tick is literal. It first exempted a red or syncing card -- Retry being the only
+     per-device re-probe in GRID and Abort the only way to stop a push -- and that was
+     wrong on this fleet, where six of ten nodes are red at any moment: a tick marked
+     "Test / Actions" left the buttons on most of the cards and read as simply broken.
+     Neither action is lost, only moved: Rescan in the topbar re-probes every node, and a
+     running job keeps its Abort in the dock (dock_card.html). #}
+  {% if card_show.actions %}
   <div class="card-actions">
     {% if node.state == 'syncing' %}
       <button class="btn" hx-get="/jobs/{{ node.job.id }}/log/view"
