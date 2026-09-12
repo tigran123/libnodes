@@ -125,6 +125,8 @@ class Battery:
     #: each of the first two -- amber while current is flowing, green while merely
     #: connected -- and `None` has to stay distinguishable from `"unplugged"`, or a node
     #: whose charger source did not answer would render as one we know to be on battery.
+    #: This is the measurement and stays it; whether a bolt is *drawn* is a separate
+    #: question that `DeviceView.bolt_class` answers, and it draws none on an offline row.
     #:
     #:   "charging"    drawing current
     #:   "plugged"     on the charger but not drawing: full, or paused

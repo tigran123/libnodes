@@ -282,6 +282,20 @@ are listed.
   `"unplugged"` stay distinct in the record even though both draw nothing, because only the
   tooltip can say which it was. Pinned by
   `tests/test_battery.py::test_a_charge_state_that_stops_reading_blanks_the_bolt`.
+  That rule only fires when a read comes back *empty*, and an unreachable device produces
+  no read at all to blank the bolt with — s4l sat five days at `100%` beside a bolt
+  claiming a charger nothing had been able to ask about — so `DeviceView.bolt_class` draws
+  none on a red row. `offline` is a statement about the reading's age and not merely about
+  the dot: it needs `sleeping_window` (1800s) since `reach.last_ok`, and the readings come
+  back on the same ssh as the connect, so red means the charge state is at least half an
+  hour old. Amber `sleeping` keeps its bolt — under half an hour a charger it was on is
+  very probably still under it, and the percentage beside it is no fresher. `battery_note`
+  moves to the past tense there rather than dropping the clause, because the tooltip is
+  still the only thing that can tell `None` from `"unplugged"`. Pinned by
+  `::test_an_offline_row_draws_no_bolt` and
+  `::test_an_offline_tooltip_stops_claiming_the_present`, with the sleeping half asserted
+  beside each. `test_pressing_test_reports_the_charger` now fakes the TCP connect as well
+  as the ssh, or the row it checks comes back red and the bolt it asserts is the fixture's.
 - **`var/probe.json` is written at shutdown and nowhere else.** Nothing reads it while
   the process runs — `load_cache` runs once in `start()`, `save_cache` once in `stop()` —
   so a periodic flush would buy durability against an *unclean* exit alone, and cost a

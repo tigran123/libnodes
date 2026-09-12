@@ -525,6 +525,73 @@ async def test_both_views_draw_the_same_bolt(client, app):
     assert "bolt-charging" in (await client.get("/devices/grid")).text
 
 
+async def test_an_offline_row_draws_no_bolt(client, app):
+    """A bolt is a claim about *now*, and a red row cannot make one. `adopt_battery` blanks
+    a stale charge state when a read comes back empty, but an unreachable device produces
+    no read at all -- s4l sat five days at 100% beside a bolt saying it was on a charger.
+    The percentage survives, because a level moves slowly and LAST SEEN dates it; the claim
+    does not. Amber keeps its bolt, which is what makes this a rule about red rather than
+    a rule about "not green"."""
+    from libnodes.probe import Reachability
+
+    lib = app.state.lib
+    device = lib.devices.config.by_id["kobo"]
+    object.__setattr__(device, "battery", "/sys/class/power_supply/battery/capacity")
+    now = time.time()
+
+    async def cell(state):
+        lib.probe._slot("kobo").reach = Reachability(
+            state=state, last_ok=now - 7200, checked_at=now, error="timed out"
+        )
+        lib.probe._slot("kobo").battery = Battery(
+            percent=100, power="charging", checked_at=now - 7200
+        )
+        row = (await client.get("/devices/rows")).text
+        return row.split('data-label="Battery"')[1].split('data-label="Last seen"')[0]
+
+    offline = await cell("offline")
+    assert "bolt" not in offline, "a five-day-old charger was still on screen"
+    assert "100%" in offline, "the reading went with the claim"
+    assert 'style="width:100.0%"' in offline
+
+    # The card carries the same withdrawal, through the same property -- a bolt that meant
+    # different things in TABLE and GRID would be worse than no bolt.
+    assert "bolt-charging" not in (await client.get("/devices/grid")).text
+
+    assert "bolt-charging" in await cell("sleeping"), "amber lost a bolt it still knows"
+
+
+async def test_an_offline_tooltip_stops_claiming_the_present(client, app):
+    """The record keeps what it measured and the tooltip is the only thing that can report
+    it -- `None` and "unplugged" both draw nothing, and only this can say which. So the
+    text stays and the tense moves, rather than the clause being dropped with the glyph."""
+    from libnodes.probe import Reachability
+
+    lib = app.state.lib
+    device = lib.devices.config.by_id["kobo"]
+    object.__setattr__(device, "battery", "/sys/class/power_supply/battery/capacity")
+    now = time.time()
+
+    async def note(state, power):
+        lib.probe._slot("kobo").reach = Reachability(
+            state=state, last_ok=now - 7200, checked_at=now, error="timed out"
+        )
+        lib.probe._slot("kobo").battery = Battery(
+            percent=100, power=power, checked_at=now - 7200
+        )
+        row = (await client.get("/devices/rows")).text
+        cell = row.split('data-label="Battery"')[1].split('data-label="Last seen"')[0]
+        return cell.split('title="')[1].split('"')[0]
+
+    assert await note("offline", "charging") == "100% · was charging · read 2h ago"
+    assert "was on charger, not charging" in await note("offline", "plugged")
+    assert "was on battery" in await note("offline", "unplugged")
+    # Nothing to put a tense on: a charger that did not answer says nothing either way.
+    assert await note("offline", None) == "100% · read 2h ago"
+
+    assert "· charging ·" in await note("sleeping", "charging")
+
+
 async def test_the_tooltip_tells_the_two_quiet_states_apart(client, app):
     """The bolt cannot distinguish "on its own battery" from "we could not read the
     charger", because both draw nothing. The tooltip is where that distinction lives."""
@@ -623,6 +690,19 @@ async def test_pressing_test_reports_the_charger(client, app, monkeypatch):
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", lambda *a, **k: _wrap(_Proc()))
 
+    # The ssh is faked above; the connect behind the dot is a separate TCP probe that Test
+    # re-runs, and it has to be faked too or the row this dialog swaps out of band comes
+    # back red -- and a red row withdraws the bolt (`bolt_class`), so the assertion below
+    # would be measuring the fixture rather than the route.
+    class _W:
+        def close(self):
+            pass
+
+        async def wait_closed(self):
+            pass
+
+    monkeypatch.setattr("asyncio.open_connection", lambda *a, **k: _accept(_W()))
+
     r = await client.post("/device/kobo/test")
     assert r.status_code == 200
     assert lib.probe.battery("kobo").power == "charging", "Test discarded what it read"
@@ -714,6 +794,10 @@ async def test_pressing_test_refreshes_the_battery(client, app, monkeypatch):
 
 async def _wrap(proc):
     return proc
+
+
+async def _accept(writer):
+    return (None, writer)
 
 
 # ------------------------------------------------------- a devices.yaml edit --

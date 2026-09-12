@@ -237,7 +237,19 @@ class DeviceView:
         from the reading just taken — `adopt_battery` never carries a charge state forward —
         so a bolt on screen means the last successful read saw a charger, dated by LAST SEEN
         like every other figure in the row.
+
+        A red row draws neither, which is the other half of that rule. `adopt_battery`
+        blanks a stale bolt when a read comes back *empty*, and an unreachable device
+        produces no read at all to blank it with — so s4l sat for five days at `100%`
+        beside a bolt claiming a charger nothing had been able to ask about. `offline` is
+        a statement about the reading's age and not merely about the dot: it needs
+        `sleeping_window` (1800s) since `reach.last_ok`, and a battery reading can never
+        be newer than `last_ok`, so red means the charge state is at least half an hour
+        old. Amber `sleeping` keeps its bolt on purpose — under half an hour a charger it
+        was on is very probably still under it, and the percentage beside it is no fresher.
         """
+        if self.offline:
+            return ""
         if self.battery.power == "charging":
             return "bolt-charging"
         if self.battery.power == "plugged":
@@ -260,11 +272,17 @@ class DeviceView:
         # Spelled out here even where the bolt says it, because the bolt cannot distinguish
         # "on its own battery" from "we could not read the charger" and this can — and
         # because a two-colour glyph needs somewhere that names which colour is which.
+        # Past tense on a red row, where `bolt_class` has withdrawn the glyph: the record
+        # still holds what was measured and this is the only place that can report it, but
+        # it must not go on claiming in the present what the row has stopped drawing. The
+        # `read <age> ago` below is what dates the past tense.
         power = {
-            "charging": " · charging",
-            "plugged": " · on charger, not charging",
-            "unplugged": " · on battery",
+            "charging": "charging",
+            "plugged": "on charger, not charging",
+            "unplugged": "on battery",
         }.get(self.battery.power or "", "")
+        if power:
+            power = f" · was {power}" if self.offline else f" · {power}"
         return (
             f"{self.battery.percent}%{power} · "
             f"read {reltime(self.battery.checked_at)}"
