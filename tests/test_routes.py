@@ -20,10 +20,9 @@ FRAGMENTS = [
     "/jobs/rows",
     "/jobs/dock",
     "/jobs/telemetry",
-    "/devices.yaml/panel",
 ]
 
-PAGES = ["/devices", "/library", "/jobs", "/devices.yaml", "/settings"]
+PAGES = ["/devices", "/library", "/jobs", "/settings"]
 
 
 async def test_root_redirects_to_devices(client):
@@ -163,6 +162,38 @@ async def test_switching_view_keeps_the_filter(client):
     assert "/devices?view=grid&amp;q=phone" in r.text
 
 
+@pytest.mark.parametrize("view,fragment", [("table", "rows"), ("grid", "grid")])
+async def test_the_ten_second_poll_carries_the_filter(client, view, fragment):
+    """The poll repaints the element the filter writes to, so without hx-include it
+    erases it. A bare GET binds `q` to None, `_filtered` short-circuits and innerHTML puts
+    the whole fleet back under a box still reading `lg` — every ten seconds, for ever,
+    since innerHTML leaves the polling div and its trigger intact.
+
+    hx-disinherit ships with it: hx-include is inherited and every row's Test/Retry/Abort
+    button is inside this container. That is the bug #sel-form carries one for.
+    """
+    r = await client.get("/devices", params={"view": view})
+    div = r.text.split('<div id="device-rows"')[1].split(">")[0]
+    assert f'hx-get="/devices/{fragment}"' in div
+    assert 'hx-include="[name=q]"' in div
+    assert 'hx-disinherit="hx-include"' in div
+
+
+async def test_rescan_keeps_the_filter_too(client):
+    """`devices_rescan` has always declared `q`; nothing was sending it."""
+    button = (await client.get("/devices")).text
+    button = button.split('hx-post="/devices/rescan"')[1].split(">")[0]
+    assert 'hx-include="[name=q]"' in button
+
+    # `data`, not `params`: htmx puts hx-include values in the body of a POST, and a
+    # query-parameter handler binds None there however the button is wired.
+    swept = await client.post("/devices/rescan", data={"q": "phone"})
+    assert "Test Phone" in swept.text
+    assert "Test Kobo" not in swept.text
+    # ...including the follow-up that collects the sweep 2.5s later.
+    assert 'hx-get="/devices/rows?q=phone"' in swept.text
+
+
 async def test_library_lists_real_entries(client):
     r = await client.get("/lib/list", params={"p": "Science/Physics"})
     assert "Feynman.djvu" in r.text
@@ -170,9 +201,25 @@ async def test_library_lists_real_entries(client):
 
 
 async def test_library_filter_reports_counts(client):
-    r = await client.get("/lib/list", params={"p": "", "q": "Feynman"})
+    r = await client.get("/lib/list", params={"p": "Science/Physics", "q": "Feynman"})
     assert "Feynman.djvu" in r.text
     assert "matches" in r.text
+
+
+async def test_the_filter_narrows_the_listing_rather_than_leaving_it(client):
+    """Typing in the box narrows what is on screen; it does not start a search.
+
+    The recursive version answered the root with a flat list of basenames from anywhere in
+    the library — and could not do this, which is what the box in front of a directory
+    listing is for.
+    """
+    r = await client.get("/lib/list", params={"p": "", "q": "sci"})
+    assert "Science" in r.text
+    assert "Fiction" not in r.text
+    # Two levels down, and therefore not an answer to a question about this level.
+    assert "Feynman.djvu" not in (
+        await client.get("/lib/list", params={"p": "", "q": "Feynman"})
+    ).text
 
 
 async def test_library_rejects_traversal(client):
@@ -296,53 +343,11 @@ async def test_push_rejects_unindexed_but_real_paths(client, app):
     assert app.state.lib.jobs.recent() == []
 
 
-async def test_devices_yaml_view_highlights_and_counts(client):
-    r = await client.get("/devices.yaml")
-    assert "Test Kobo" in r.text
-    assert 'class="y-key"' in r.text
-    assert "2 devices" in r.text
-
-
-async def test_devices_yaml_validation_strip_reports_bad_edits(client, devices_file):
-    devices_file.write_text(
-        devices_file.read_text().replace("port: 2222", 'port: "2222 "')
-    )
-    r = await client.post("/devices.yaml/validate")
-    assert "devices[0].port" in r.text
-    assert "line " in r.text
-
-
-async def test_reload_from_disk_returns_the_actual_panel(client):
-    """The regression: Reload used to swap in only the validation strip.
-
-    For a *valid* file that strip is empty, so the button visibly did nothing at all.
-    """
-    r = await client.get("/devices.yaml/panel")
-    assert r.status_code == 200
-    assert "Test Kobo" in r.text          # the code is really there
-    assert 'class="y-key"' in r.text      # highlighted
-    assert "2 devices" in r.text            # header refreshed too
-    assert "Copy" in r.text               # and the control survives the swap
-    assert len(r.text) > 500
-
-
-async def test_reload_from_disk_picks_up_an_external_edit(client, devices_file):
-    """The whole point of the button: see what is on disk right now."""
-    before = await client.get("/devices.yaml/panel")
-    assert "Renamed Kobo" not in before.text
-
-    devices_file.write_text(
-        devices_file.read_text().replace("name: Test Kobo", "name: Renamed Kobo")
-    )
-
-    after = await client.get("/devices.yaml/panel")
-    assert "Renamed Kobo" in after.text
-
-
 async def test_config_edits_apply_without_any_button(client, devices_file):
     """The mtime watcher is the real mechanism — no reload action is involved.
 
-    This is why the panel's button is a view refresh, not a config reload.
+    It is also all that is left of the devices.yaml view: that page could only ever show
+    the file, which is why it went, and this is the half that mattered.
     """
     assert "Renamed Kobo" not in (await client.get("/devices/rows")).text
     devices_file.write_text(
@@ -351,27 +356,29 @@ async def test_config_edits_apply_without_any_button(client, devices_file):
     assert "Renamed Kobo" in (await client.get("/devices/rows")).text
 
 
-async def test_validation_strip_alone_is_empty_when_valid(client):
-    """Documents why the bug existed — this fragment is legitimately blank."""
-    r = await client.post("/devices.yaml/validate")
-    assert r.status_code == 200
-    assert r.text.strip() == ""
+async def test_a_broken_devices_yaml_says_so_in_the_top_bar(client, devices_file):
+    """The chip is the only surface those errors have now.
 
+    Without it a typo is perfectly silent: the store keeps serving the last good config,
+    so every device is still listed, still probed, still pushable — and the edit that was
+    just saved has simply not happened.
+    """
+    clean = await client.get("/devices/status")
+    assert "problem" not in clean.text
 
-async def test_panel_shows_the_error_band_for_a_bad_edit(client, devices_file):
     devices_file.write_text(
         devices_file.read_text().replace("port: 2222", 'port: "2222 "')
     )
-    r = await client.get("/devices.yaml/panel")
-    assert "devices[0].port" in r.text
-    assert "is-bad" in r.text  # the offending line is highlighted in the gutter
+    bad = await client.get("/devices/status")
+    assert "1 problem in devices.yaml" in bad.text
+    assert "devices[0].port" in bad.text
+    assert "dot-err" in bad.text
 
-
-async def test_devices_yaml_download(client):
-    r = await client.get("/devices.yaml/raw")
-    assert r.status_code == 200
-    assert "attachment" in r.headers["content-disposition"]
-    assert "devices:" in r.text
+    # And it clears itself: same poll, no action to take.
+    devices_file.write_text(
+        devices_file.read_text().replace('port: "2222 "', "port: 2222")
+    )
+    assert "problem" not in (await client.get("/devices/status")).text
 
 
 async def test_healthz(client):
@@ -414,13 +421,25 @@ async def test_a_directory_row_is_a_link_and_a_file_row_is_not(client):
 
 
 async def test_a_directory_link_carries_only_where_it_is_going(client):
-    """It drops q/fmt/sort, and that is not a judgement call: `children()` appends
-    `is_dir = 0` for a query and tests `fmt IN (...)`, which a directory's NULL fmt can
-    never match — so a directory row only exists when both are empty."""
-    for params in ({"q": "feyn"}, {"fmt": ["epub"]}):
-        r = await client.get("/lib/pane", params=params)
-        rows = r.text.split('<div id="file-rows">')[1]
-        assert '<a class="file-name"' not in rows, f"a directory row survived {params}"
+    """It drops q and sort, and now it has to say so on purpose.
+
+    The filter used to make this vacuous — `children()` appended `is_dir = 0` for a query,
+    so a directory row could not coexist with one. It can now, and dropping `q` is what
+    clears the box: the link swaps the whole #lib pane, which comes back with an empty
+    filter and the full listing, exactly as a tree click did.
+    """
+    r = await client.get("/lib/pane", params={"q": "sci", "sort": "size"})
+    rows = r.text.split('<div id="file-rows">')[1]
+    assert '<a class="file-name" title="Science"' in rows, "the match is not a way in"
+    assert 'hx-get="/lib/pane?p=Science"' in rows
+    for leaked in ("p=Science&", "q=sci", "sort=size"):
+        assert leaked not in rows, f"the directory link smuggled {leaked}"
+
+    # A format filter still removes every directory: a directory's fmt is NULL, and NULL
+    # satisfies no `fmt IN (...)`. That half is unchanged and still worth pinning.
+    r = await client.get("/lib/pane", params={"fmt": ["epub"]})
+    rows = r.text.split('<div id="file-rows">')[1]
+    assert '<a class="file-name"' not in rows
 
 
 async def test_the_breadcrumb_is_one_link_per_ancestor_plus_a_root(client):

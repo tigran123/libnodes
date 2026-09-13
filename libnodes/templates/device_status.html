@@ -4,3 +4,13 @@
   sshd {{ online }}/{{ total }} reachable
 </span>
 <span class="chip">last scan {{ last_scan|reltime }}</span>
+{% if issues %}
+  {# devices.yaml failed to parse or validate. The config in memory is the last good one,
+     so nothing else on the page looks wrong -- this chip is the whole warning. It rides
+     the 10s poll this fragment already has, so a bad save shows within a tick and a fixed
+     one clears itself. #}
+  <span class="chip" title="{% for i in issues %}{{ settings.resolved_devices_file }} {{ i.label }} {{ i.message }}{% if not loop.last %} · {% endif %}{% endfor %}">
+    <span class="dot dot-err"></span>
+    {{ issues|length }} problem{{ '' if issues|length == 1 else 's' }} in devices.yaml
+  </span>
+{% endif %}

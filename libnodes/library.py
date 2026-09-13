@@ -252,26 +252,27 @@ class LibraryIndex:
     ) -> list[Entry]:
         """Rows for the file table.
 
-        With no query this is the directory listing. With a query it becomes a
-        recursive search of the subtree, which at the root means the whole library —
-        that is what makes the filter box useful on 20.8k entries.
+        Always the listing of one directory: `q` narrows what is already on screen rather
+        than changing what is being looked at. It used to do the opposite — a query turned
+        this into a recursive `path LIKE 'p/%'` search with `is_dir = 0`, so typing at the
+        root scanned all 24.6k entries and answered with up to 2,000 bare basenames giving
+        no clue where any of them lived. That is a different question from the one the box
+        in front of a directory listing asks, it cost seconds on a Nexus 10, and it could
+        not do the obvious thing: typing `Audio` at the root now leaves the `Audio/` row,
+        and `row` inside Fiction leaves `Rowling-Harry-Potter/`.
+
+        Directories therefore match like anything else, and `ix_entries_parent` still
+        bounds the scan to one level however large the library is.
         """
         conn = self._connect()
         if conn is None:
             return []
-        where = []
-        params: list[object] = []
+        where = ["parent IS ?"]
+        params: list[object] = [path]
 
         if q:
-            if path:
-                where.append("(path = ? OR path LIKE ?)")
-                params += [path, f"{path}/%"]
             where.append("name LIKE ? ESCAPE '\\'")
             params.append(f"%{_escape_like(q)}%")
-            where.append("is_dir = 0")
-        else:
-            where.append("parent IS ?")
-            params.append(path)
 
         if fmts:
             where.append("fmt IN (%s)" % ",".join("?" * len(fmts)))

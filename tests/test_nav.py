@@ -1,7 +1,8 @@
 """Exactly one nav item is highlighted at a time.
 
 Two views once shared the `active` key "devices", so opening either lit up both Devices
-and devices.yaml. The keys are strings, so nothing catches a collision but a test.
+and the devices.yaml view beside it. That view has gone, but the keys are still strings
+and nothing but a test catches the next collision.
 """
 
 from __future__ import annotations
@@ -15,7 +16,6 @@ PAGES = {
     "/devices": "Devices",
     "/library": "Library",
     "/jobs": "Jobs",
-    "/devices.yaml": "devices.yaml",
     "/settings": "Settings",
 }
 
@@ -39,16 +39,6 @@ async def test_exactly_one_nav_item_is_active(client, path, expected):
     assert r.status_code == 200
     active = _active_labels(r.text)
     assert active == [expected], f"{path} highlighted {active}"
-
-
-async def test_devices_and_devices_yaml_do_not_share_a_key(client):
-    """The specific regression: these two are adjacent and easy to conflate."""
-    devices = _active_labels((await client.get("/devices")).text)
-    config = _active_labels((await client.get("/devices.yaml")).text)
-
-    assert devices == ["Devices"]
-    assert config == ["devices.yaml"]
-    assert set(devices).isdisjoint(config)
 
 
 async def test_every_nav_target_actually_resolves(client):

@@ -94,14 +94,10 @@
   }
 
   document.addEventListener("click", function (e) {
-    var btn = e.target.closest("[data-copy-from], [data-copy]");
+    var btn = e.target.closest("[data-copy]");
     if (!btn) return;
     var text = btn.dataset.copy;
-    if (!text) {
-      var src = document.querySelector(btn.dataset.copyFrom);
-      if (!src) return;
-      text = src.value !== undefined ? src.value : src.textContent;
-    }
+    if (!text) return;
     var label = btn.textContent;
     copyText(text).then(function (ok) {
       btn.textContent = ok ? "Copied" : "Copy failed";

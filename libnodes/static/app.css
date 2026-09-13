@@ -195,16 +195,6 @@
 :root[data-theme="light"] .dock-card.is-err {
   border-color: rgba(178, 61, 49, 0.4);
 }
-:root[data-theme="light"] .strip {
-  background: rgba(178, 61, 49, 0.09);
-  border-bottom-color: rgba(178, 61, 49, 0.3);
-}
-:root[data-theme="light"] .strip-line {
-  color: var(--err);
-}
-:root[data-theme="light"] .code-body > div.is-bad {
-  background: rgba(178, 61, 49, 0.1);
-}
 :root[data-theme="light"] .btn-danger:hover {
   background: rgba(178, 61, 49, 0.08);
 }
@@ -2210,132 +2200,6 @@ a.file-name:hover {
   margin-top: 3px;
 }
 
-/* ----------------------------------------------------------- devices.yaml -- */
-
-.yaml-panel {
-  width: 700px;
-  max-width: 100%;
-}
-
-.yaml-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--line);
-}
-
-.yaml-path {
-  font-family: var(--font-mono);
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--ink);
-}
-
-.strip {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 9px 14px;
-  background: rgba(209, 104, 92, 0.1);
-  border-bottom: 1px solid rgba(209, 104, 92, 0.28);
-}
-
-.strip-line {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: #e08b80;
-  white-space: nowrap;
-}
-
-.strip-msg {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--ink-3);
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.code {
-  display: flex;
-  background: var(--bg);
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  line-height: 1.7;
-  overflow-x: auto;
-  padding: 10px 0;
-}
-
-.code-gutter {
-  flex-shrink: 0;
-  text-align: right;
-  padding: 0 12px 0 14px;
-  color: var(--border-hi);
-  user-select: none;
-}
-
-.code-body {
-  flex: 1;
-  min-width: 0;
-  padding-right: 14px;
-}
-
-/* One div per line, each with white-space:pre. Never `pre` on the container --
- * source newlines between the divs would render as blank lines and knock the
- * gutter out of alignment. */
-.code-body > div,
-.code-gutter > div {
-  white-space: pre;
-}
-
-.code-body > div.is-bad {
-  background: rgba(209, 104, 92, 0.12);
-  /* bleed the highlight to the panel edges */
-  margin: 0 -14px 0 -14px;
-  padding: 0 14px;
-}
-
-.code-gutter > div.is-bad {
-  color: var(--err);
-}
-
-.y-key {
-  color: var(--accent);
-}
-.y-punct {
-  color: var(--dim);
-}
-.y-str {
-  color: var(--ink-2);
-}
-.y-bool {
-  color: var(--ok);
-}
-.y-num {
-  color: var(--warn);
-}
-.y-bad {
-  color: var(--err);
-}
-.y-comment {
-  color: var(--faint);
-}
-
-.panel-foot {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 14px;
-  border-top: 1px solid var(--line);
-}
-
-.panel-foot .r {
-  margin-left: auto;
-  display: flex;
-  gap: 8px;
-}
-
 /* ------------------------------------------------------------ animations -- */
 
 /* The design permits exactly four, all CSS. */
@@ -2956,9 +2820,10 @@ a.file-name:hover {
     grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
   }
 
-  /* Not the phone's `1 1 100%`: 240 + 128 (segmented) + 110 (+ Add device) + gaps is ~498
-     in 569 scaled px, so the filter stops claiming a row of its own. On a phone the basis
-     cannot fit and the row wraps exactly as it did. */
+  /* Not the phone's `1 1 100%`: 240 + 128 (segmented) + gaps is ~380 in 569 scaled px, so
+     the filter stops claiming a row of its own -- it had 110px more to clear back when
+     "+ Add device" sat beside the segmented control, and still fits without it. On a phone
+     the basis cannot fit and the row wraps exactly as it did. */
   .titlebar-right .field {
     flex: 1 1 240px;
     width: auto !important;

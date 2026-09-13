@@ -309,8 +309,10 @@ class DevicesStore:
     """Holds the parsed devices.yaml and reloads it when its mtime moves.
 
     The file is the single source of truth for the Devices view and is hand-edited on the
-    Pi, so we never cache across an edit. Parse failures are kept, not raised: the
-    devices.yaml view renders the previous good config plus the error strip.
+    Pi, so we never cache across an edit. Parse failures are kept, not raised: the fleet
+    goes on running the previous good config while the Devices top bar carries a chip
+    naming every issue (`device_status.html`). Raising instead would take the page down
+    over a typo in a file nothing in the app can fix.
     """
 
     def __init__(self, path: Path) -> None:

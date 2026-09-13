@@ -15,6 +15,7 @@
           hx-post="/devices/rescan"
           hx-target="#device-rows"
           hx-swap="innerHTML"
+          hx-include="[name=q]"
           hx-disabled-elt="this">Rescan</button>
 {% endblock %}
 
@@ -47,16 +48,23 @@
         <a class="{{ 'is-active' if view == 'grid' }}"
            href="/devices?view=grid{% if q %}&amp;q={{ q|urlencode }}{% endif %}">GRID</a>
       </div>
-
-      <a class="btn btn-primary" href="/device/new">+ Add device</a>
     </div>
   </div>
 
   {% if view == 'grid' %}
+    {# The poll repaints the very element the filter writes to, so it has to send the
+       filter with it. Without hx-include this is a bare GET: `q` binds to None,
+       `_filtered` short-circuits, and innerHTML puts the whole fleet back under a box
+       still reading `lg` -- every ten seconds, for ever, because innerHTML leaves this
+       div and its trigger intact. hx-disinherit rides along because hx-include is
+       inherited and every row's Test/Retry/Abort button lives inside here; that is the
+       same bug #sel-form carries hx-disinherit for in lib_pane.html. #}
     <div id="device-rows"
          hx-get="/devices/grid"
          hx-trigger="every 10s"
-         hx-swap="innerHTML">
+         hx-swap="innerHTML"
+         hx-include="[name=q]"
+         hx-disinherit="hx-include">
       {% include "device_grid.html" %}
     </div>
   {% else %}
@@ -72,10 +80,13 @@
         <div>Last sync</div>
         <div class="cell-r">Actions</div>
       </div>
+      {# Same two attributes as the grid branch, and for the same reason -- see there. #}
       <div id="device-rows"
            hx-get="/devices/rows"
            hx-trigger="every 10s"
-           hx-swap="innerHTML">
+           hx-swap="innerHTML"
+           hx-include="[name=q]"
+           hx-disinherit="hx-include">
         {% include "device_rows.html" %}
       </div>
     </div>

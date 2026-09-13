@@ -84,14 +84,27 @@ def test_dangling_symlink_is_skipped_not_fatal(index):
     assert index.meta().entry_count > 0
 
 
-def test_filter_searches_the_subtree(index):
-    assert [e.name for e in index.children("", q="Feynman")] == ["Feynman.djvu"]
-    # Scoped: the same query under an unrelated subtree finds nothing.
+def test_filter_narrows_the_current_level(index):
+    """The filter box narrows the listing in front of you; it is not a search.
+
+    It used to be one — `(path = ? OR path LIKE 'p/%') AND is_dir = 0` — which at the root
+    scanned the whole library and answered with basenames from anywhere in it, slowly, and
+    could never return the directory you were plainly trying to narrow down to.
+    """
+    top = index.children("", q="sci")
+    assert [e.name for e in top] == ["Science"]
+    assert top[0].is_dir, "a directory is a match like anything else"
+
+    # Two levels down, so not an answer about this level any more.
+    assert index.children("", q="Feynman") == []
+    assert [e.name for e in index.children("Science/Physics", q="feyn")] == [
+        "Feynman.djvu"
+    ]
     assert index.children("Fiction", q="Feynman") == []
 
 
 def test_format_filter(index):
-    pdfs = index.children("", q="a", fmts=["pdf"])
+    pdfs = index.children("Science/Physics", q="a", fmts=["pdf"])
     assert pdfs
     assert {e.fmt for e in pdfs} == {"pdf"}
 

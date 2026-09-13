@@ -208,9 +208,36 @@ are listed.
   that width while the suite stays green and the page looks plausible. Pinned by
   `tests/test_routes.py::test_a_directory_row_is_a_link_and_a_file_row_is_not` and
   `::test_the_breadcrumb_is_one_link_per_ancestor_plus_a_root`.
-  The link carries `p` and nothing else, which is not a preference: `children()` appends
-  `is_dir = 0` for a query and tests `fmt IN (...)`, so a directory row only exists when
-  both are empty.
+  The link carries `p` and nothing else, and that has to be deliberate now that a
+  directory row can coexist with a filter: `children()` narrows the current level instead
+  of searching the subtree, so `Audio` at the root leaves the `Audio/` row and you can
+  click it. Dropping `q` *is* the behaviour — the link swaps the whole `#lib` pane, so the
+  pane comes back with an empty box and the full listing, which is what a tree click did.
+  (`fmt` still removes every directory on its own: a directory's `fmt` is NULL and NULL
+  satisfies no `IN`.) Pinned by
+  `tests/test_routes.py::test_a_directory_link_carries_only_where_it_is_going`.
+- **The Library filter narrows one level; it is not a search.** `children()`
+  (`libnodes/library.py`) is always `parent IS ?`, and `q` adds `name LIKE '%q%'` to it.
+  It used to replace the scope instead — `(path = ? OR path LIKE 'p/%') AND is_dir = 0` —
+  which reads as the more powerful feature and is the wrong question in front of a
+  directory listing: at the root it scanned all 24.6k entries to answer with up to 2,000
+  bare basenames, no column saying where any of them lived, seconds of it on a Nexus 10;
+  and being `is_dir = 0` it could never return the directory you were obviously narrowing
+  towards. `ix_entries_parent` is what keeps the level version cheap however large the
+  library grows. Pinned by
+  `tests/test_library.py::test_filter_narrows_the_current_level` and
+  `tests/test_routes.py::test_the_filter_narrows_the_listing_rather_than_leaving_it`.
+- **The Devices poll must carry the filter, or it erases it.** `#device-rows`
+  (`devices.html`, both branches) re-fetches itself `every 10s` — the same element the
+  filter box targets — so without `hx-include="[name=q]"` it is a bare GET: `q` binds to
+  `None`, `_filtered` short-circuits, and `innerHTML` puts all ten devices back under a
+  box still reading `lg`. For ever, because `innerHTML` leaves the polling div and its
+  trigger intact, and with nothing failing anywhere. Rescan had the same hole, against a
+  `q` parameter `devices_rescan` has always declared. `hx-disinherit="hx-include"` ships
+  beside it: `hx-include` is inherited and that container holds every row's
+  Test/Retry/Abort button — the entry below, from the other page. Pinned by
+  `tests/test_routes.py::test_the_ten_second_poll_carries_the_filter` and
+  `::test_rescan_keeps_the_filter_too`.
 - **`#sel-form` must keep `hx-disinherit="hx-include"`.** `hx-include` is inherited, and
   the form's is `#lib-params` — `p=<the directory we are in>`. Every link inside the table
   therefore appended it, so `hx-get="/lib/pane?p=Science/Aviation"` went out as

@@ -112,17 +112,6 @@ async def test_the_job_stream_is_closed(locked):
     assert r.status_code != 200
 
 
-async def test_the_config_stream_is_closed(locked):
-    r = await locked.get("/devices.yaml/stream")
-    assert r.status_code != 200
-
-
-async def test_the_raw_config_download_is_closed(locked):
-    """It is the whole devices.yaml: hostnames, users, ports, target paths."""
-    r = await locked.get("/devices.yaml/raw")
-    assert r.status_code == 303
-
-
 async def test_the_old_urls_are_closed_too(locked):
     """The /fleet and /node redirects (main.py:54) are routes like any other. A router
     dependency would have missed them; the middleware does not."""
@@ -284,9 +273,9 @@ def test_only_whole_pages_are_valid_destinations():
     from libnodes.auth import safe_next
 
     for fragment in ("/devices/rows", "/jobs/dock", "/lib/list", "/device/kobo/menu",
-                     "/jobs/stream", "/devices.yaml/raw"):
+                     "/jobs/stream", "/lib/pane"):
         assert safe_next(fragment) == "/devices", fragment
-    for page in ("/library", "/jobs", "/devices.yaml", "/library?q=x"):
+    for page in ("/library", "/jobs", "/settings", "/library?q=x"):
         assert safe_next(page) == page, page
 
 
@@ -436,5 +425,5 @@ async def test_the_password_is_not_in_a_page(locked):
     # object -- password included -- into every template context, which is why the field
     # is a SecretStr. A page actually called Settings is the one most likely to grow a
     # dump of it.
-    for path in ("/devices", "/library", "/jobs", "/devices.yaml", "/settings"):
+    for path in ("/devices", "/library", "/jobs", "/settings"):
         assert PASSWORD not in (await locked.get(path)).text

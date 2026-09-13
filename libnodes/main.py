@@ -14,7 +14,6 @@ from .auth import AuthMiddleware
 from .config import get_devices, get_settings
 from .library import PathError
 from .routes import auth as auth_routes
-from .routes import config_view as config_routes
 from .routes import devices as devices_routes
 from .routes import jobs as jobs_routes
 from .routes import library as library_routes
@@ -127,7 +126,6 @@ def create_app() -> FastAPI:
     app.include_router(devices_routes.router)
     app.include_router(library_routes.router)
     app.include_router(jobs_routes.router)
-    app.include_router(config_routes.router)
     app.include_router(settings_routes.router)
     app.include_router(auth_routes.router)
     return app

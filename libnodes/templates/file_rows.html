@@ -22,11 +22,13 @@
         {# The way in. app.js's row-click handler returns early on anything inside
            `a, button, select, textarea`, so this navigates without also ticking the box,
            and every other part of the row still ticks it.
-           `p` and nothing else, exactly as the tree link carried. Not a judgement call:
-           `children()` appends `is_dir = 0` when `q` is set and tests `fmt IN (...)`,
-           which a directory's NULL fmt can never satisfy — so a directory row only exists
-           when both are empty, and there is no filter here to preserve. `sort` goes for
-           the tree's reason: entering a directory is a fresh listing. #}
+           `p` and nothing else, exactly as the tree link carried. A directory row can now
+           reach you *through* a filter — `children()` narrows the current level rather
+           than searching the subtree, so `Audio` at the root leaves the `Audio/` row —
+           and dropping `q` is the point rather than an oversight: this link swaps the
+           whole #lib pane, so the pane comes back with `q` empty and the box clears
+           itself. Entering a directory is a fresh listing, which is what the tree click
+           did and why `sort` goes the same way. #}
         <a class="file-name" title="{{ row.path }}"
            href="/library?p={{ row.path|urlencode }}"
            hx-get="/lib/pane?p={{ row.path|urlencode }}"
@@ -107,7 +109,7 @@
   <div class="trow" style="grid-template-columns:1fr">
     <div class="t-dim">
       {% if q %}
-        Nothing matches <span class="mono">{{ q }}</span>{% if path %} under <span class="mono">{{ path }}</span>{% endif %}.
+        Nothing matches <span class="mono">{{ q }}</span>{% if path %} in <span class="mono">{{ path }}</span>{% endif %}.
       {% elif not index_meta.ready %}
         Index not built yet — press <span class="mono">⟳</span> in the filter bar.
       {% else %}

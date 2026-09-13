@@ -5,12 +5,13 @@ what is left, with pointers into the code. Keep the two from contradicting each 
 
 ## Unbuilt features
 
-- [ ] **Device configuration drawer.** `/device/new` is a stub
-      (`libnodes/routes/config_view.py:138`) and there is no per-device edit; `devices.yaml`
-      is hand-edited today. This is the first code that would *write* that file, so it needs
-      validate-then-atomic-rename rather than an in-place write — and note that the inotify
-      watcher will fire on our own save, so the reload path must tolerate seeing its own
-      write come back.
+- [ ] **Device configuration drawer.** There is no per-device edit and no route to hang
+      one on: `/device/new` was a stub page saying "stage 2", and it went with the button
+      that linked it — a control that cannot do the thing it names is worse than no
+      control. `devices.yaml` is hand-edited today. This is the first code that would
+      *write* that file, so it needs validate-then-atomic-rename rather than an in-place
+      write — and note that the inotify watcher will fire on our own save, so the reload
+      path must tolerate seeing its own write come back.
 
 - [ ] **Presets.** Saved selections that can be re-pushed in one action. The stub page
       and its nav item were removed — they had said "planned for stage 2" in the rail for

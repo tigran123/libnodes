@@ -218,7 +218,6 @@ infer from its label is a bad action.
 | `watch.py` | inotify on `devices.yaml`, so edits appear without polling |
 | `host.py` | `/proc` telemetry for the rail footer |
 | `cardprefs.py` | which parts of a GRID card this browser draws; the Settings ticks |
-| `yamlview.py` | token colouring for the read-only config view |
 | `routes/` | one module per view; full pages return the shell, everything else a fragment |
 
 Outside the package, `tools/shot.py` photographs and interrogates the running UI over the
@@ -288,8 +287,7 @@ parsing `app.css`, which needs no browser.
 
 Working: devices with live reachability, library explorer with instant filter, pushes to
 one or many devices, live SSE progress dock, job history with logs, scan/adopt, dry runs,
-read-only `devices.yaml` view with inotify refresh, light and dark themes, responsive
-layout for tablets, optional shared-password login.
+light and dark themes, responsive layout for tablets, optional shared-password login.
 
 Not built yet: the device configuration drawer (edit `devices.yaml` by hand for now —
 changes take effect immediately), presets, wake-on-LAN.

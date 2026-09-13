@@ -124,11 +124,13 @@ async def test_correctness_does_not_depend_on_the_watcher(client, devices_file):
     assert "Renamed Kobo" in (await client.get("/devices/rows")).text
 
 
-async def test_stream_endpoint_is_wired(client):
-    """The page must actually subscribe, or the push goes nowhere."""
-    page = await client.get("/devices.yaml")
-    assert 'sse-connect="/devices.yaml/stream"' in page.text
-    assert 'sse-swap="config"' in page.text
-    # ...and no interval polling is left behind.
+async def test_nothing_polls_for_the_config_any_more(client):
+    """The watcher is the mechanism, and the page it used to push to has gone.
+
+    What is left has to stay push-free: the Devices page polls its *rows* every 10s and
+    that is a reachability cadence, not a config one. A config poll reappearing here would
+    mean somebody had quietly stopped trusting inotify.
+    """
+    page = await client.get("/devices")
+    assert "sse-connect" not in page.text
     assert "every 5s" not in page.text
-    assert "every 10s" not in page.text

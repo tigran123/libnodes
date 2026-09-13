@@ -7,7 +7,7 @@ import shlex
 import time
 from dataclasses import dataclass
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse
 
 from ..deps import base_context, state
@@ -377,6 +377,14 @@ def devices_context(
             "total": total,
             "last_scan": app.probe.last_scan,
             "profiles": app.devices.config.profiles,
+            # The only surface devices.yaml's validation errors have. The read-only YAML
+            # view that used to carry them is gone -- the file is hand-edited over ssh, so
+            # a page that could only *show* it earned nothing -- but a typo that fails to
+            # parse must not be silent: the store keeps serving the last good config, so
+            # the fleet on screen looks perfectly well. Costs nothing new: the property
+            # is an mtime check, the same one `.config` two lines up already made, and
+            # the inotify watcher is what actually re-reads the file.
+            "issues": app.devices.issues,
             # Set here rather than in the page handler alone, so the fragments and the
             # rescan agree with the branch devices.html rendered. They can trust the
             # cookie because it is only ever written from an explicit `?view=`.
@@ -479,11 +487,18 @@ async def device_probe(request: Request, device_id: str):
 
 
 @router.post("/devices/rescan", response_class=HTMLResponse)
-async def devices_rescan(request: Request, q: str | None = None):
+async def devices_rescan(request: Request, q: str | None = Form(default=None)):
     """Sweep every device, ignoring backoff — without making the browser wait.
 
     Awaiting this would make Rescan cost one connect timeout per unreachable node. The
     returned fragment schedules a single follow-up refresh to pick up the results.
+
+    `Form`, not a query parameter: the button reaches here with `hx-include="[name=q]"`,
+    and for a POST htmx puts included values in the *body*. As a query parameter this
+    bound to None however carefully the button was wired, and Rescan answered with the
+    whole fleet — the filter erased by the one control most likely to be pressed while
+    filtering. Measured in the live page, where the unit test had passed by supplying `q`
+    the one way the browser never does.
     """
     app = state(request)
     app.probe.rescan_soon(force=True)

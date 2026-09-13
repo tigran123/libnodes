@@ -16,10 +16,10 @@ What it guarantees:
   * Sessions do not survive a password change, because the signing key *is* the password
     (via `_signing_key`). There is no key file, nothing in var/, and nothing to rotate.
 
-Cookies, not headers, and not negotiable: /jobs/stream and /devices.yaml/stream are read
-by EventSource, which cannot send custom headers. The bundled extension already opens
-them with `withCredentials: true` (static/htmx-ext-sse.js:76), so a cookie rides along;
-an Authorization scheme would have silently killed the sync dock.
+Cookies, not headers, and not negotiable: /jobs/stream is read by EventSource, which
+cannot send custom headers. The bundled extension already opens it with
+`withCredentials: true` (static/htmx-ext-sse.js:76), so a cookie rides along; an
+Authorization scheme would have silently killed the sync dock.
 """
 
 from __future__ import annotations
@@ -73,9 +73,7 @@ PAGES = frozenset(
         "/devices",
         "/library",
         "/jobs",
-        "/devices.yaml",
         "/settings",
-        "/device/new",
     }
 )
 
