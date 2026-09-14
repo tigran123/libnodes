@@ -1392,6 +1392,52 @@ def test_a_tablet_in_portrait_fits_two_cards():
     assert columns(412) == 1, "a phone must not be given two columns of 130px"
 
 
+def test_the_desktop_card_grid_reflows_with_the_screen():
+    """Above the tablet band the card grid is auto-fill, not a fixed three-up.
+
+    It was `repeat(3, 1fr)` -- chosen so that raising --scale reflowed nothing -- which
+    makes every screen wider than 1280px a three-column screen however wide it is. On the
+    4K monitor this is actually read on that put a 13px title and a 124px address in a card
+    617 layout px across, and ran 14 devices off the bottom of a page with room for them all.
+
+    The floor is measured from both sides against the running service (tools/shot.py --eval,
+    forcing the columns narrower): below 260 a card overflows its own box, and above 313 --
+    what the design's three-up gives a card at 1440px -- a 1440px desktop loses a column.
+    Both ends matter, so both are checked here through the arithmetic rather than asserted
+    as the number, and this is the ">=1090px" regime, where the rail is still in the flow.
+    """
+    css = (ROOT / "libnodes" / "static" / "app.css").read_text()
+
+    base = css.split("\n.cards {")[1].split("\n}")[0]
+    assert "auto-fill" in base, (
+        "the desktop card grid went back to a fixed column count — a 4K screen then gets "
+        "three cards 617px wide and nothing else notices"
+    )
+    floor = int(re.search(r"minmax\((\d+)px", base).group(1))
+    gap = int(re.search(r"gap: (\d+)px", base).group(1))
+
+    rail = int(re.search(r"--rail:\s*(\d+)px", css).group(1))
+    gutter = int(re.search(r"--gutter:\s*(\d+)px", css).group(1))
+    scale = float(re.search(r"--scale:\s*([\d.]+)", css).group(1))
+
+    def columns(viewport: float) -> int:
+        room = viewport / scale - rail - 2 * gutter
+        return int((room + gap) // (floor + gap))
+
+    assert floor >= 260, (
+        f"a desktop card overflows its own box below 260px, and this is {floor}"
+    )
+    # 313px is the three-up card at 1440; a bigger floor takes that desktop's third column.
+    assert columns(1440) == 3, "a 1440px desktop is the design's three-up and must keep it"
+    # 3846 real px of 4K at the per-site 125% the page is read at, which is 3077 CSS px.
+    assert columns(3846 / 1.25) >= 6, (
+        "the screen this is read on has room for seven cards and was being given three"
+    )
+    # Three fixed columns did not fit here: they ran 45px past .view, which is
+    # overflow-x: auto, so they scrolled off the side of a 1090px window in silence.
+    assert columns(1090) == 2, "three columns do not fit inside the panel at 1090px"
+
+
 def test_the_size_and_date_columns_cannot_wrap():
     """SIZE and MODIFIED hold a formatted string of known width, so their track floors are
     that string rather than a guess.

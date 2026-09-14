@@ -80,8 +80,10 @@
      per-site zoom at 125% to be comfortable -- which is the app failing to size itself.
      1.21 is that at about 112%, measured on the live page at 2156 CSS px: the card title
      renders 22.0px against 19.7px before and the 24.6px of the 125% it replaces. The
-     desktop card grid is repeat(3, 1fr) rather than auto-fill, so nothing reflows; only
-     the type and the controls grow.
+     type and the controls grow with it -- and so does how many device cards fit a row, the
+     card grid being auto-fill over a floor in layout px while the screen is real px. Change
+     this number and that floor's arithmetic moves under it; see .cards, which carries the
+     measurements.
 
      THREE BREAKPOINTS ARE DERIVED FROM THIS NUMBER AND DO NOT FOLLOW IT BY THEMSELVES,
      because a media query is matched against the real viewport and cannot read a custom
@@ -1283,7 +1285,25 @@ ul {
 
 .cards {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  /* auto-fill, not a fixed three-up. On the 4K monitor this is read on, 3 x 1fr made a card
+     617 layout px wide -- a 13px title and a 124px address stretched across 1156 real px --
+     while 14 devices ran off the bottom of a page that had room for them all.
+   *
+   * 300px is measured from both sides, against the running service with tools/shot.py
+   * --eval. Below 260 a card overflows its own box, forcing the columns narrower and
+   * narrower: 3px spills at 250 and the Test/Retry/Actions strip goes by 37px at 220. (The
+   * touch block's 230 is not transferable -- that regime has --scale 1.35 under it.) Above
+   * 313 a 1440px desktop loses its third column, 313 being what the design's three-up gives
+   * a card there.
+   *
+   * Between the two, the floor is also what holds the card *size* still: the column is
+   * (room + 12) / n - 12 with n = floor((room + 12) / 312), so 300-345 layout px from four
+   * columns up -- a wider screen gets more cards rather than bigger ones. Measured: 1440
+   * stays 3 x 313.4 unchanged, 1920 goes 3 x 446 to 4 x 331, the 4K in landscape 3 x 617 to
+   * 7 x 320 at the 125% it is read at. It also un-breaks 1090-1180, where the three fixed
+   * columns ran 45px past .view -- which is overflow-x: auto, so they scrolled off-screen
+   * rather than saying anything. */
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 12px;
 }
 
