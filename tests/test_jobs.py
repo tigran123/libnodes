@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 
 import pytest
 
@@ -469,6 +470,94 @@ async def test_log_is_written(app, fake_rsync, monkeypatch, settings):
     log = settings.logs_dir / f"{job.id}.log"
     assert log.exists()
     assert "sending incremental file list" in log.read_text()
+
+
+async def test_the_log_records_what_happened_not_every_progress_tick(
+    app, tmp_path, monkeypatch, settings
+):
+    """A job log is read by a person afterwards; the dock is watched live. Different
+    audiences, and progress2 serves only the second of them.
+
+    Measured on job #19, a pull with nothing left to fetch: 3,855 progress lines against
+    16 that said anything, 275 KB, every one of them reading
+    `0   0%    0.00kB/s    0:00:00 (xfr#0, ir-chk=1011/58460)` — rsync walking a 58k-entry
+    file list and transferring nothing. The throttle is LOG_PROGRESS_INTERVAL; the dock
+    still receives all of them, because `_apply_progress` runs on every line either way.
+    """
+    noisy = tmp_path / "noisy-rsync"
+    noisy.write_text(
+        "#!/bin/sh\n"
+        "echo 'Fiction/Book.epub'\n"
+        "i=0; while [ $i -lt 400 ]; do\n"
+        "  printf '        480   0%%    0.47MB/s    0:00:00 (xfr#0, ir-chk=%d/400)\\r' $i\n"
+        "  i=$((i+1))\n"
+        "done\n"
+        "echo ''\n"
+        "echo 'sent 2,060 bytes  received 57 bytes  4,234.00 bytes/sec'\n"
+        "exit 0\n"
+    )
+    noisy.chmod(0o755)
+
+    lib = app.state.lib
+    async with app.router.lifespan_context(app):
+        monkeypatch.setattr("libnodes.jobs.build_argv", lambda *a, **k: [str(noisy)])
+        job = lib.jobs.submit(_device(app), ["Fiction"])
+        for _ in range(200):
+            if lib.jobs.get(job.id).finished:
+                break
+            await asyncio.sleep(0.05)
+
+    lines = (settings.logs_dir / f"{job.id}.log").read_text().splitlines()
+    progress = [ln for ln in lines if PROGRESS_RE.match(ln)]
+    # 400 ticks in well under LOG_PROGRESS_INTERVAL, so only the flushed final one.
+    assert len(progress) <= 2, progress[:5]
+    # And none of what actually happened was thrown away with them.
+    assert any(ln.startswith("Fiction/Book.epub") or "Book.epub" in ln for ln in lines)
+    assert any(ln.startswith("sent 2,060 bytes") for ln in lines)
+    assert any("$ " in ln for ln in lines)
+
+
+async def test_a_short_stream_still_leaves_its_last_progress_line(
+    app, fake_rsync, monkeypatch, settings
+):
+    """The flush at the end of `_stream`. Without it a transfer that finishes inside the
+    throttle window logs no progress at all, and the file would be the worse for the
+    change rather than the better."""
+    lib = app.state.lib
+    async with app.router.lifespan_context(app):
+        monkeypatch.setattr("libnodes.jobs.build_argv", lambda *a, **k: [str(fake_rsync)])
+        job = lib.jobs.submit(_device(app), ["Fiction"])
+        for _ in range(100):
+            if lib.jobs.get(job.id).finished:
+                break
+            await asyncio.sleep(0.05)
+
+    lines = (settings.logs_dir / f"{job.id}.log").read_text().splitlines()
+    progress = [ln for ln in lines if PROGRESS_RE.match(ln)]
+    # Two: the first tick, because the throttle starts open the way `last_push` and
+    # `last_term` do, and the last, flushed at the end of the stream.
+    assert len(progress) == 2, progress
+    assert "xfr#2" in progress[-1], "the *last* one, carrying the final totals"
+
+
+def test_only_our_own_log_lines_carry_a_clock():
+    """rsync's output must reach the log exactly as rsync wrote it.
+
+    `_ATTR_PROBLEM_RE` anchors on `^rsync:` with re.MULTILINE, so a timestamp prefix on
+    those lines would stop `is_attrs_only` ever finding an attribute failure — repainting
+    a complete push red and putting it back through the retry ladder. Command headers and
+    phase markers are ours and may be stamped; nothing else is.
+    """
+    import io
+
+    from libnodes.jobs import _log_note, is_attrs_only
+
+    buf = io.StringIO()
+    _log_note(buf, "$ rsync -a src dst")
+    buf.write("rsync: [receiver] failed to set times on \"/x\": Operation not permitted\n")
+    text = buf.getvalue()
+    assert re.match(r"^\[\d\d:\d\d:\d\d\] \$ rsync", text)
+    assert is_attrs_only(text), "a stamped rsync line would silently break the exit-23 split"
 
 
 async def test_iter_lines_splits_on_carriage_returns():

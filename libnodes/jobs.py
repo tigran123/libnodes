@@ -207,6 +207,36 @@ BASE_FLAGS = ["-a", "-O", "--partial", "-L", "-R"]
 #: ownership flags are harmless, and it is because the destination is local.
 PULL_FLAGS = ["-a", "-O", "--partial-dir=.rsync-partial"]
 
+#: How often a `--info=progress2` line is kept in the *log file*. The dock still gets
+#: every one of them — `_apply_progress` runs on all of them and the SSE push is its own
+#: 2 Hz throttle — but the log is a record a person reads afterwards, and progress2 emits
+#: a line per file-list update whether or not anything moved.
+#:
+#: Measured on job #19, a pull that had nothing left to fetch: 3,855 progress lines
+#: against 16 that said anything, in 275 KB. Every one of them read
+#: `0   0%    0.00kB/s    0:00:00 (xfr#0, ir-chk=1011/58460)` — rsync walking a 58k-entry
+#: file list and transferring nothing.
+#:
+#: 30 s rather than something finer, because the worst case is the one that matters: a
+#: cold 250 GB pull over a slow link runs for hours, and one line every 30 s is ~600 for a
+#: five-hour transfer where 5 s would be 3,600. The final line of every stream is kept
+#: regardless (see `_stream`), so a phase shorter than the interval still shows its
+#: totals rather than nothing at all.
+LOG_PROGRESS_INTERVAL = 30.0
+
+
+def _log_note(log, text: str) -> None:
+    """One of *our* lines in the job log: a command header or a phase marker.
+
+    Timestamped, because a six-phase pull spans minutes and "which step took the time"
+    is the first question anyone asks of it. Only these lines carry a clock -- rsync's
+    own output must stay exactly as rsync wrote it, because `_ATTR_PROBLEM_RE` anchors
+    on `^rsync:` with re.MULTILINE and a prefix would silently stop the exit-23 split
+    from ever finding an attribute failure. That would repaint a complete push red and
+    put it back through the retry ladder.
+    """
+    log.write(f"[{time.strftime('%H:%M:%S')}] {text}\n")
+
 #: How many delivered filenames one job may hold in memory, so an interrupted push can
 #: still tell the manifest what landed (`_note_sent`). The whole library is 24,616 files;
 #: this clears that with room to spare, at ~60 bytes a path.
@@ -865,7 +895,10 @@ _SNAPSHOT_PY = (
     "import sqlite3,sys,os; "
     "s=sqlite3.connect(sys.argv[1]); d=sqlite3.connect(sys.argv[2]); "
     "s.backup(d); d.close(); s.close(); "
-    "print('# snapshot %d bytes' % os.path.getsize(sys.argv[2]))"
+    # Double quotes inside, single quotes outside: shlex wraps the whole script in single
+    # quotes, so a single quote *in* it comes back as the unreadable '"'"' dance in every
+    # log line that carries the command.
+    'print("# snapshot %d bytes" % os.path.getsize(sys.argv[2]))'
 )
 
 
@@ -1379,9 +1412,14 @@ class JobRunner:
     async def _service(self, job: Job, verb: str, log) -> int | None:
         return await self._stream(job, service_argv(verb, self.settings), log)
 
-    def _phase(self, job: Job, text: str) -> None:
+    def _phase(self, job: Job, text: str, log=None) -> None:
         job.phase = text
         self._append_line(job, f"— {text}", "info")
+        if log is not None:
+            # The log gets them too, and this is most of what makes a pull's log readable:
+            # without the markers it is six bare `$` lines and you have to know the phase
+            # order by heart to tell which rsync is the catalog swap.
+            _log_note(log, f"— {text}")
         self._emit(JobEvent("progress", job.id))
 
     async def _run_pull(self, job: Job, log) -> int | None:
@@ -1404,7 +1442,7 @@ class JobRunner:
             return 1
         config = self.devices.config
 
-        self._phase(job, "1/6 · library")
+        self._phase(job, "1/6 · library", log)
         code = await self._stream(job, job.argv, log)
         if code is None:
             return None
@@ -1436,7 +1474,7 @@ class JobRunner:
             self._append_line(job, job.pull_warning, "warn")
             return code
 
-        self._phase(job, "2/6 · snapshot")
+        self._phase(job, "2/6 · snapshot", log)
         snap = await self._stream(job, snapshot_argv(device, config, self.settings), log)
         if snap != 0:
             job.pull_warning = "catalog not refreshed — the upstream snapshot failed"
@@ -1446,7 +1484,7 @@ class JobRunner:
 
         stopped = False
         try:
-            self._phase(job, "3/6 · stopping " + self.settings.local_service)
+            self._phase(job, "3/6 · stopping " + self.settings.local_service, log)
             self._service_hold.parent.mkdir(parents=True, exist_ok=True)
             self._service_hold.write_text(
                 json.dumps({"unit": self.settings.local_service, "job": job.id,
@@ -1466,7 +1504,7 @@ class JobRunner:
                 return code
             stopped = True
 
-            self._phase(job, "4/6 · catalog")
+            self._phase(job, "4/6 · catalog", log)
             # The stale write-ahead log goes *before* the new database lands, and the
             # order is where the corruption lives: applying a WAL belonging to the old
             # file over a fresh one is the one way this loses a catalog rather than
@@ -1482,7 +1520,7 @@ class JobRunner:
                 self._append_line(job, job.pull_warning, "err")
         finally:
             if stopped:
-                self._phase(job, "5/6 · starting " + self.settings.local_service)
+                self._phase(job, "5/6 · starting " + self.settings.local_service, log)
                 if await self._service(job, "start", log) == 0:
                     self._service_hold.unlink(missing_ok=True)
                 else:
@@ -1502,7 +1540,7 @@ class JobRunner:
         in the next scan's backlog -- the list that is supposed to mean "books you have
         not pulled yet".
         """
-        self._phase(job, "6/6 · cleanup")
+        self._phase(job, "6/6 · cleanup", log)
         try:
             await self._stream(job, cleanup_argv(device, config, self.settings), log)
         except Exception as exc:  # noqa: BLE001 - tidying must not fail a landed pull
@@ -1525,7 +1563,17 @@ class JobRunner:
         has already been marked failed and its events emitted, because there is nothing
         for a caller to add.
         """
-        log.write(f"$ {' '.join(shlex.quote(a) for a in argv)}\n")
+        # An ssh argv ends in one word that is a *shell command for the far side*, and
+        # rendering it as one more quoted element is both unreadable and misleading: it
+        # comes out as `'python3 -c '"'"'import…'"'"' …'`, which is correct and tells you
+        # nothing. Print the connection, then the remote command exactly as the remote
+        # shell will see it — which is the thing worth reading when it goes wrong. Job #18
+        # was a quoting bug whose log showed the command re-quoted into looking right.
+        if argv and argv[0] == "ssh" and len(argv) > 1:
+            _log_note(log, f"$ {' '.join(shlex.quote(a) for a in argv[:-1])}")
+            log.write(f"           remote: {argv[-1]}\n")
+        else:
+            _log_note(log, f"$ {' '.join(shlex.quote(a) for a in argv)}")
         try:
             proc = await asyncio.create_subprocess_exec(
                 *argv,
@@ -1546,13 +1594,26 @@ class JobRunner:
         self._procs[job.id] = proc
         last_push = 0.0
         last_term = 0.0
+        last_log = 0.0
+        #: The most recent progress line *not* written to the log, so the end of the
+        #: stream can flush it. Without this a phase that finishes inside
+        #: LOG_PROGRESS_INTERVAL leaves no progress in the log at all.
+        pending = ""
 
         assert proc.stdout is not None
         async for chunk in _iter_lines(proc.stdout):
-            log.write(chunk + "\n")
             now = time.time()
             match = PROGRESS_RE.match(chunk)
             if match:
+                # Throttled into the log, unthrottled into the job. The two are different
+                # audiences: the dock is watched live and wants every update, the file is
+                # read afterwards and wants a record. See LOG_PROGRESS_INTERVAL.
+                if now - last_log >= LOG_PROGRESS_INTERVAL:
+                    last_log = now
+                    pending = ""
+                    log.write(chunk.strip() + "\n")
+                else:
+                    pending = chunk.strip()
                 _apply_progress(job, match)
                 if now - last_push >= 0.5:  # ~2 Hz, per the SSE contract
                     last_push = now
@@ -1563,6 +1624,19 @@ class JobRunner:
             elif chunk.strip():
                 text = chunk.rstrip()
                 event = FILE_RE.match(text)
+                # Everything that is not a progress tick: the @-lines, rsync's own
+                # diagnostics and its closing summary. All of it goes to the log, because
+                # all of it says something that happened once.
+                #
+                # A held-back progress line is flushed first, so `sent … received …` stays
+                # the last word of its phase rather than being overtaken by the tick the
+                # throttle was sitting on. Not before an @-line, though: those are one per
+                # file, and flushing there would put a progress line between every pair of
+                # them — undoing the whole point of the throttle on a real push.
+                if pending and event is None:
+                    log.write(pending + "\n")
+                    pending = ""
+                log.write(text + "\n")
                 if event is not None:
                     # A file or directory rsync actually touched. Directories carry
                     # a trailing slash and are noise in the "current file" readout.
@@ -1591,6 +1665,13 @@ class JobRunner:
                         else "info"
                     )
                     self._append_line(job, text, css)
+
+        # The last progress line, if the throttle above was still holding it. This is what
+        # keeps a phase shorter than the interval from logging no progress at all, and it
+        # is also the one worth having on a long transfer: it carries the final xfr# and
+        # byte counter, beside rsync's own closing summary.
+        if pending:
+            log.write(pending + "\n")
 
         code = await proc.wait()
         self._procs.pop(job.id, None)
