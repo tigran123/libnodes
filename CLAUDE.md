@@ -307,9 +307,9 @@ are listed.
 - **The file table is the only navigator, and both halves of that are load-bearing.**
   A directory row's name is an `<a>` (`file_rows.html`) and `.pathline` is a real
   breadcrumb built from `index.ancestors()` (`lib_pane.html`) — down and up. There is no
-  tree pane any more; it was `display: none` below 972px with nothing in its place, so a
-  Nexus 10 in portrait (800 CSS px) could tick a directory and never enter one, and a book
-  three levels down was unreachable. Delete either half and navigation simply stops at
+  tree pane any more; it was `display: none` below the rail breakpoint with nothing in its
+  place, so a Nexus 10 in portrait (800 CSS px) could tick a directory and never enter one,
+  and a book three levels down was unreachable. Delete either half and navigation simply stops at
   that width while the suite stays green and the page looks plausible. Pinned by
   `tests/test_routes.py::test_a_directory_row_is_a_link_and_a_file_row_is_not` and
   `::test_the_breadcrumb_is_one_link_per_ancestor_plus_a_root`.
@@ -471,13 +471,34 @@ are listed.
   it silently wraps the last cell onto a second line. `.subrow` is the one top-level div
   that is not a column and says so with `grid-column: 1 / -1`. Pinned by
   `tests/test_battery.py::test_the_grid_declares_a_track_for_every_cell`.
+- **`--scale` is a real page zoom, and three breakpoints are derived from it by hand.**
+  `zoom: var(--scale)` on `html` (`app.css`), 1.21 on the desktop. Every px length in the
+  file mirrors the design bundle's Tailwind scale 1:1, so the alternative was rewriting 412
+  values, and scaling only the fonts would leave rows, gutters and icons behind. It went
+  1.08 -> 1.21 (about 112%) because a 28in 4K monitor turned portrait needed Chrome's
+  per-site zoom at 125% to be readable, which is the app failing to size itself; measured on
+  the live page at 2156 CSS px, the card title renders 22.0px against 19.7px before.
+  **A media query is matched against the real viewport and cannot read a custom property**,
+  so the three breakpoints derived from `--scale` do not follow it and must be changed with
+  it: **1089** (= 900 x scale, where the rail leaves the flow and the Library stacks),
+  **1090** (the tablet band's floor, its matched pair) and **1520** (>= 1248 x scale, where
+  the device and jobs rows stack). Forget one and you get a band where the layout has
+  stopped stacking and cannot lay out either -- the device row carried exactly that for
+  months at 1281-1348, written down in `TODO.md` until this change forced the fix. Each is
+  now recomputed from the stylesheet by a test:
+  `tests/test_battery.py::test_the_rail_breakpoint_follows_the_zoom`,
+  `::test_the_stack_breakpoint_clears_the_row_floor` and
+  `::test_the_file_grid_stacks_before_it_runs_out_of_panel`. The touch value is untouched at
+  1.35, and the tablet zoom's 1280 ceiling with it.
 - **`--scale` has a second value, and the tablet regime is a third layout.** A 10" tablet
   is ~150 CSS px per inch against a monitor's ~96 — 184 under Chrome's "Desktop site",
-  which widens the layout viewport to 980 CSS px and lands 8px above the 972px breakpoint
-  that would have taken the rail out of the flow. So the fleet's own tablets got the
-  desktop layout at half size with 190px of nav still in it. `app.css` raises `--scale` to
-  1.35 for touch screens up to 1280px and repeats the 972px block's rail rules for the band
-  above 972, where the rail is still in flow; the two are a wash on content width and a
+  which widens the layout viewport to 980 CSS px and landed 8px above the *old* 972px
+  breakpoint that would have taken the rail out of the flow. So the fleet's own tablets got
+  the desktop layout at half size with 190px of nav still in it. (At 1089 that particular
+  case is now inside the block, and the band below owns the 1090–1280 landscape one.)
+  `app.css` raises `--scale` to
+  1.35 for touch screens up to 1280px and repeats the 1089px block's rail rules for the band
+  above 1089, where the rail is still in flow; the two are a wash on content width and a
   third larger on type. Three things are load-bearing and each has a test: the repeat can
   drift (`test_the_tablet_band_hides_the_rail_the_way_the_narrow_one_does`), the zoom must
   leave the Library a table because the file table is the only navigator there is
@@ -499,12 +520,12 @@ are listed.
   why a desktop showed nothing wrong. Pinned by
   `::test_the_size_and_date_columns_cannot_wrap`.
 - **In portrait that same tablet is 800 CSS px, so the zoom lands on the *phone* block.**
-  The 972px rules were drawn for a 412px screen, and two of them are wrong once `--scale`
-  1.35 is on top: one card column (the two-column rule lives in the 973–1280 band and so
+  The 1089px rules were drawn for a 412px screen, and two of them are wrong once `--scale`
+  1.35 is on top: one card column (the two-column rule lives in the 1090–1280 band and so
   fires only in landscape), and a 44px touch minimum multiplied into 59.4 CSS px — 0.40" on
   a Nexus 10 (800 CSS px across a 5.33" edge is 150 to the inch) and 0.47" on an S4 (700
   across 5.56" is 126), against the 0.27" a thumb needs. The 44 is a *physical* rule, so it
-  is divided by the zoom that follows it: 33 x 1.35 = 44.6, in a `max-width: 972px` + touch
+  is divided by the zoom that follows it: 33 x 1.35 = 44.6, in a `max-width: 1089px` + touch
   block that repeats the zoom band's two clauses so it is on exactly where the zoom is. Type
   is deliberately not in it — the same arithmetic puts it at 0.112" and 0.134" against a
   desktop's 0.141", so `font-size` never appears there and
@@ -526,14 +547,14 @@ are listed.
   the screen you think it is on.
 - **The stacked device row is the fallback for every narrow screen, not a phone layout.**
   It is what a 27" 2.5K monitor turned portrait gets — 1152 CSS px at 125%, against the
-  1348px a single-line row needs (1022px of track floors + 190 rail + 36 gutter, x `--scale`)
+  1510px a single-line row needs (1022px of track floors + 190 rail + 36 gutter, x `--scale`)
   — and nine label/value lines per device put nine devices past a 2560px screen one at a
   time. Above 660px it goes two-up, five lines, and the pairs are the row's own grouping:
   Device with Type, Address with Target, Storage with Battery, and the two ages side by side
   where they already belong. Actions spans, its floor being 320px of failure text plus three
   buttons. 660 is the address, which is the widest value here with no tooltip to fall back on
   — 124px at 11.5px mono — plus the label, the 8px gap and 2x12px of padding, twice, in the
-  binding regime of a touch screen under 972px: `2 x (76 + 8 + 24 + 124) + 24 = 488` layout
+  binding regime of a touch screen under 1089px: `2 x (76 + 8 + 24 + 124) + 24 = 488` layout
   px is 660 real px at `--scale` 1.35. The label is 76px here and 92px when it has a row to
   itself, because 92 was never its text — "LAST SEEN" is 60.7px — and two-up cannot afford
   31px of dead space per column. Pinned by

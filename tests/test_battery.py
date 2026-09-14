@@ -1066,6 +1066,14 @@ def test_the_stack_breakpoint_clears_the_row_floor():
     band where the grid was over-constrained and paid for it by wrapping the Actions
     buttons. Computed from the stylesheet rather than written down, so the next column
     fails here instead of on somebody's screen.
+
+    **Multiplied by `--scale`**, which this test did not do for a long time and its sibling
+    below always did. Every length in the row is zoomed and the media query is matched
+    against the unzoomed viewport, so the row needs `1248 x --scale` real px, not 1248. At
+    1.08 that was 1348 against a 1280px breakpoint -- a live 68px band, recorded in TODO.md
+    until raising the zoom to 1.21 forced it to be fixed. Measured on the live page at 1.21:
+    the row hangs 121px past the panel at a 1366px viewport, 60px at 1440, 2px at 1510, and
+    is clean from 1512 up -- against the 1510 this arithmetic predicts.
     """
     css = (ROOT / "libnodes" / "static" / "app.css").read_text()
 
@@ -1073,14 +1081,16 @@ def test_the_stack_breakpoint_clears_the_row_floor():
     floor = sum(int(n) for n in re.findall(r"minmax\((\d+)px", block))
     rail = int(re.search(r"--rail:\s*(\d+)px", css).group(1))
     gutter = int(re.search(r"--gutter:\s*(\d+)px", css).group(1))
+    scale = float(re.search(r"--scale:\s*([\d.]+)", css).group(1))
     stack = int(
         re.search(r"@media \(max-width: (\d+)px\) \{\s*\.thead\.device-grid", css).group(1)
     )
 
-    needed = floor + rail + 2 * gutter
+    needed = (floor + rail + 2 * gutter) * scale
     assert stack >= needed, (
-        f"{floor}px of track floors need {needed}px of viewport, but the row stops "
-        f"stacking at {stack}px — leaving {needed - stack}px with no working layout"
+        f"{floor}px of track floors need {needed:.0f}px of viewport at --scale {scale}, "
+        f"but the row stops stacking at {stack}px — leaving {needed - stack:.0f}px with "
+        "no working layout"
     )
 
 
@@ -1088,7 +1098,7 @@ def test_the_file_grid_stacks_before_it_runs_out_of_panel():
     """The Library table is the navigator now, so the width at which it stops being a
     table is a navigation decision rather than a cosmetic one.
 
-    Its arithmetic has two regimes, which the device row's does not: at 972px the rail
+    Its arithmetic has two regimes, which the device row's does not: at 1089px the rail
     goes position:fixed and stops taking 190px out of the flow, so the *narrower* viewport
     is the roomier one. It also has to account for --scale, because a media query is
     matched against the unzoomed viewport while every length inside the layout is zoomed.
@@ -1152,15 +1162,15 @@ def _rule(block: str, selector: str) -> str:
 
 
 def test_the_tablet_band_hides_the_rail_the_way_the_narrow_one_does():
-    """The tablet band repeats the 972px block's rail rules instead of widening its query,
+    """The tablet band repeats the 1089px block's rail rules instead of widening its query,
     because only some of that block belongs to a tablet -- it wants two card columns where
     a phone wants one. A repeat can drift, so it is pinned: an off-canvas rail that opens
     in one regime and not the other is a nav that half works, and nothing else would say so.
     """
     css = (ROOT / "libnodes" / "static" / "app.css").read_text()
 
-    narrow = _media_block(css, "@media (max-width: 972px) {\n  body")
-    tablet = _media_block(css, "@media (min-width: 973px) and (max-width: 1280px)")
+    narrow = _media_block(css, "@media (max-width: 1089px) {\n  body")
+    tablet = _media_block(css, "@media (min-width: 1090px) and (max-width: 1280px)")
 
     for selector in (".rail", ".shell.rail-open .rail", ".rail-toggle"):
         assert _rule(narrow, selector) == _rule(tablet, selector), selector
@@ -1170,10 +1180,49 @@ def test_the_tablet_band_hides_the_rail_the_way_the_narrow_one_does():
     assert _rule(tablet, ".cards") == "grid-template-columns: repeat(2, 1fr);"
 
 
+def test_the_rail_breakpoint_follows_the_zoom():
+    """`--scale` is a zoom, and three breakpoints are derived from it by hand.
+
+    A media query is matched against the real, unzoomed viewport and cannot read a custom
+    property, so none of them follows `--scale` by itself: raise the zoom and the content
+    runs out of room at a *wider* viewport than before, while the query stays put. That is
+    a whole class of bug -- it left a live 68px band on the device row for months, recorded
+    in TODO.md until raising the zoom to 1.21 forced the fix.
+
+    Two of the three are already pinned by their own arithmetic:
+    ::test_the_stack_breakpoint_clears_the_row_floor recomputes the device row's, and
+    ::test_the_file_grid_stacks_before_it_runs_out_of_panel the Library's. This one covers
+    the third, which has no floor of its own to check against: the width at which the rail
+    leaves the flow is the design's 900px breakpoint carried through the zoom, and nothing
+    else would notice it being left behind.
+    """
+    css = (ROOT / "libnodes" / "static" / "app.css").read_text()
+
+    scale = float(re.search(r"--scale:\s*([\d.]+)", css).group(1))
+    rail_floats = int(re.search(r"@media \(max-width: (\d+)px\) \{\s*body", css).group(1))
+
+    # 900 is the design bundle's own breakpoint; see the --scale comment in app.css.
+    expected = 900 * scale
+    assert abs(rail_floats - expected) <= 2, (
+        f"the rail leaves the flow at {rail_floats}px, but --scale {scale} puts the "
+        f"design's 900px breakpoint at {expected:.0f}px — change the two together"
+    )
+
+    # And the tablet band has to start exactly where that block stops, or a tablet in
+    # between gets both or neither.
+    band = int(
+        re.search(r"@media \(min-width: (\d+)px\) and \(max-width: \d+px\) and \(hover", css)
+        .group(1)
+    )
+    assert band == rail_floats + 1, (
+        f"the narrow block ends at {rail_floats}px and the tablet band starts at {band}px"
+    )
+
+
 def test_the_tablet_zoom_leaves_the_library_a_table():
     """The file table is the only navigator, so the zoom must not over-constrain it.
 
-    The tablet band is above 972px, where the file grid has not stacked -- so its seven
+    The tablet band is above 1089px, where the file grid has not stacked -- so its seven
     track floors have to fit a panel that the zoom has made narrower. They do, and the
     margin is what this checks: at the band's narrow end the rail is already out of the
     flow, so the panel is `viewport / --scale - 2x12` of .lib-body padding.
@@ -1190,10 +1239,14 @@ def test_the_tablet_zoom_leaves_the_library_a_table():
         "the tablet block no longer zooms anything"
     )
 
+    band = int(
+        re.search(r"@media \(min-width: (\d+)px\) and \(max-width: \d+px\) and \(hover", css)
+        .group(1)
+    )
     needed = (floor + 2 * 12) * scale
-    assert needed <= 973, (
+    assert needed <= band, (
         f"{floor}px of track floors need {needed:.0f}px at {scale}x zoom, but the tablet "
-        f"band starts at 973px — the Library would have no working layout on a tablet"
+        f"band starts at {band}px — the Library would have no working layout on a tablet"
     )
 
 
@@ -1229,15 +1282,15 @@ def test_the_stacked_row_pairs_its_cells():
     derived from the widest thing in the row that has no tooltip to fall back on: the address,
     124px at 11.5px mono. A column is that plus the label, the gap and the cell's side
     padding, and two of them plus .view's padding have to fit the narrowest regime that can
-    reach this rule -- a touch screen under 972px, where the rail is already out of flow and
+    reach this rule -- a touch screen under 1089px, where the rail is already out of flow and
     --scale is 1.35.
     """
     css = (ROOT / "libnodes" / "static" / "app.css").read_text()
 
     start = int(
-        re.search(r"@media \(min-width: (\d+)px\) and \(max-width: 1280px\)", css).group(1)
+        re.search(r"@media \(min-width: (\d+)px\) and \(max-width: 1520px\)", css).group(1)
     )
-    two_up = _media_block(css, f"@media (min-width: {start}px) and (max-width: 1280px)")
+    two_up = _media_block(css, f"@media (min-width: {start}px) and (max-width: 1520px)")
     assert "grid-template-columns: 1fr 1fr;" in two_up
 
     # The Actions cell floors at 320px -- failure text plus three buttons -- so it takes the
@@ -1246,7 +1299,7 @@ def test_the_stacked_row_pairs_its_cells():
         two_up, ".trow.device-grid .cell-actions,\n  .trow.jobs-grid .cell-actions"
     )
 
-    stacked = _media_block(css, "@media (max-width: 1280px) {")
+    stacked = _media_block(css, "@media (max-width: 1520px) {")
     gap = int(re.search(r"> \* \{[^}]*gap: (\d+)px", stacked, re.S).group(1))
     side = int(re.search(r"> \* \{[^}]*padding: \d+px (\d+)px", stacked, re.S).group(1))
 
@@ -1261,7 +1314,7 @@ def test_the_stacked_row_pairs_its_cells():
         re.search(r"--scale:\s*([\d.]+)",
                   _media_block(css, "@media (max-width: 1280px) and (hover: none)")).group(1)
     )
-    narrow = _media_block(css, "@media (max-width: 972px) {\n  body")
+    narrow = _media_block(css, "@media (max-width: 1089px) {\n  body")
     pad = int(re.search(r"\.lib-body,\n  \.view \{\s*padding-left: (\d+)px", narrow).group(1))
 
     column = label + gap + 2 * side + 124
@@ -1277,7 +1330,7 @@ def test_the_stacked_row_pairs_its_cells():
 def test_the_touch_minimum_survives_the_zoom():
     """44px is a physical rule -- 0.27" is what a thumb needs -- and the zoom multiplies it.
 
-    A 10" tablet in portrait is 800 CSS px, so it lands in the 972px block written for a
+    A 10" tablet in portrait is 800 CSS px, so it lands in the 1089px block written for a
     phone while --scale 1.35 is still on: 44 x 1.35 = 59.4 CSS px, 0.41" on a screen with
     143.5 CSS px to the inch. The touch block divides the zoom back out, and that this
     product still lands on 44 is the entire point of the change -- neither number means
@@ -1285,8 +1338,8 @@ def test_the_touch_minimum_survives_the_zoom():
     """
     css = (ROOT / "libnodes" / "static" / "app.css").read_text()
 
-    narrow = _media_block(css, "@media (max-width: 972px) {\n  body")
-    touch = _media_block(css, "@media (max-width: 972px) and (hover: none)")
+    narrow = _media_block(css, "@media (max-width: 1089px) {\n  body")
+    touch = _media_block(css, "@media (max-width: 1089px) and (hover: none)")
     scale = float(
         re.search(r"--scale:\s*([\d.]+)",
                   _media_block(css, "@media (max-width: 1280px) and (hover: none)")).group(1)
@@ -1318,14 +1371,14 @@ def test_a_tablet_in_portrait_fits_two_cards():
     """
     css = (ROOT / "libnodes" / "static" / "app.css").read_text()
 
-    touch = _media_block(css, "@media (max-width: 972px) and (hover: none)")
+    touch = _media_block(css, "@media (max-width: 1089px) and (hover: none)")
     floor = int(re.search(r"\.cards \{[^}]*minmax\((\d+)px", touch, re.S).group(1))
     gap = int(re.search(r"^\.cards \{[^}]*gap: (\d+)px", css, re.S | re.M).group(1))
     scale = float(
         re.search(r"--scale:\s*([\d.]+)",
                   _media_block(css, "@media (max-width: 1280px) and (hover: none)")).group(1)
     )
-    narrow = _media_block(css, "@media (max-width: 972px) {\n  body")
+    narrow = _media_block(css, "@media (max-width: 1089px) {\n  body")
     pad = int(re.search(r"\.lib-body,\n  \.view \{\s*padding-left: (\d+)px", narrow).group(1))
 
     assert floor >= 220, f"a card's content overflows its box below 220px, and this is {floor}"

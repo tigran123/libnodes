@@ -73,8 +73,28 @@
      Viewport units are the exception: vh/vw resolve against the real viewport and are
      NOT divided by the zoom, so 100vh would render 100 * --scale tall and put a scrollbar
      on a shell that is meant to fill the screen exactly. The three that exist are divided
-     back out at their use sites, each marked. */
-  --scale: 1.08;
+     back out at their use sites, each marked.
+
+     1.08 was the design bundle's own figure and it was too small on the screen this is
+     actually read on: a 28in 4K monitor turned portrait, half of it, needed Chrome's
+     per-site zoom at 125% to be comfortable -- which is the app failing to size itself.
+     1.21 is that at about 112%, measured on the live page at 2156 CSS px: the card title
+     renders 22.0px against 19.7px before and the 24.6px of the 125% it replaces. The
+     desktop card grid is repeat(3, 1fr) rather than auto-fill, so nothing reflows; only
+     the type and the controls grow.
+
+     THREE BREAKPOINTS ARE DERIVED FROM THIS NUMBER AND DO NOT FOLLOW IT BY THEMSELVES,
+     because a media query is matched against the real viewport and cannot read a custom
+     property. Change them together or the layout gets a band where it has stopped
+     stacking and cannot lay out:
+
+       1089  the rail leaves the flow and the Library stacks   = 900 x --scale
+       1520  the device and jobs rows stack                    >= 1248 x --scale
+       1090  the tablet band's floor, the matched pair of 1089
+
+     Each is pinned by a test that recomputes it from this value -- see
+     test_the_rail_breakpoint_follows_the_zoom and its two siblings. */
+  --scale: 1.21;
 
   /* Native widgets -- select popups, form controls, scrollbars -- are drawn by the
      browser, not by this stylesheet. Without this they render light-on-light. */
@@ -1135,7 +1155,7 @@ ul {
    .panel and .panel's overflow: hidden swallowed whatever hung off the right -- STORAGE,
    LAST SYNC and ACTIONS disappeared with nothing on screen to say they existed, and the
    table looked like it had four columns. Measured: the row needed 1005px, and from 1250px
-   of viewport down to the 972px stacking breakpoint it did not get it, so there was a
+   of viewport down to the 1089px stacking breakpoint it did not get it, so there was a
    ~280px band where the page quietly lied.
 
    The max of each track is the design's original width, so a wide screen is unchanged.
@@ -1151,8 +1171,8 @@ ul {
     /* Battery. Narrower than Storage because its widest content is a charging bolt plus
        "100%" over a bar, where Storage carries "302.9G / 466.4G". The floor went 58 -> 70
        when the bolt arrived: 7px of glyph and 3px of margin, rounded up. That puts the
-       nine floors at 1022px and a single-line row at 1248px of viewport, still inside the
-       1280px stacking breakpoint below -- which is what
+       nine floors at 1022px and a single-line row at 1248 layout px -- 1510 real px at
+       --scale 1.21 -- still inside the 1520px stacking breakpoint below -- which is what
        test_the_stack_breakpoint_clears_the_row_floor checks, so the next one to grow
        fails there rather than on somebody's screen. */
     minmax(70px, 96px)
@@ -1376,7 +1396,7 @@ ul {
 .lib {
   /* One panel. The tree pane that used to sit beside this — a fixed 300px aside — is
      gone: the file table is the navigator now, so the same information was on screen
-     twice and only one of the two survived a viewport under 972px. `.lib-main` was
+     twice and only one of the two survived a viewport under 1089px. `.lib-main` was
      merged in here for the same reason; a flex row with one child is not a layout. */
   flex: 1;
   min-width: 0;
@@ -2267,29 +2287,31 @@ a.file-name:hover {
    the panel is 300px wider at every viewport and the same seven columns fit far further
    down.
 
-   Two regimes, and the narrower viewport is the roomier one: above 972px the rail is
-   190px of flow, so the panel is `viewport / --scale(1.08) - 190 - 2x--gutter(18)`; at
-   972px and below the rail becomes position: fixed and leaves the flow entirely, and the
-   panel is `viewport / 1.08 - 2x12` of .lib-body padding. The seven track floors sum to
-   614px (26+140+60+64+84+100+140), so the wide regime needs 907px of viewport -- which,
-   being wide, it always has -- and the narrow one needs 689px. Measured with
-   tools/shot.py, sweeping with the breakpoint temporarily lowered: PUSH first hangs past
-   .panel's overflow: hidden edge at 689px of viewport exactly -- clean at 690, 1px over
-   at 689, 50px over at 640 -- so the arithmetic and the browser agree to the pixel.
+   Two regimes, and the narrower viewport is the roomier one: above 1089px the rail is
+   190px of flow, so the panel is `viewport / --scale - 190 - 2x--gutter(18)`; at 1089px
+   and below the rail becomes position: fixed and leaves the flow entirely, and the panel
+   is `viewport / --scale - 2x12` of .lib-body padding. The seven track floors sum to
+   644px (26+140+60+82+96+100+140), so at --scale 1.21 the wide regime needs 1053px of
+   viewport and the narrow one 808px. Measured with tools/shot.py at 1.21: PUSH hangs 32px
+   past .panel's overflow: hidden edge at 1016px of viewport, 4px over at 1050 and clean at
+   1089 -- so the arithmetic and the browser agree to within a handful of pixels, as they
+   did at the previous zoom (where the same sweep put the floor at 689 exactly).
 
-   972, not the 689 floor: it is the width at which the rail leaves the flow, so the page
+   1089, not the 1053 floor: it is the width at which the rail leaves the flow, so the page
    tells one story instead of two, and it leaves the slack that arithmetic ignores -- the
-   scrollbar .lib-body grows on a desktop, and the next column somebody adds. The payoff
-   is a Nexus 10 in landscape, 1280 CSS px, which the old number handed the stacked cards;
-   in portrait it is 800px and still gets them, which is the right read on a tablet held
-   upright. test_the_file_grid_stacks_before_it_runs_out_of_panel recomputes the floor
-   from this stylesheet, so the next column fails there rather than on somebody's screen.
+   scrollbar .lib-body grows on a desktop, and the next column somebody adds. It is 900 x
+   --scale, the design's own breakpoint carried through the zoom; see --scale, which lists
+   the three numbers derived from it. The payoff is a Nexus 10 in landscape, 1280 CSS px,
+   which the old number handed the stacked cards; in portrait it is 800px and still gets
+   them, which is the right read on a tablet held upright.
+   test_the_file_grid_stacks_before_it_runs_out_of_panel recomputes the floor from this
+   stylesheet, so the next column fails there rather than on somebody's screen.
 
    Below this the row was simply wider than .panel, and .panel's overflow: hidden ate
    whatever hung off the right, with nothing on screen to say so -- the table just looked
    as though it had fewer columns. */
 
-@media (max-width: 972px) {
+@media (max-width: 1089px) {
   .thead.file-grid {
     display: none;
   }
@@ -2332,17 +2354,20 @@ a.file-name:hover {
 
 /* 1280px. This used to be the same number `.file-grid` stacked at, and the two have
    since parted: the Library lost its 300px tree, so its panel grew and its breakpoint
-   moved down to 972 while the Devices table's arithmetic did not change at all. They were
+   moved down to 1089 while the Devices table's arithmetic did not change at all. They were
    never one number for a shared reason -- each is its own grid's floor -- so they stack
    at their own widths and only one of these tables is ever on screen at a time.
    Arithmetic, not taste: the device row's nine track floors sum to 1022px, and the panel
-   gets `viewport - --rail(190) - 2x--gutter(18)`, so a single-line row needs 1248px of
-   viewport. At the old 1200px there was a 36px band -- 1200 to 1236 -- where the row had
+   gets `viewport - --rail(190) - 2x--gutter(18)`, so a single-line row needs 1248 *layout*
+   px -- which at --scale 1.21 is 1510 real px, because the row is zoomed and this query is
+   not. 1520 for the slack. Measured on the live page at 1.21: the row hangs 121px past the
+   panel at a 1366px viewport, 60px at 1440, 2px at 1510, and is clean from 1512 up.
+   At the old 1200px there was a 36px band -- 1200 to 1236 -- where the row had
    stopped stacking but could not lay out either, and an over-constrained grid pays for it
    by wrapping the Actions buttons. `test_the_stack_breakpoint_clears_the_row_floor` keeps
    the two numbers in step when a column is added. `.jobs-grid` rides along; its floors sum
    to 628px, so it fits comfortably either side and only gains consistency. */
-@media (max-width: 1280px) {
+@media (max-width: 1520px) {
   .thead.device-grid, .thead.jobs-grid {
     display: none;
   }
@@ -2385,9 +2410,11 @@ a.file-name:hover {
 
 /* Two-up, above 660px. The stacked row above is the fallback for *every* narrow screen and
    not a phone layout: this fleet reads itself on a 10" tablet at 700 CSS px and on a 27"
-   2.5K monitor turned portrait, which at 125% is 1152 -- both far below the 1348px a
+   2.5K monitor turned portrait, which at 125% is 1152 -- both far below the 1510px a
    single-line row needs (1022px of track floors + 190 rail + 36 gutter, x --scale), and both
-   wide enough to hold two label/value pairs. One column there printed nine lines per device,
+   wide enough to hold two label/value pairs. The ceiling tracks that stack breakpoint and
+   must keep tracking it: leave it behind and 1281-1520 gets the one-up fallback, nine
+   lines per device, which is the layout this band exists to replace. One column there printed nine lines per device,
    so nine devices went past a 2560px-tall screen one at a time. Measured on that monitor:
    9 lines per device to 5.
 
@@ -2414,7 +2441,7 @@ a.file-name:hover {
    Pinned by test_the_stacked_row_pairs_its_cells. .jobs-grid rides along exactly as it does
    in the block above: same fallback, same treatment -- Job with Target, Source with Files,
    Bytes with Started, State spanning, and every one of its labels shorter than LAST SEEN. */
-@media (min-width: 660px) and (max-width: 1280px) {
+@media (min-width: 660px) and (max-width: 1520px) {
   .trow.device-grid,
   .trow.jobs-grid {
     grid-template-columns: 1fr 1fr;
@@ -2431,13 +2458,13 @@ a.file-name:hover {
   }
 }
 
-/* 972px = the design's 900px breakpoint x --scale. A media query is matched against the
-   real viewport and cannot read a custom property, so this one does not follow --scale by
-   itself: zoomed content runs out of room at a *wider* viewport than before, and left at
-   900 the rail would overlap the content pane for the 72px in between. Change the two
-   together. This is also where the rail goes position: fixed and stops taking 190px out
+/* 1089px = the design's 900px breakpoint x --scale (1.21). A media query is matched against
+   the real viewport and cannot read a custom property, so this one does not follow --scale
+   by itself: zoomed content runs out of room at a *wider* viewport than before, and left at
+   900 the rail would overlap the content pane for the 189px in between. Change the two
+   together -- test_the_rail_breakpoint_follows_the_zoom is what catches it if you do not. This is also where the rail goes position: fixed and stops taking 190px out
    of the flow, which is the second regime the .file-grid arithmetic above depends on. */
-@media (max-width: 972px) {
+@media (max-width: 1089px) {
   body {
     font-size: 12.5px;
   }
@@ -2672,11 +2699,14 @@ a.file-name:hover {
  * file renders at about half the size it was drawn at. Measured on the Nexus 10 (2560x1600
  * over 8.53 x 5.33in): device-width portrait is 800 CSS px across 5.33in and landscape
  * 1280 across 8.53in -- 150 per inch either way, against a desktop monitor's ~96. Chrome's
- * "Desktop site" is worse, not better: it widens the layout viewport to 980 CSS px on that
- * same 5.33in edge, 184 per inch, and lands 8px above the 972px breakpoint that would have
- * taken the rail out of the flow. So the tablet got the desktop layout at half scale, with
- * 190px of permanent nav still in it -- three card columns of 227px on a screen that had
- * room for two comfortable ones.
+ * "Desktop site" used to be worse, not better: it widens the layout viewport to 980 CSS px
+ * on that same 5.33in edge, 184 per inch, and that landed 8px above the *old* 972px
+ * breakpoint that would have taken the rail out of the flow. So the tablet got the desktop
+ * layout at half scale, with 190px of permanent nav still in it -- three card columns of
+ * 227px on a screen that had room for two comfortable ones. Raising --scale moved that
+ * breakpoint to 1089, so 980 now falls inside it and the rail leaves on its own; this block
+ * is still what supplies the zoom, and the band below still owns the 1090-1280 landscape
+ * case a Nexus 10 sits in natively.
  *
  * Two clauses, because neither alone covers both modes. `hover: none and pointer: coarse`
  * is a real touch screen; the pointer half is not redundant, because a browser with no
@@ -2692,7 +2722,7 @@ a.file-name:hover {
  *
  * 1280 is the ceiling because that is where the device row stops stacking, and its nine
  * track floors (1022px) do not fit a zoomed panel above it. Below the ceiling everything
- * still fits: the file grid's floors are 614px against 980/1.35 - 24 = 702px of panel, so
+ * still fits: the file grid's floors are 644px against 980/1.35 - 24 = 702px of panel, so
  * the Library stays a table -- and the file table is the only navigator there is. */
 @media (max-width: 1280px) and (hover: none) and (pointer: coarse),
        (max-width: 1280px) and (min-resolution: 1.5dppx) {
@@ -2702,7 +2732,7 @@ a.file-name:hover {
 }
 
 /* The zoom costs horizontal room and the rail is what pays for it -- 190px of nav that a
-   tablet reaches by the toggle instead, which is exactly what the 972px block already does
+   tablet reaches by the toggle instead, which is exactly what the 1089px block already does
    for narrower screens. This repeats those rules rather than widening that block's query,
    because only some of it belongs here: this band wants the rail gone and the toolbar
    wrapped, but two card columns where a phone wants one.
@@ -2710,8 +2740,8 @@ a.file-name:hover {
 
    The two changes are a wash on content width and pure gain on type: 980/1.08 - 190 - 36 =
    681 scaled px of cards before, 980/1.35 - 36 = 690 after, at a third the size again. */
-@media (min-width: 973px) and (max-width: 1280px) and (hover: none) and (pointer: coarse),
-       (min-width: 973px) and (max-width: 1280px) and (min-resolution: 1.5dppx) {
+@media (min-width: 1090px) and (max-width: 1280px) and (hover: none) and (pointer: coarse),
+       (min-width: 1090px) and (max-width: 1280px) and (min-resolution: 1.5dppx) {
   .rail {
     position: fixed;
     inset: 0 auto 0 0;
@@ -2732,7 +2762,7 @@ a.file-name:hover {
     padding: 4px 8px;
   }
 
-  /* Same reason as the 972px block: the segmented control falls off the edge otherwise. */
+  /* Same reason as the 1089px block: the segmented control falls off the edge otherwise. */
   .titlebar {
     flex-wrap: wrap;
     row-gap: 10px;
@@ -2744,15 +2774,16 @@ a.file-name:hover {
     flex-wrap: wrap;
   }
 
-  /* Not the 972px block's `flex: 1 1 100%`: that gives a phone's filter its own row, and
+  /* Not the 1089px block's `flex: 1 1 100%`: that gives a phone's filter its own row, and
      here the row has 690px for a 230px field, the segmented control and one button. */
   .titlebar-right .field {
     flex: 1 1 240px;
     width: auto !important;
   }
 
-  /* Two, not the phone's one: 690 scaled px is 345 per card, within a hair of the 369 a
-     1440px desktop gives them. Three was the 227px the screenshot was taken of. */
+  /* Two, not the phone's one: 690 scaled px is 345 per card, comfortably past the 313 a
+     1440px desktop gives them at --scale 1.21. Three was the 227px the screenshot was
+     taken of. */
   .cards {
     grid-template-columns: repeat(2, 1fr);
   }
@@ -2762,7 +2793,7 @@ a.file-name:hover {
  *
  * The band above is landscape. In *portrait* a 10" tablet is 700 to 800 CSS px -- a Nexus 10
  * is exactly 800 and a Galaxy Tab S4 is 700, for the reason set out at the card floor below
- * -- which lands it in the 972px block, written for a phone, while the zoom above is still
+ * -- which lands it in the 1089px block, written for a phone, while the zoom above is still
  * on. Two things follow, and both are the phone rule meeting the tablet's --scale rather
  * than anything either one got wrong alone.
  *
@@ -2791,8 +2822,8 @@ a.file-name:hover {
  * card, 800 gives 278 -- while a 412px phone has 281 and keeps one. Landscape is untouched
  * above. Pinned by test_the_touch_minimum_survives_the_zoom and
  * ::test_a_tablet_in_portrait_fits_two_cards. */
-@media (max-width: 972px) and (hover: none) and (pointer: coarse),
-       (max-width: 972px) and (min-resolution: 1.5dppx) {
+@media (max-width: 1089px) and (hover: none) and (pointer: coarse),
+       (max-width: 1089px) and (min-resolution: 1.5dppx) {
   .btn,
   .segmented > *,
   .nav-item,
@@ -2806,7 +2837,7 @@ a.file-name:hover {
     min-height: 33px;
   }
 
-  /* line-height for the same reason the 972px block used it: vertical padding on an
+  /* line-height for the same reason the 1089px block used it: vertical padding on an
      inline-block does not grow the line box. */
   .pathline .crumbs {
     line-height: 33px;
@@ -2830,7 +2861,7 @@ a.file-name:hover {
   }
 }
 
-/* Phone, not merely narrow. Above this the topbar has room for everything and the 972px
+/* Phone, not merely narrow. Above this the topbar has room for everything and the 1089px
    block's shrink rules never bind; below it the status chips squeeze down to "sshd …",
    which says nothing at all. The crumb is what gives way, because it repeats what the
    page states immediately below it -- "devices / all" over a "Devices" heading,
