@@ -34,7 +34,7 @@ def library_context(
 
     device_ids = [d.id for d in app.devices.config.devices]
     presence = app.manifests.presence(rows, device_ids)
-    selectable = [d for d in app.devices.config.devices if not d.is_mirror]
+    selectable = [d for d in app.devices.config.devices if d.is_selectable]
 
     elapsed_ms = (time.perf_counter() - started) * 1000
     meta = app.index.meta()

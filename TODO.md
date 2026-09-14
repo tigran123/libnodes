@@ -29,6 +29,21 @@ what is left, with pointers into the code. Keep the two from contradicting each 
       "test key" that runs the existing `ssh_argv` (`libnodes/probe.py:448`) and reports
       the exit status — the machinery is already there, only the view is missing.
 
+- [ ] **Orphan blobs after a pull.** A pull never emits `--delete`, deliberately, so
+      `/Books` only ever grows: a blob deleted upstream stays here for ever, unreferenced
+      by the catalog and unbrowsable, which means nothing in the UI will ever mention it
+      and 931 GB is the only thing that eventually will. The set is computable — the
+      catalog is authoritative about which blobs are still reachable — so the wanted
+      feature is a read-only report, not a prune. Deliberately not `--delete`: that flag
+      stays the mirror's alone, and a pull that could remove local files is a different
+      and much more dangerous thing than the one that exists.
+
+- [ ] **Top-level non-CAS files are overwritten by a pull without notice.**
+      `/Books/CLAUDE.md` and its siblings are ordinary files, not links, so the upstream's
+      copies replace this host's. Harmless today — they are the same files — and surprising
+      later. Either add them to `config.PULL_EXCLUDES` or say so in that docstring; do not
+      leave it undecided.
+
 ## Engineering hygiene
 
 - [ ] **The device row's stack breakpoint does not account for `--scale`.**

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Literal
+from typing import Any, Literal, Sequence
 
 import yaml
 from pydantic import (
@@ -26,9 +26,10 @@ Bool = StrictBool
 
 NodeType = Literal["kobo", "termux", "linux"]
 
-#: What shape of the library a node wants. Two genuinely different transfers, not two
-#: styles of the same one -- see `Device.sync_mode` and `jobs.build_argv`.
-SyncMode = Literal["books", "mirror"]
+#: What shape of the library a node wants, and -- since `upstream` -- which *direction*
+#: it moves in. Three genuinely different transfers, not three styles of one; see
+#: `Device.sync_mode`, `jobs.build_argv` and `jobs.build_pull_argv`.
+SyncMode = Literal["books", "mirror", "upstream"]
 
 #: Picking a node type seeds transport fields. The drawer surfaces this as a `warn`
 #: note explaining what changed; here it only fills gaps the user left empty.
@@ -179,11 +180,22 @@ class Device(BaseModel):
     #:           symlinks, the .data vault carried alongside them so they resolve, and
     #:           urantia-library/ included. No -L, no skiplist, and --delete, because a
     #:           replica that keeps files the origin dropped is not a replica.
+    #:           Read `upstream` below before choosing this for a node other people
+    #:           upload to: it was declared here for sigmaai.au, and what that put in
+    #:           the Actions menu was `rsync -a --delete ./ tigran@sigmaai.au:/Books/`.
+    #:
+    #:   upstream  A source. The production library other people upload to, which means
+    #:           it is *ahead* of us and a push would be a regression. LibNodes pulls
+    #:           from it -- whole root, remote to local, no --delete and no -L -- and
+    #:           refuses every writing action: at each route, and again in build_argv
+    #:           itself, so a code path nobody remembered cannot compose one. Its tree
+    #:           is our own CAS shape, so it scans like a mirror; see `cas_tree`.
     #:
     #: Not derived from `type`, for the same reason `fs` is not: type is a proxy, and a
-    #: Linux host is perfectly entitled to want either shape. A mirror node is also the
-    #: only thing that may receive urantia-library/ -- see config.SKIP_TOPLEVEL, where
-    #: that boundary is documented.
+    #: Linux host is perfectly entitled to want any of the three. A mirror node is also
+    #: the only thing that may *receive* urantia-library/ -- an upstream holds one too
+    #: and is deliberately excluded from the pull, see config.SKIP_TOPLEVEL and
+    #: config.PULL_EXCLUDES, where both boundaries are documented.
     sync_mode: SyncMode = "books"
     #: Whether the target can store a modification time at all. Declare the fact; the
     #: flags follow.
@@ -269,6 +281,12 @@ class Device(BaseModel):
     retries: Int | None = None
     bandwidth: str | None = None
     excludes: list[str] | None = None
+    #: What a pull from this node holds back. Absent means "inherit config.PULL_EXCLUDES",
+    #: which is where each entry's reason is written down. Separate from `excludes` and
+    #: deliberately not merged with it: those ride on every push to a *device*, and this is
+    #: a fact about what must not be copied *here*, which is a different question with a
+    #: different failure mode.
+    pull_excludes: list[str] | None = None
 
     @field_validator("id")
     @classmethod
@@ -307,6 +325,28 @@ class Device(BaseModel):
             raise ValueError(
                 "charging needs a battery or battery_cmd to be read alongside"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _an_upstream_is_never_full_synced(self) -> "Device":
+        """Force full_sync off for an upstream node rather than rejecting the file.
+
+        full_sync is mutually exclusive with `mirror` by an explicit term in
+        routes.devices.device_full_sync and an `elif` in device_menu.html -- Full Sync
+        promises it never deletes, and a mirror's transfer is defined by --delete. That
+        exclusivity is with *mirror*, not with "not a reader", so the moment a node
+        stops being a mirror the `elif` fires and Full Sync -- a push -- reappears in
+        its menu. sigmaai.au carried `full_sync: true` while it was a mirror, where the
+        key did nothing; leaving it on the upstream entry would have swapped one push
+        hazard for another.
+
+        Coerced rather than raised: devices.yaml is hand-edited and hot-reloaded, so a
+        raise here takes the whole fleet's config down over a stale key. The route guard
+        and build_argv are the real defences; this is the one that makes the menu agree
+        with them.
+        """
+        if self.sync_mode == "upstream":
+            object.__setattr__(self, "full_sync", False)
         return self
 
     @field_validator("fs", mode="before")
@@ -362,8 +402,44 @@ class Device(BaseModel):
 
     @property
     def is_mirror(self) -> bool:
-        """One name for the mode, so argv, routes and templates cannot disagree."""
+        """One name for the mode, so argv, routes and templates cannot disagree.
+
+        Strictly "replicated to, with --delete", and it must not be widened to mean
+        "CAS-shaped" or "not a reader" -- `cas_tree` and `is_selectable` exist so it
+        does not have to be. Overloading this is how /replicate comes back to life
+        pointed at an upstream node.
+        """
         return self.sync_mode == "mirror"
+
+    @property
+    def is_upstream(self) -> bool:
+        """A pull source, and never a transfer destination."""
+        return self.sync_mode == "upstream"
+
+    @property
+    def cas_tree(self) -> bool:
+        """This node's tree *is* the CAS shape: symlinks into .data/, vault and all.
+
+        True of a mirror (we put that shape there) and of an upstream (it is where that
+        shape comes from). One fact, three call sites that all need it -- the scan must
+        ask rsync for link targets (scan.py, -l), must keep the link rows it gets back
+        (`keep_links`), and the extras dialog must not call a correct vault 24.6k
+        orphans. Miss any one of the three on an upstream and the failure is silent in
+        the worst direction: every book there is a symlink, so a scan that drops links
+        reports a full production library as an empty backlog.
+        """
+        return self.sync_mode in ("mirror", "upstream")
+
+    @property
+    def is_selectable(self) -> bool:
+        """May this node be picked in the Library view and the job picker?
+
+        Stated positively on purpose. The filters used to say `not d.is_mirror`, which
+        silently admits any mode invented later -- `upstream` would have walked straight
+        into the picker. Positive means a fourth mode is excluded until someone opts it
+        in.
+        """
+        return self.sync_mode == "books"
 
     @property
     def capacity_bytes(self) -> int | None:
@@ -376,6 +452,22 @@ class Device(BaseModel):
     def excludes_with(self, defaults: Defaults) -> list[str]:
         own = self.excludes if self.excludes is not None else []
         return [*defaults.excludes, *own]
+
+    def pull_excludes_with(self, fallback: "Sequence[str]") -> list[str]:
+        """What a pull from this node holds back — its own list, or the program's.
+
+        The fallback is passed in rather than imported: config.py imports this module, so
+        reaching the other way for config.PULL_EXCLUDES would be a cycle. `jobs` imports
+        both and is the only caller.
+
+        Replaces rather than extends, unlike `excludes_with`. These are correctness
+        boundaries with reasons attached (see config.PULL_EXCLUDES), so someone narrowing
+        one of them needs to be able to see the whole list they are choosing, not discover
+        that the entry they removed is still being appended from somewhere else.
+        """
+        if self.pull_excludes is not None:
+            return list(self.pull_excludes)
+        return list(fallback)
 
     def timeout_with(self, defaults: Defaults) -> int:
         return self.timeout if self.timeout is not None else defaults.timeout

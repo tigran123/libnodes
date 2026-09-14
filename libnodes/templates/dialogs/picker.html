@@ -40,14 +40,22 @@
             </span>
           </label>
         {% else %}
-          {# A mirror node is not a selection target — it replicates the whole root from
-             its own row action — so on an all-mirror fleet this list is legitimately
-             empty and has to say which kind of empty it is. #}
-          {% if hidden_mirrors %}
+          {# Neither a mirror nor an upstream is a selection target — a mirror replicates
+             the whole root from its own row action, an upstream is only ever pulled from —
+             so on a fleet of those this list is legitimately empty and has to say which
+             kind of empty it is, naming each reason separately because the remedies
+             differ. #}
+          {% if hidden_mirrors or hidden_upstreams %}
             <div class="meta">
-              No devices take a selection. {{ hidden_mirrors }}
-              mirror node{{ 's' if hidden_mirrors != 1 }} configured — use Replicate on the
-              device row.
+              No devices take a selection.
+              {% if hidden_mirrors %}
+                {{ hidden_mirrors }} mirror node{{ 's' if hidden_mirrors != 1 }} — use
+                Replicate on the device row.
+              {% endif %}
+              {% if hidden_upstreams %}
+                {{ hidden_upstreams }} upstream source{{ 's' if hidden_upstreams != 1 }} —
+                pulled from, never pushed to.
+              {% endif %}
             </div>
           {% else %}
             <div class="meta">No devices configured.</div>

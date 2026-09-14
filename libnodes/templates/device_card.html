@@ -28,6 +28,12 @@
     {% if node.device.is_mirror %}
       <span class="badge" title="sync_mode: mirror — replicates the library verbatim and
                                  prunes with --delete">MIRROR</span>
+    {% elif node.device.is_upstream %}
+      {# Amber, unlike MIRROR's plain badge: this is the one node that must never be
+         written to, and the two read the same in the yaml. See device_row.html. #}
+      <span class="badge badge-warn"
+            title="sync_mode: upstream — the library's source. LibNodes pulls from here
+                   and never pushes, replicates, adopts or deletes there.">UPSTREAM</span>
     {% endif %}
   </div>
 

@@ -18,6 +18,9 @@
           waiting for you — press Start in Jobs
         {% elif job.state == 'deferred' %}
           will run when sshd answers · watching every 60s
+        {% elif job.kind == 'pull' %}
+          {# No estimate for a pull, deliberately: see JobRunner.submit_pull. #}
+          {{ job.label }} · six phases, streaming into the dock
         {% else %}
           {{ job.label }} · {{ job.files_total|commafy }} files · {{ job.bytes_total|hsize }}
         {% endif %}

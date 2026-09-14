@@ -29,6 +29,16 @@
       <span class="badge" title="sync_mode: mirror — replicates {{ library_root }} verbatim,
                                  symlinks and vault included, and prunes with
                                  --delete">MIRROR</span>
+    {% elif node.device.is_upstream %}
+      {# Amber, and deliberately not the plain badge MIRROR wears: this is the one node in
+         the fleet that must never be written to, and the two look identical in the yaml.
+         badge-err is spoken for by OFFLINE and would read as a fault on a node working
+         perfectly; badge-accent means running. One badge, not two — a second NO PUSH chip
+         wraps at the Tab S4's 700 CSS px, so the tooltip carries the prohibition. #}
+      <span class="badge badge-warn"
+            title="sync_mode: upstream — the library's source. LibNodes pulls into
+                   {{ library_root }} from here and never pushes, replicates, adopts or
+                   deletes there.">UPSTREAM</span>
     {% endif %}
   </div>
 

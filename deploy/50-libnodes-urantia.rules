@@ -1,0 +1,28 @@
+// Let LibNodes stop and start urantia-library, and nothing else.
+//
+// Install as root:root 0644 at /etc/polkit-1/rules.d/50-libnodes-urantia.rules.
+// polkit rescans rules.d on its own -- no reload needed -- but a JS syntax error is
+// logged to the journal and the rule is silently ignored, so verify rather than assume:
+//
+//     systemctl is-active urantia-library.service          # expect: active
+//     systemctl --no-ask-password start urantia-library.service && echo AUTHORISED
+//
+// Starting an already-active unit is a no-op, and it travels the exact path `stop` will,
+// so that is a probe and not a change. `Interactive authentication required` means the
+// rule did not take. It is also the probe LibNodes itself runs before a Pull transfers
+// anything -- a 250 GB transfer followed by "cannot stop the service" is an hour spent to
+// reach a half-run.
+//
+// Why not sudo: deploy/libnodes.service sets NoNewPrivileges=yes, which makes sudo's
+// setuid bit inert -- it refuses outright, with a different message from the "password
+// required" one people expect, and no sudoers rule fixes it. This way the unit keeps
+// every constraint it has.
+//
+// Narrow on all three axes: one action, one unit, one user.
+polkit.addRule(function(action, subject) {
+  if (action.id == "org.freedesktop.systemd1.manage-units"
+      && action.lookup("unit") == "urantia-library.service"
+      && subject.user == "tigran") {
+    return polkit.Result.YES;
+  }
+});

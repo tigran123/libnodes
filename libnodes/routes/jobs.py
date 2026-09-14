@@ -53,6 +53,14 @@ def source_label(app: AppState):
     whole = set(full_sync_sources(app.settings))
 
     def render(job) -> str:
+        # A pull's source is the far end, and this column would otherwise print the local
+        # root for both source and destination — the one thing about a pull that has to be
+        # unambiguous at a glance.
+        if getattr(job, "kind", "push") == "pull":
+            device = app.devices.config.by_id.get(job.device_id)
+            if device is not None:
+                target = device.target.rstrip("/")
+                return f"{device.effective_user}@{device.host}:{target}/"
         sources = [s for s in job.sources if s]
         # No sources, or every top-level directory: either way, the library itself.
         if not sources or (whole and set(sources) >= whole):
@@ -137,6 +145,12 @@ def _queue(app: AppState, device_id: str, paths: list[str], dry_run: bool = Fals
     device = app.devices.config.by_id.get(device_id)
     if device is None:
         return None, "unknown device"
+    if device.is_upstream:
+        # Above the mirror branch, and it refuses rather than re-deriving: an upstream is
+        # pulled from, and a pull is not a Job this function can compose -- it has its own
+        # route and its own six phases. Retry is the live way in, replaying a stored job's
+        # sources, which is exactly the path a route-level guard alone would not cover.
+        return None, f"{device.name} is an upstream source — it is pulled from, never pushed to"
     if device.is_mirror:
         # `_resolve` filters against the index, which by design holds no `.data/` — so a
         # mirror push arriving here would be stripped down to the browsable categories
@@ -196,9 +210,15 @@ async def create_job(
     ctx = base_context(request, "library")
 
     targets = [d for d in (app.devices.config.by_id.get(x) for x in device) if d]
-    # The picker does not offer mirror nodes, but a hidden button is not a guard: this is
-    # a form post. A mirror takes the whole root from its own Replicate action, never a
-    # selection — see the note in `_queue`.
+    # The picker offers neither mirrors nor upstreams, but a hidden button is not a guard:
+    # this is a form post. The two refusals are separate because the reasons are: a mirror
+    # takes the whole root from its own Replicate action, and an upstream takes nothing at
+    # all. See the notes in `_queue`.
+    upstreams = [d for d in targets if d.is_upstream]
+    if upstreams:
+        names = ", ".join(d.name for d in upstreams)
+        ctx["message"] = f"{names}: an upstream source — it is pulled from, never pushed to"
+        return templates.TemplateResponse(request, "fragments/error_toast.html", ctx)
     mirrors = [d for d in targets if d.is_mirror]
     if mirrors:
         names = ", ".join(d.name for d in mirrors)
@@ -301,14 +321,20 @@ async def picker(
             "paths": wanted,
             "total_bytes": total,
             "biggest": biggest,
-            # Mirror nodes are not offered: they take the whole root or nothing, and a
-            # subtree of preserved symlinks has no vault to resolve against. See
-            # library_context, which drops them from the row buttons for the same reason.
-            "devices": [d for d in app.devices.config.devices if not d.is_mirror],
-            # So the empty case can say *why* it is empty. "No devices configured" would be
-            # a lie on a fleet that is all mirrors.
+            # Only `books` nodes are offered. A mirror takes the whole root or nothing —
+            # a subtree of preserved symlinks has no vault to resolve against — and an
+            # upstream takes nothing at all. `is_selectable` is positive rather than
+            # `not is_mirror` so a mode invented later is excluded until someone opts it
+            # in; `upstream` is the mode that proved the point. See library_context, which
+            # drops the same nodes from the row buttons.
+            "devices": [d for d in app.devices.config.devices if d.is_selectable],
+            # So the empty case can say *why* it is empty, and which kind of why. "No
+            # devices configured" would be a lie on a fleet that is all mirrors.
             "hidden_mirrors": sum(
                 1 for d in app.devices.config.devices if d.is_mirror
+            ),
+            "hidden_upstreams": sum(
+                1 for d in app.devices.config.devices if d.is_upstream
             ),
             "dry_run": dry_run,
             "status": app.probe.status,
@@ -373,6 +399,22 @@ async def retry(request: Request, job_id: int):
     # Repeat what was run, dry run included. Retrying a preview as a real transfer is
     # wrong in any mode; on a mirror it would turn "show me what would change" into a
     # --delete push, which is the one place it is unrecoverable.
+    if getattr(old, "kind", "push") == "pull":
+        # Re-derived from the device, never replayed through `_queue`: that path resolves
+        # stored source names against the index, and a pull's stored source is the far
+        # end's path, which the index has never heard of. `build_pull_argv` takes no
+        # sources at all, so there is nothing here that could go stale between runs.
+        device = app.devices.config.by_id.get(old.device_id)
+        if device is None or not device.is_upstream:
+            ctx["message"] = "that device is no longer an upstream source"
+            return templates.TemplateResponse(request, "fragments/error_toast.html", ctx)
+        job = app.jobs.submit_pull(
+            device,
+            deferred=not app.probe.status(device.id).online,
+            dry_run=old.dry_run,
+        )
+        ctx["job"] = job
+        return templates.TemplateResponse(request, "fragments/queued.html", ctx)
     job, error = _queue(app, old.device_id, old.sources, dry_run=old.dry_run)
     if job is None:
         ctx["message"] = error

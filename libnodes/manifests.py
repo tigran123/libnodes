@@ -388,12 +388,21 @@ class Manifests:
         Each row carries the decoded name when one can be recovered, and whether that
         name is in the library — which is what makes it safe to delete.
 
-        `expected_toplevel` is for a mirror device, and without it this answer inverts on
-        one: a mirror is *sent* `.data/` and `urantia-library/`, neither of which is in the
-        index, so every blob in the vault would be reported as an orphan — around 24,616
-        rows of "delete me" describing a correct replica. Those names are expected there
-        because the mode put them there, so they are excluded rather than listed. Pass
-        `SKIP_TOPLEVEL`; a reader passes nothing and the comparison is unchanged.
+        `expected_toplevel` is for a CAS-shaped device — a mirror or an upstream — and
+        without it this answer inverts on one: such a node holds `.data/` and
+        `urantia-library/`, neither of which is in the index, so every blob in the vault
+        would be reported as an orphan — around 24,616 rows of "delete me" describing a
+        correct replica. Those names are expected there, so they are excluded rather than
+        listed. Pass `SKIP_TOPLEVEL`; a reader passes nothing and the comparison is
+        unchanged.
+
+        **Sizes on a CAS-shaped node come out of the vault, not off the row.** A scan of
+        one records a book as a symlink with size 0 and a blake2b hash (`scan.parse_line`:
+        the link's own 143 bytes would be a lie about the book, and a hash is the stronger
+        claim). The same scan also lists the vault itself, so the real size is already in
+        this table under `.data/<hash>` — resolve through it rather than printing `0 B`
+        for a book. A zero is a claim; where nothing can be resolved the row says so with
+        `size: None` and the dialog draws a dash.
         """
         from .scan import demangle
 
@@ -403,16 +412,24 @@ class Manifests:
 
         conn = self._connect()
         try:
-            sizes = {
-                r[0]: r[1]
-                for r in conn.execute(
-                    "SELECT path, size FROM manifest "
-                    "WHERE device_id = ? AND is_dir = 0 AND source = 'scan'",
-                    (device_id,),
-                )
-            }
+            scanned_rows = conn.execute(
+                "SELECT path, size, blob FROM manifest "
+                "WHERE device_id = ? AND is_dir = 0 AND source = 'scan'",
+                (device_id,),
+            ).fetchall()
         finally:
             conn.close()
+
+        sizes = {r[0]: r[1] for r in scanned_rows}
+        blobs = {r[0]: r[2] for r in scanned_rows}
+        # Keyed off the vault row's own basename rather than assembling ".data/" + hash:
+        # if the vault is ever sharded, an assumed path silently stops matching and every
+        # book goes back to reading 0 B, while a basename lookup keeps working.
+        by_blob = {
+            r[0].rsplit("/", 1)[-1]: r[1]
+            for r in scanned_rows
+            if r[1] and "/" in r[0]
+        }
 
         found = sorted(set(sizes) - library_paths)
         if expected_toplevel:
@@ -427,10 +444,16 @@ class Manifests:
             if is_dup:
                 duplicates += 1
             if len(rows) < limit:
+                size = sizes.get(path) or 0
+                if not size:
+                    blob = blobs.get(path)
+                    size = by_blob.get(blob) if blob else None
                 rows.append(
                     {
                         "path": path,
-                        "size": sizes.get(path) or 0,
+                        # None, not 0, when nothing could be resolved: a dash is an
+                        # admission and a zero is a claim about the book.
+                        "size": size,
                         "real": real,
                         "duplicate": is_dup,
                     }
@@ -441,7 +464,7 @@ class Manifests:
             duplicates=duplicates,
             # The bytes of what is *listed*, not of everything found: the dialog prints
             # this beside "showing first 500 of N", where a total would not match.
-            listed_bytes=sum(r["size"] for r in rows),
+            listed_bytes=sum(r["size"] or 0 for r in rows),
             scanned_at=scanned,
         )
 

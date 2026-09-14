@@ -11,11 +11,19 @@
 
 <div class="dock-line is-sub">
   <span class="grow">
+    {# A pull has no selection to be "of": pricing it would mean asking the local index
+       what the far end holds. Saying nothing is correct; saying "of 0 files · 0 B" is a
+       claim. The phase line stands in its place, because a pull is six steps and the bar
+       only ever tracks the first. #}
+    {% if job.kind == 'pull' %}
+      {% if job.phase %}{{ job.phase }}{% else %}pulling{% endif %}
+    {% else %}
     of {{ job.files_total|commafy }} files · {{ job.bytes_total|hsize }} selected
     {# The bytes above are the size of the files rsync handled. What the link actually
        carried is usually far less, because the delta algorithm matches the copy the
        device already has: 6.7 MB against 4.4 GB on one measured push. Only rsync's
        closing summary knows it, so it appears when the job ends. #}
+    {% endif %}
     {% if job.bytes_wire %} · {{ job.bytes_wire|hsize }} over the wire{% endif %}
   </span>
   {# "entries", never "files": the total counts directories too. #}

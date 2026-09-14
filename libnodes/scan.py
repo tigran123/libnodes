@@ -162,7 +162,7 @@ def scan_argv(device: Device, settings) -> list[str]:
     return [
         "rsync",
         "-r",
-        *(["-l"] if device.is_mirror else []),
+        *(["-l"] if device.cas_tree else []),
         "--list-only",
         "-e",
         ssh_cmd,
@@ -204,9 +204,12 @@ class Scanner:
         started = time.time()
         result = ScanResult(started_at=started)
         rows: list[tuple[str, str | None, int, int, int]] = []
-        # On a mirror node the books *are* symlinks, so dropping them would report a node
-        # holding the whole library as holding none of it. See parse_line.
-        keep_links = device.is_mirror
+        # On a CAS-shaped node the books *are* symlinks, so dropping them would report a
+        # node holding the whole library as holding none of it. See parse_line. `cas_tree`
+        # rather than `is_mirror` because an upstream has the same shape for the opposite
+        # reason -- it is where that shape comes from -- and getting it wrong there fails
+        # green: a full production library reported as an empty pull backlog.
+        keep_links = device.cas_tree
         try:
             argv = scan_argv(device, self.settings)
             proc = await asyncio.create_subprocess_exec(

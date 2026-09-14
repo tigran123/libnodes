@@ -28,7 +28,16 @@ class AppState:
         self.probe = DeviceProbe(settings, devices)
         self.store = JobStore(settings.jobs_db)
         self.jobs = JobRunner(
-            settings, self.store, self.index, self.manifests, self.probe, devices
+            settings,
+            self.store,
+            self.index,
+            self.manifests,
+            self.probe,
+            devices,
+            # A pull is the only job that writes into library_root, so it is the only one
+            # that can leave the index stale. Passed in rather than imported: the runner
+            # is constructed by this object, and reindex_soon is already idempotent.
+            on_library_changed=self.reindex_soon,
         )
         self.config_watch = FileWatcher(settings.resolved_devices_file)
         self.scanner = Scanner(settings, self.manifests)

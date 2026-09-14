@@ -21,6 +21,17 @@ Environment=LIBNODES_CATALOG_DB=/Books/.data/db/lib.db
 # its NIC is separate, so the host is no longer the constraint — what is still shared is
 # Wi-Fi airtime across the six wireless nodes, which is why this is 3 and not unbounded.
 Environment=LIBNODES_CONCURRENCY=3
+# The systemd unit on THIS host that reads LIBNODES_CATALOG_DB, paused for the seconds a
+# Pull takes to drop a freshly snapshotted lib.db into place and started again in a
+# `finally`. pi5 declares it because urantia-library is a pi5 fact; the code default is
+# empty, and empty means a Pull skips the catalog phase rather than overwriting a live WAL
+# database under a running reader.
+#
+# Stopping it needs privilege, and NoNewPrivileges=yes below makes sudo inert (setuid is
+# ignored under NNP, so sudo refuses outright rather than asking for a password). The
+# authorisation comes from polkit instead, so this unit keeps its hardening:
+# install deploy/50-libnodes-urantia.rules to /etc/polkit-1/rules.d/.
+Environment=LIBNODES_LOCAL_SERVICE=urantia-library.service
 # LIBNODES_PASSWORD lives here, not in this file and not in .env: this file is in git, and
 # deploy.sh syncs with --delete without excluding .env, so a .env password is removed by
 # the next deploy. The leading `-` makes the file optional. See deploy/README.md §Access.

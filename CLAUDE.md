@@ -71,6 +71,111 @@ are listed.
   its own note promises it never deletes. `retry` re-derives the whole root instead of
   replaying stored sources through `_resolve`, which would strip `.data/` while `--delete`
   stayed, and it now preserves `dry_run` so a preview cannot be retried into a prune.
+- **An `upstream` node is a pull source, and the refusal is in `build_argv`.**
+  `sync_mode: upstream` (`Device.sync_mode`) means the library's *source* — the production
+  host other admins upload to, so it is ahead of us and a push is a regression. sigmaai.au
+  was declared `mirror`, which put Replicate in its Actions menu, and Replicate composes
+  `rsync -a --delete ./ tigran@sigmaai.au:/Books/`: pointed at the server everyone uploads
+  to, it would have deleted every book production held and pi5 did not. Every writing route
+  refuses it *and* `build_argv` raises for it, because `JobRunner.submit` composes the argv
+  for every writing path there is — including `retry`, which replays a stored job's sources
+  long after a route was fixed. `/device/{id}/adopt` had **no mode guard at all** and was
+  the last way in; it has one now. Pinned by
+  `tests/test_upstream.py::test_build_argv_refuses_to_compose_any_push_to_an_upstream_node`
+  and `::test_no_writing_route_is_a_way_into_an_upstream_node`.
+- **`full_sync` is mutually exclusive with `mirror`, and with nothing else.** That is by an
+  explicit `device.is_mirror` term in `device_full_sync` and an `elif` in
+  `device_menu.html`, because Full Sync's note promises it never deletes and a mirror's
+  transfer is defined by `--delete`. `upstream` is a value neither knew about, so the
+  instant a node stops being a mirror the `elif` fires and **Full Sync — a push to
+  production — reappears in its menu**, route guard satisfied. Three guards answer it: the
+  model coerces `full_sync` off for an upstream, the route adds `or device.is_upstream`,
+  and the template keeps `and not device.is_upstream`. Pinned by
+  `::test_a_full_sync_true_upstream_is_still_not_offered_full_sync`, whose fixture node
+  declares `full_sync: true` on purpose.
+- **A pull is `build_pull_argv`, never `build_argv(direction=…)`, and `-R` is why.**
+  With a *remote* source, `-R` makes the remote's own path a component of the destination.
+  Measured against sigmaai.au: `rsync -aR -n tigran@sigmaai.au:/Books/ /Books/` wants
+  `cd+++++++++ Books/` and all 20,793 blobs under `Books/.data/` — a second library at
+  `/Books/Books/`, every symlink in it dangling because `../../.data/<blob>` no longer
+  resolves, and the `--exclude=/.data/` anchor broken on the way past. No error, no
+  warning, and nobody reads a 45,000-line dry run. `-L` goes for the mirror's reason
+  reached from the far side, and the device-as-destination flags (`--no-perms/--no-owner/
+  --no-group`, `--modify-window`, `--size-only`, `--no-times`) are absent *by
+  construction* rather than by branch — the fixture upstream declares `fs: vfat` and
+  `stores_times: false` so that is testable. A separate function, because a `direction=`
+  parameter's default would be the dangerous direction.
+- **A pull uses `--partial-dir`, not `--partial`, because the vault trusts the name.**
+  On interruption plain `--partial` renames the partial file to its *final* name. On a
+  device that is an accepted cost; in `/Books/.data/` it is a blob whose contents do not
+  hash to the blake2b name it is sitting under, and every symlink pointing at it serves a
+  truncated book until something notices. This is the one deliberate deviation from
+  `BASE_FLAGS`. `--delete` is not conditional in a pull — it is absent, with no branch that
+  could add it.
+- **A pull never writes a manifest, and is the only job that reindexes.** `_update_manifest`
+  records "what this device has" by walking the *local* index, which after a pull is
+  inverted in direction — and it would run before the reindex, so it would record the
+  pre-pull index as a claim about the far end. A pull says `run a scan to refresh PRESENT
+  ON` instead, which is honest because an upstream Scan reads the blake2b out of each link
+  target. It calls `reindex_soon` on every terminal outcome including abort (an interrupted
+  pull has still written files, and books the index does not know about are invisible in
+  the Library view *and* unpushable), and never on a dry run, and always *after* the
+  catalog phase — `LibraryIndex` reads `catalog_db` for title/author, so reindexing first
+  bakes the old catalog in.
+- **A pull that stopped `urantia-library` and did not start it must never be green — and
+  the `finally` is not enough.** Abort is safe as it stands: it terminates the subprocess
+  without cancelling `_run`, so `_stream` returns 143 as an ordinary value and the
+  `finally` runs. What a `finally` cannot cover is this process going away *inside* the
+  window, which `sudo systemctl restart libnodes` does in about a second and CLAUDE.md
+  itself tells you to do casually. `var/service-hold.json` is the durable half: written
+  before the stop, unlinked after the start, and read by `JobRunner.start()` before it
+  accepts work. `asyncio.shield` does not help — the loop closes underneath it. The stop
+  also never runs on a phase that failed earlier, so a pull cannot start a service somebody
+  had deliberately stopped. Pinned by
+  `::test_a_restart_during_the_quiet_window_starts_the_service_again`,
+  `::test_a_pull_restarts_the_local_service_even_when_the_catalog_fails` and
+  `::test_a_pull_that_never_stopped_the_service_never_starts_it`.
+- **`sudo` cannot work from inside LibNodes; the service commands go through polkit.**
+  `deploy/libnodes.service` sets `NoNewPrivileges=yes`, which makes sudo's setuid bit inert
+  — it refuses outright, with a different message from "a password is required", and no
+  sudoers rule fixes it. `deploy/50-libnodes-urantia.rules` authorises exactly one action,
+  one unit and one user, and the unit keeps its hardening. Neither `pkcheck` form is usable
+  as a preflight (with `--detail` it is refused to untrusted callers; without it a
+  unit-scoped rule never matches), so the probe is `systemctl is-active` followed, only if
+  active, by `systemctl start` — a no-op on a running unit that travels the exact path
+  `stop` will.
+- **`cas_tree`, not `is_mirror`, decides whether a scan keeps symlinks.** `scan_argv`'s
+  `-l`, `Scanner`'s `keep_links` and the extras dialog's `expected_toplevel` are all facts
+  about the *shape* of the node's tree, which a mirror and an upstream share. Getting it
+  wrong on an upstream fails green in the worst direction: every book there is a symlink,
+  so a scan that drops links keeps only vault rows, `expected_toplevel` filters those away,
+  and the dialog reports a full production library as an empty backlog. `is_mirror` stays
+  strictly "replicated to, with `--delete`" — widening it is how `/replicate` comes back to
+  life pointed at production. Pinned by
+  `::test_an_upstream_scan_asks_rsync_for_link_targets_like_a_mirrors_does`.
+- **A scanned symlink's size comes out of the vault, and an unresolvable one is a dash.**
+  `parse_line` records size 0 for a kept link and carries the blake2b instead. The same
+  scan lists the vault, so `Manifests.extras` resolves the real size through
+  `.data/<hash>` — 88.3 MB rather than `0 B` for the one book sigmaai.au had and pi5 did
+  not. Where nothing resolves the row carries `None` and the dialog draws `—`, and the
+  footer stops totalling dashes into "0 B listed": a zero is a claim about the book, a dash
+  is an admission. Keyed off the vault row's own basename rather than `".data/" + blob`, so
+  a sharded vault later cannot silently stop matching.
+- **`PULL_EXCLUDES` is not `SKIP_TOPLEVEL`, and only two of the nine names overlap.** A
+  pull *wants* `.data/` — it is the vault every incoming symlink resolves into — and wants
+  `Recommended/`, whose companion links cost a few hundred bytes with no `-L` to expand
+  them. It holds back `/urantia-library/` (protecting **pi5's own** `secrets.env`, whose
+  `APP_URL`/`APP_ENV`/`APP_ROOT_PATH`/`VITE_API_URL` are per-host, from the upstream's),
+  `/.data/staging/` (half-written uploads: a torn blob would not hash to its own name, and
+  the vault trusts what lands in it) and `/Unsorted/` (55 GB of Ubuntu images today, and
+  the only one of the three that is a preference rather than a boundary). Because the
+  backlog dialog is a picture of the far end and the pull declines part of it, rows the
+  excludes hold back are **marked** rather than hidden — the dialog says "a Pull brings 1
+  of these across; 13 are held back" instead of "exactly this".
+- **A pull holds the queue.** `LIBNODES_CONCURRENCY=3`, so without the gate in `_run` a
+  push to a reader could be dereferencing symlinks into a vault a pull is still filling:
+  exit 24 "file has vanished", or a blob still in `.rsync-partial`. The CAS makes a
+  *finished* blob safe to read at any instant and says nothing about one mid-flight.
 - **A mirror's vault is not "extras".** `Manifests.extras` subtracts the index from a scan,
   and a mirror legitimately holds `.data/` and `urantia-library/`, neither of which is
   indexed — so without `expected_toplevel=SKIP_TOPLEVEL` the dialog invites you to delete
@@ -543,6 +648,22 @@ are listed.
   response body, which breaks `EventSourceResponse` — the dock would arrive in lumps,
   exactly as it does when nginx buffers `/jobs/stream`. It reads `scope` only and never
   wraps `send`.
+- **An ssh *remote* command is the one thing that cannot be an argv list.** ssh joins
+  everything after `user@host` with single spaces and hands the result to a shell on the
+  far side, so a tidy argv list arrives **unquoted** and is re-split on whitespace. Pass
+  exactly one element, quoted here with `shlex.join`/`shlex.quote` — which is what
+  `probe._readings_script` has always done, and what `jobs._ssh_command` now does for the
+  pull's snapshot and cleanup. Getting it wrong cost job #18: the snapshot script went out
+  as a five-element list and came back `SyntaxError: Expected one or more names after
+  'import'` from python plus `bash: -c: line 2: syntax error near unexpected token '('`,
+  because the newline-separated one-liner had been re-split into four commands. The job
+  log is no help and actively misleads — `_stream` writes the argv back out shlex-quoted,
+  so it printed the command as it *should* have been sent. `_SNAPSHOT_PY` is therefore also
+  newline-free, belt and braces. Pinned by
+  `tests/test_upstream.py::test_a_remote_command_is_one_already_quoted_word` (asserting the
+  *shape* — one element after the destination — because the contents were correct
+  throughout) beside `::test_a_remote_command_survives_the_shell_that_will_re_split_it`,
+  which parses what we send the way bash would and compiles the script that comes out.
 - **rsync and ssh are argv lists, never shell strings** (`build_argv`,
   `ssh_argv` at `libnodes/probe.py:448`, `scan_argv` at `libnodes/scan.py:113`).
   `BatchMode=yes` throughout, so a missing key fails fast instead of hanging on a prompt.

@@ -34,6 +34,9 @@
       {%- if scanning %} scanning…
       {%- elif not index_meta.ready %} library index not built
       {%- elif not extras.known %} never scanned
+      {#- On an upstream node "not in the library" reads as an accusation against the
+          host other people upload to. It is not junk; it is the backlog. -#}
+      {%- elif device.is_upstream %} {{ extras.total|commafy }} file{{ '' if extras.total == 1 else 's' }} here that we do not have
       {%- else %} {{ extras.total|commafy }} file{{ '' if extras.total == 1 else 's' }} not in the library
       {%- endif %}
     </div>
@@ -79,6 +82,48 @@
         {% include "fragments/device_action.html" %}
 
       {% elif extras.total %}
+        {% if device.is_upstream %}
+          <div class="meta">
+            Present on {{ device.name }}, absent from {{ library_root }}, as the scan
+            {{ extras.scanned_at|reltime }} saw it. This is the backlog: what other admins
+            have uploaded since this host last pulled.
+            {% if pull_held %}
+              A Pull brings
+              <strong>{{ (extras.rows|length - pull_held)|commafy }}</strong> of these
+              across; <span class="t-warn">{{ pull_held|commafy }}</span> are held back by
+              the pull excludes and are marked below — they are here so the list stays a
+              true picture of the far end, not so you can pull them.
+            {% else %}
+              A Pull brings exactly this across.
+            {% endif %}
+            {% if extras.duplicates %}
+              {# Genuinely a different warning from a reader's. There, a mangled duplicate
+                 is dead weight you may delete. Here, pulling it would make a *second*
+                 copy appear locally under the mangled name. #}
+              <span class="t-warn">{{ extras.duplicates }}</span> of them are the same book
+              under a mangled filename — this host already has it under the decoded name,
+              so a Pull would bring a second copy across under the mangled one.
+            {% endif %}
+            A Pull copies these here. It writes nothing to {{ device.name }} and removes
+            nothing from {{ library_root }}.
+          </div>
+
+          {# `after`, not `close`: the `close` slot in device_action.html hard-codes
+             #device-menu, which does not exist in this dialog, so the dialog would stay
+             open over its own toast. Same reason the Scan action above uses `after`. #}
+          {% set act = {
+            'label': 'Pull',
+            'note': 'bring the backlog across · six phases, streaming into the dock',
+            'cmds': pull_plan,
+            'method': 'post', 'url': '/device/' ~ device.id ~ '/pull',
+            'target': '#notices', 'swap': 'beforeend',
+            'after': "document.getElementById('device-extras')?.remove()",
+            'confirm': 'Pull ' ~ device.name ~ ' into ' ~ library_root ~ '? Steps 3-5 stop
+                        this host\'s reader for a few seconds and overwrite its catalog.
+                        Nothing is deleted, and nothing is sent to ' ~ device.name ~ '.',
+          } %}
+          {% include "fragments/device_action.html" %}
+        {% else %}
         <div class="meta">
           Present on the device, absent from {{ library_root }}, as the scan
           {{ extras.scanned_at|reltime }} saw it.
@@ -89,12 +134,16 @@
           {% endif %}
           LibNodes never deletes anything on a device.
         </div>
+        {% endif %}
 
         <div class="panel" style="max-height:340px;overflow:auto">
           {% for x in extras.rows %}
             <div class="trow" style="grid-template-columns:1fr 90px;align-items:start">
               <div style="min-width:0">
                 <div class="file-name" title="{{ x.path }}">{{ x.path }}</div>
+                {% if x.held_back %}
+                  <div class="file-title t-warn">held back — see pull_excludes</div>
+                {% endif %}
                 {% if x.real %}
                   <div class="file-title" title="{{ x.real }}">
                     {% if x.duplicate %}
@@ -106,7 +155,9 @@
                   </div>
                 {% endif %}
               </div>
-              <div class="cell-r mono t-dim">{{ x.size|hsize }}</div>
+              {# `is none`, not falsiness: a genuinely empty file is 0 B and should say
+                 so. Only an unresolvable one gets the dash. See Manifests.extras. #}
+              <div class="cell-r mono t-dim">{{ '—' if x.size is none else x.size|hsize }}</div>
             </div>
           {% endfor %}
         </div>
@@ -115,15 +166,28 @@
           {% if extras.rows|length < extras.total %}
             showing first {{ extras.rows|length }} of {{ extras.total|commafy }} ·
           {% endif %}
-          {{ extras.listed_bytes|hsize }} listed
+          {% set unknown = extras.rows | selectattr('size', 'none') | list | length %}
+          {# "0 B listed" beside a column of dashes reads as "these files are empty",
+             which is the claim the dashes exist to avoid. Say how many we could not
+             price, and drop the byte figure entirely when that is all of them. #}
+          {% if unknown < extras.rows|length %}{{ extras.listed_bytes|hsize }} listed{% endif %}
+          {% if unknown %}
+            {% if unknown < extras.rows|length %} · {% endif %}
+            {{ unknown|commafy }} of unknown size
+          {% endif %}
         </div>
 
       {% else %}
         {# The one branch that may reassure, because a scan actually looked. It carries
            when it looked: this is a claim about a moment, not a standing property. #}
         <div class="meta">
-          Nothing extra — as the scan {{ extras.scanned_at|reltime }} saw it, the device
-          held exactly what the library has, and no more.
+          {% if device.is_upstream %}
+            Nothing to pull — as the scan {{ extras.scanned_at|reltime }} saw it, this host
+            already had everything {{ device.name }} holds.
+          {% else %}
+            Nothing extra — as the scan {{ extras.scanned_at|reltime }} saw it, the device
+            held exactly what the library has, and no more.
+          {% endif %}
         </div>
       {% endif %}
     </div>

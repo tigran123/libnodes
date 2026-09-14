@@ -75,6 +75,42 @@ SKIP_TOPLEVEL = frozenset(
 )
 
 
+# What a *pull* holds back, and it is not SKIP_TOPLEVEL. The two lists answer different
+# questions and only two of the nine names above appear here, so do not collapse them:
+# SKIP_TOPLEVEL asks "may this be browsed and pushed", and a pull is neither. A pull
+# actively *wants* `.data/` -- it is the vault every incoming symlink resolves into, so
+# without it the whole transfer is 20.8k dangling links -- and wants `Recommended/`, whose
+# companion links cost a few hundred bytes with no -L to expand them.
+#
+# Anchored (`/urantia-library/`, not `urantia-library/`) because the transfer root *is* the
+# library root: the anchored form says exactly what is meant and cannot match a nested
+# directory that happens to share the name.
+#
+#   /urantia-library/  The sibling webapp, and here the boundary runs the *other* way from
+#                      SKIP_TOPLEVEL's. There it protects the fleet from the credentials;
+#                      here it protects this host's own instance from the upstream's --
+#                      secrets.env carries APP_URL, APP_ENV, APP_ROOT_PATH and
+#                      VITE_API_URL, every one of them a per-host value, and the tree is a
+#                      live git checkout. Pulling it verbatim would point pi5's site at
+#                      production's URLs.
+#
+#   /Unsorted/         55 GB of Ubuntu .img/.vdi images on sigmaai.au as of 2026-09-14, and
+#                      nothing else; pi5's Unsorted/ is empty. Not books. This is the one
+#                      entry that is a preference rather than a boundary -- narrow it to
+#                      /Unsorted/<subdir>/ in devices.yaml if unsorted *books* ever land
+#                      there.
+#
+#   /.data/staging/    Where the upstream's webapp assembles half-written uploads. A
+#                      correctness boundary, not tidiness: the vault is content-addressed
+#                      and therefore trusts whatever lands in it, so a torn upload pulled
+#                      into .data/ would be a blob that does not hash to its own name.
+#
+# The catalog files under /.data/db/ are *not* here. They do come across; they travel in
+# their own phase, under a quiet window, because they are a live WAL database. See
+# jobs.build_pull_argv.
+PULL_EXCLUDES = ("/urantia-library/", "/Unsorted/", "/.data/staging/")
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="LIBNODES_", env_file=".env", extra="ignore"
@@ -118,6 +154,21 @@ class Settings(BaseSettings):
     watch_window: float = 150.0
     reindex_interval: float = 1800.0
     reindex_on_start: bool = True
+
+    # --- local services -------------------------------------------------------
+    #: The systemd unit **on this host** that reads `catalog_db`, paused for the seconds
+    #: it takes to drop a freshly pulled lib.db into place and started again in a
+    #: `finally`. Named with its `.service` suffix so what LibNodes invokes and what the
+    #: polkit rule matches cannot drift.
+    #:
+    #: Empty is not "stop nothing": it means no unit was declared, so a Pull skips the
+    #: catalog phase entirely and says so in the dock. Overwriting a live WAL database
+    #: under a running reader is the corruption this exists to prevent, not a risk to
+    #: take quietly.
+    #:
+    #: Empty by default for the same reason `concurrency` is 1 by default -- the default
+    #: is not the deployment. `urantia-library` is a pi5 fact, so pi5's unit declares it.
+    local_service: str = ""
 
     # --- limits ---------------------------------------------------------------
     term_ring: int = 500
@@ -302,6 +353,31 @@ devices:
     target: /srv/books
     fs: ext4
     sync_mode: mirror
+
+  # The library's *source*: the production host other people upload to, so it is ahead of
+  # us and a push would be a regression. LibNodes only ever pulls from this one, and
+  # refuses every writing action -- Push, Full Sync, Replicate and Adopt -- at the route
+  # and again in build_argv, so a code path nobody remembered cannot compose one.
+  #
+  # Declaring this is how you take a node out of harm's way. sigmaai.au was declared
+  # `mirror`, which put Replicate in its Actions menu, and that command was
+  # `rsync -a --delete ./ tigran@sigmaai.au:/Books/` -- it would have deleted every book
+  # production held and this host did not. Do not use `mirror` for a node other people
+  # upload to.
+  #
+  # `full_sync:` has no meaning here and is coerced off: it gates an action a non-`books`
+  # node is never offered.
+  - id: source
+    name: Upstream library
+    abbr: SRC
+    type: linux
+    host: books.example.org
+    user: books
+    target: /Books
+    fs: ext4
+    sync_mode: upstream
+    # Optional. Defaults to config.PULL_EXCLUDES; override to narrow one of them.
+    # pull_excludes: ["/urantia-library/", "/Unsorted/Ubuntu26-Portable/", "/.data/staging/"]
 """
 
 

@@ -21,24 +21,33 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import shlex
 import sqlite3
+import subprocess
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Sequence
 
-from .config import SKIP_TOPLEVEL, Settings
+from .config import PULL_EXCLUDES, SKIP_TOPLEVEL, Settings
 from .probe import SERVER_ALIVE_COUNT_MAX, SERVER_ALIVE_INTERVAL, DeviceProbe
 from .procs import reap
 from .library import LibraryIndex
 from .manifests import Manifests
 from .models import Device, DevicesFile
 
+log = logging.getLogger(__name__)
+
 JobState = Literal["queued", "running", "done", "failed", "aborted", "deferred"]
+
+#: Which direction a job moves bytes. Not a flag on the device -- a device can only be one
+#: thing, but the *job* is what the runner branches on, and history has to keep saying
+#: which a finished job was.
+JobKind = Literal["push", "pull"]
 
 TERMINAL_STATES = frozenset({"done", "failed", "aborted"})
 
@@ -163,6 +172,41 @@ INFO_FLAGS = "progress2,flist0,misc0,stats1"
 #: actually mattered. Directory timestamps are meaningless on a FAT card anyway.
 BASE_FLAGS = ["-a", "-O", "--partial", "-L", "-R"]
 
+#: The same idea for the other direction, and it is a separate list because three of the
+#: five above are wrong on a pull rather than merely unnecessary:
+#:
+#: -L goes, for the mirror's reason reached from the far side. The books *are* symlinks,
+#: so dereferencing on the way in would replace 20.8k links with a second literal copy of
+#: the vault -- ~2x the disk, and the content-addressed store destroyed in the process.
+#: -a implies -l, which is what recreates them as links; verified against sigmaai.au,
+#: `cL+++++++++ Science/Geology/Vegener/…pdf -> ../../../.data/53f8…`.
+#:
+#: -R goes, and this one fails silently in the worst possible way. It sends the source
+#: path as written, so with a *remote* source `-R` makes the remote's own path a component
+#: of the destination. Measured 2026-09-14 against sigmaai.au:
+#:
+#:     rsync -a -O -n -i -R --exclude=/.data/ … tigran@sigmaai.au:/Books/ /Books/
+#:     cd+++++++++ Books/
+#:     cd+++++++++ Books/.data/
+#:     >f+++++++++ Books/.data/00001b57bae9…        (and all 20,793 blobs)
+#:
+#: A whole second library at /Books/Books/, every symlink in it dangling because
+#: `../../.data/<blob>` no longer resolves -- and it broke the exclude's anchoring on the
+#: way past. No error, no warning, and nobody reads a 45,000-line dry run. A pull has
+#: exactly one source, so a plain `src/ dst/` pair is both correct and readable.
+#:
+#: --partial becomes --partial-dir, which is the deliberate deviation. On interruption
+#: plain --partial renames the partial file to its *final* name. On a device that is an
+#: accepted cost; in the vault it is a blob whose contents do not hash to the blake2b name
+#: it is sitting under, and every symlink pointing at it serves a truncated book until
+#: something notices. Same resume, and rsync auto-excludes the directory it uses.
+#:
+#: -a's -o/-g stay. The receiver here is this host, running as an ordinary user: rsync
+#: only attempts chown as super-user, and the group it would set is one we are already in
+#: (/Books is tigran:tigran on both ends). This is the one place in the program where the
+#: ownership flags are harmless, and it is because the destination is local.
+PULL_FLAGS = ["-a", "-O", "--partial-dir=.rsync-partial"]
+
 #: How many delivered filenames one job may hold in memory, so an interrupted push can
 #: still tell the manifest what landed (`_note_sent`). The whole library is 24,616 files;
 #: this clears that with room to spare, at ~60 bytes a path.
@@ -224,8 +268,21 @@ class Job:
     #: An adoption run: reconcile metadata for files the device already has, moving no
     #: data. Recorded so the Jobs table can label it and history stays truthful.
     adopt: bool = False
+    #: Which direction this job moves bytes. "push" is every job this program had until
+    #: `sync_mode: upstream`; "pull" reads from the device and writes into library_root,
+    #: in six phases rather than one rsync. Persisted because history has to say what a
+    #: job *was* -- and because `retry` re-derives from it.
+    kind: JobKind = "push"
 
     # Live-only, never persisted.
+    #: Set when a pull delivered its books but could not refresh the catalog. The dock
+    #: draws amber for it: the transfer really did land, and a green banner over a stale
+    #: catalog is the same small lie a plain green SYNC COMPLETE over exit 23 would be.
+    pull_warning: str = ""
+    #: Which of a pull's six phases is running, for the dock. Deliberately separate from
+    #: `pct`, which keeps meaning the transfer and nothing else: a bar reading 100% with
+    #: three phases to go is the same class of lie as labelling `to-chk` "files".
+    phase: str = ""
     current_file: str = ""
     rate: str = ""
     eta: str = ""
@@ -289,6 +346,7 @@ class JobStore:
             existing = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
             for column, ddl in (("hold", "INTEGER DEFAULT 0"),
                                 ("adopt", "INTEGER DEFAULT 0"),
+                                ("kind", "TEXT DEFAULT 'push'"),
                                 ("files_sent", "INTEGER DEFAULT 0"),
                                 ("entries_done", "INTEGER DEFAULT 0"),
                                 ("entries_total", "INTEGER DEFAULT 0"),
@@ -313,7 +371,7 @@ class JobStore:
                 cur = conn.execute(
                     "INSERT INTO jobs (device_id, sources, label, dest, state, "
                     "created_at, files_total, bytes_total, argv, attempt, dry_run, "
-                    "hold, adopt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "hold, adopt, kind) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         job.device_id,
                         json.dumps(job.sources),
@@ -328,6 +386,7 @@ class JobStore:
                         int(job.dry_run),
                         int(job.hold),
                         int(job.adopt),
+                        job.kind,
                     ),
                 )
                 job.id = int(cur.lastrowid)
@@ -448,7 +507,44 @@ def _job_from_row(row: sqlite3.Row) -> Job:
         dry_run=bool(row["dry_run"]),
         hold=bool(row["hold"] if "hold" in row.keys() else 0),
         adopt=bool(row["adopt"] if "adopt" in row.keys() else 0),
+        kind=(row["kind"] if "kind" in row.keys() else None) or "push",
     )
+
+
+def _ssh_transport(device: Device, defaults) -> list[str]:
+    """The `-e <ssh command>` pair, shared by every rsync this module composes.
+
+    Extracted so the push and the pull cannot drift on it. They are two builders because
+    almost every *transfer* flag means something different in each direction, but the
+    transport means the same thing both ways, and a keepalive that applied to pushes only
+    would be the kind of difference nobody notices until a pull wedges behind a dead
+    master. Pinned by tests/test_ssh_keepalive.py.
+    """
+    timeout = device.timeout_with(defaults)
+    ssh_bits = ["ssh", "-p", str(device.effective_port)]
+    if device.identity:
+        ssh_bits += ["-i", str(device.identity)]
+    ssh_bits += [
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        f"ConnectTimeout={min(timeout, 30)}",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        # The same keepalives the probe uses, and for the same reason: both ride the one
+        # multiplexed master the Pi's ssh config creates per device, so a transfer that
+        # disagreed with the probe about it would either inherit the probe's settings
+        # anyway (whoever opened the master wins) or wedge behind a dead one. Only fires
+        # on total silence, which a running transfer never produces. See ssh_argv.
+        "-o",
+        f"ServerAliveInterval={SERVER_ALIVE_INTERVAL}",
+        "-o",
+        f"ServerAliveCountMax={SERVER_ALIVE_COUNT_MAX}",
+    ]
+    extra = device.effective_ssh_options
+    if extra:
+        ssh_bits += shlex.split(extra)
+    return ["-e", " ".join(shlex.quote(b) if " " in b else b for b in ssh_bits)]
 
 
 def build_argv(
@@ -469,6 +565,23 @@ def build_argv(
     three preview renders in `routes/devices.py` — gets it without opting in.
     """
     defaults = config.defaults
+
+    # First, above everything, because this is the only guard that no caller can opt out
+    # of: `JobRunner.submit` composes the argv for every writing path there is, so a route
+    # that was never taught about upstream -- or `retry`, which replays a stored job's
+    # sources long after the routes were fixed -- still cannot get a transfer aimed at the
+    # library's source. `_preview` already turns a ValueError into "unavailable — …", so
+    # the Actions dialog degrades readably rather than 500ing.
+    #
+    # This is also why the pull is `build_pull_argv` and not `build_argv(direction=...)`:
+    # a parameter's default would be the dangerous direction, and a caller that forgot the
+    # keyword would compose a push.
+    if device.is_upstream:
+        raise ValueError(
+            f"{device.id}: sync_mode upstream is a pull source — "
+            "it is never a transfer destination"
+        )
+
     mirror = device.is_mirror
 
     if mirror:
@@ -604,31 +717,7 @@ def build_argv(
     for pattern in device.excludes_with(defaults):
         argv.append(f"--exclude={pattern}")
 
-    timeout = device.timeout_with(defaults)
-    ssh_bits = ["ssh", "-p", str(device.effective_port)]
-    if device.identity:
-        ssh_bits += ["-i", str(device.identity)]
-    ssh_bits += [
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        f"ConnectTimeout={min(timeout, 30)}",
-        "-o",
-        "StrictHostKeyChecking=accept-new",
-        # The same keepalives the probe uses, and for the same reason: both ride the one
-        # multiplexed master the Pi's ssh config creates per device, so a transfer that
-        # disagreed with the probe about it would either inherit the probe's settings
-        # anyway (whoever opened the master wins) or wedge behind a dead one. Only fires
-        # on total silence, which a running transfer never produces. See ssh_argv.
-        "-o",
-        f"ServerAliveInterval={SERVER_ALIVE_INTERVAL}",
-        "-o",
-        f"ServerAliveCountMax={SERVER_ALIVE_COUNT_MAX}",
-    ]
-    extra = device.effective_ssh_options
-    if extra:
-        ssh_bits += shlex.split(extra)
-    argv += ["-e", " ".join(shlex.quote(b) if " " in b else b for b in ssh_bits)]
+    argv += _ssh_transport(device, defaults)
 
     root = Path(settings.library_root)
     if mirror:
@@ -703,6 +792,251 @@ def mirror_sources(settings: Settings) -> list[str]:
         return []
 
 
+def _ssh_command(device: Device, defaults, remote: str) -> list[str]:
+    """`ssh … user@host <one already-quoted remote command>`.
+
+    The transport is split back out of `_ssh_transport` rather than assembled a second
+    time, so the two ssh invocations a pull makes -- the catalog snapshot and its cleanup
+    -- travel the same keepalives and BatchMode as the transfer beside them.
+
+    `remote` is **one** element, and that is the whole point of this function existing.
+    ssh does not pass argv through: it joins everything after `user@host` with single
+    spaces and hands the result to a shell on the far side, so a tidy-looking argv list
+    arrives *unquoted* and is re-split on whitespace. Measured, job #18 -- the snapshot
+    script went out as a list and came back:
+
+        File "<string>", line 1
+            import
+                  ^
+        SyntaxError: Expected one or more names after 'import'
+        bash: -c: line 2: syntax error near unexpected token `('
+
+    The log is no help, because `_stream` writes the argv back out shlex-quoted, so it
+    printed the command as it should have been sent rather than as it was. Quote here,
+    pass one string, exactly as `probe._readings_script` has always done.
+    """
+    _, transport = _ssh_transport(device, defaults)
+    return [
+        *shlex.split(transport),
+        f"{device.effective_user}@{device.host}",
+        remote,
+    ]
+
+
+def catalog_rel(settings: Settings) -> str | None:
+    """Where the catalog sits *inside* the library, as a relative path — or None.
+
+    An upstream node is the same tree shape as we are, which is what makes this derivable
+    rather than another thing to configure: the remote copy is `<target>/<this>`. If
+    `catalog_db` has been pointed somewhere outside `library_root`, there is no honest
+    answer and this says so rather than guessing — the caller then runs the transfer and
+    reports the catalog phase as unavailable.
+    """
+    try:
+        return str(Path(settings.catalog_db).relative_to(Path(settings.library_root)))
+    except ValueError:
+        return None
+
+
+#: rsync only ever transfers the database itself. The -wal and -shm beside it belong to
+#: whichever process last had the file open and are meaningless next to a snapshot, so the
+#: catalog phase deletes the local pair rather than copying the remote one.
+CATALOG_SIDECARS = ("-wal", "-shm")
+
+#: The snapshot the upstream takes of its own live catalog, beside the catalog. Not in
+#: `.data/staging/` — that is the far end's upload area and not ours to write into.
+SNAPSHOT_SUFFIX = ".pull-snapshot"
+
+#: Taken with the remote's webapp still serving. `Connection.backup` reads a WAL database
+#: without blocking its writer and yields a consistent copy as of the moment it starts,
+#: which is the entire reason production is never stopped for a pull. Measured against the
+#: live catalog on sigmaai.au, service up, into `:memory:` so nothing was written:
+#: 82 tables, 7,224 pages, 1.07 s.
+#:
+#: python3 rather than the sqlite3 CLI because sigmaai.au has no sqlite3 binary and does
+#: have python3 3.14.4 / sqlite 3.46.1. The source is opened read-write on purpose: a
+#: read-only connection to a WAL database still has to map the -shm, and this script
+#: issues no writes.
+#:
+#: One line, no newlines. It has to survive being handed to a remote shell as a quoted
+#: word (see `_ssh_command`), and a single line is also the one that reads back sensibly
+#: in the job log, where it appears beside six other commands.
+_SNAPSHOT_PY = (
+    "import sqlite3,sys,os; "
+    "s=sqlite3.connect(sys.argv[1]); d=sqlite3.connect(sys.argv[2]); "
+    "s.backup(d); d.close(); s.close(); "
+    "print('# snapshot %d bytes' % os.path.getsize(sys.argv[2]))"
+)
+
+
+def build_pull_argv(
+    device: Device,
+    config: DevicesFile,
+    settings: Settings,
+    dry_run: bool = False,
+) -> list[str]:
+    """Compose the long pass of a pull: the remote's whole library, into ours.
+
+    The counterpart to `build_argv`, and a separate function rather than a `direction`
+    parameter on it. Almost every branch in that one is a fact about *the device as a
+    destination* — `--no-perms --no-owner --no-group` from its filesystem, `--modify-window`
+    from FAT's two-second resolution, `--size-only`/`--no-times` from a mount with no
+    utimensat — and on a pull the destination is this host's ext4, so all of them are wrong
+    or inert. Threading a direction through would mean guarding each with `if not pull`
+    inside a function whose comments are its documentation. The disqualifying part is the
+    default: a `direction=` parameter's default would be the dangerous direction, and a
+    caller who forgot the keyword would compose a push.
+
+    Absence here is structural, not conditional. None of those flags is emitted, on any
+    node, whatever it declares — pinned by giving the fixture an upstream node with
+    `fs: vfat` and `stores_times: false` and asserting none appear, which proves absence by
+    construction rather than by luck.
+
+    **`--delete` is not here and has no branch that could add it.** The only one the
+    program emits stays the mirror's.
+    """
+    if not device.is_upstream:
+        # The reverse of build_argv's refusal, and the pair is the point: one function can
+        # only aim at a device, the other can only read from a source, and neither can be
+        # talked into the other's direction.
+        raise ValueError(
+            f"{device.id}: only a sync_mode upstream node is pulled from"
+        )
+
+    defaults = config.defaults
+    argv = [
+        "rsync",
+        *PULL_FLAGS,
+        f"--info={INFO_FLAGS}",
+        f"--out-format={OUT_FORMAT}",
+    ]
+    if dry_run:
+        argv.append("-n")
+
+    for pattern in device.pull_excludes_with(PULL_EXCLUDES):
+        argv.append(f"--exclude={pattern}")
+
+    # The catalog files by name, not the directory that holds them: excluding /.data/db/
+    # wholesale would mean anything else living there is never pulled at all, and the point
+    # of the phasing is to confine the quiet window to exactly the file that needs one.
+    rel = catalog_rel(settings)
+    if rel:
+        argv.append(f"--exclude=/{rel}")
+        for side in CATALOG_SIDECARS:
+            argv.append(f"--exclude=/{rel}{side}")
+        argv.append(f"--exclude=/{rel}{SNAPSHOT_SUFFIX}")
+
+    bandwidth = device.bandwidth_with(defaults)
+    if bandwidth:
+        argv.append(f"--bwlimit={bandwidth}")
+
+    argv += _ssh_transport(device, defaults)
+
+    target = device.target.rstrip("/")
+    argv.append(f"{device.effective_user}@{device.host}:{target}/")
+    # Absolute, not `.`. The argv is printed in the dock, in the Actions dialog and at the
+    # head of the log, and "where did 250 GB just land" should not need the reader to know
+    # what cwd the runner used.
+    argv.append(f"{str(settings.library_root).rstrip('/')}/")
+    return argv
+
+
+def build_catalog_argv(
+    device: Device,
+    config: DevicesFile,
+    settings: Settings,
+    dry_run: bool = False,
+) -> list[str]:
+    """One file: the remote's snapshot, landing as our `lib.db`.
+
+    Named on both sides, which is what makes it a rename as well as a copy. No -R for the
+    reason in PULL_FLAGS — with it this would arrive at `<library_root>/<target>/…`
+    instead. rsync writes a temp file in the destination directory and renames it into
+    place, so the swap itself is atomic; the service stop exists so nothing holds the old
+    file open and so the stale -wal beside it can go first.
+    """
+    rel = catalog_rel(settings)
+    if rel is None:
+        raise ValueError(
+            f"catalog_db {settings.catalog_db} is not inside library_root "
+            f"{settings.library_root} — there is no remote path to derive"
+        )
+    argv = [
+        "rsync",
+        "-a",
+        "--partial-dir=.rsync-partial",
+        f"--info={INFO_FLAGS}",
+        f"--out-format={OUT_FORMAT}",
+    ]
+    if dry_run:
+        argv.append("-n")
+    argv += _ssh_transport(device, config.defaults)
+    target = device.target.rstrip("/")
+    argv.append(f"{device.effective_user}@{device.host}:{target}/{rel}{SNAPSHOT_SUFFIX}")
+    argv.append(str(settings.catalog_db))
+    return argv
+
+
+def snapshot_argv(device: Device, config: DevicesFile, settings: Settings) -> list[str]:
+    """Ask the upstream to snapshot its own live catalog, without stopping it."""
+    rel = catalog_rel(settings)
+    if rel is None:
+        raise ValueError("catalog_db is not inside library_root")
+    target = device.target.rstrip("/")
+    return _ssh_command(
+        device,
+        config.defaults,
+        shlex.join(
+            [
+                "python3",
+                "-c",
+                _SNAPSHOT_PY,
+                f"{target}/{rel}",
+                f"{target}/{rel}{SNAPSHOT_SUFFIX}",
+            ]
+        ),
+    )
+
+
+def cleanup_argv(device: Device, config: DevicesFile, settings: Settings) -> list[str]:
+    """Remove the snapshot from the upstream. Best-effort, and never fatal.
+
+    Run on the failure path too: an abandoned `.pull-snapshot` is 30 MB of production disk
+    and would turn up in the next scan's backlog, which is the list that is supposed to
+    mean "books you have not pulled".
+    """
+    rel = catalog_rel(settings)
+    if rel is None:
+        raise ValueError("catalog_db is not inside library_root")
+    target = device.target.rstrip("/")
+    # Quoted for the same reason, even though nothing in this one has a space today: the
+    # target comes out of a hand-edited devices.yaml, and "it happens to contain no shell
+    # metacharacters" is not a property anything here enforces.
+    return _ssh_command(
+        device,
+        config.defaults,
+        shlex.join(["rm", "-f", f"{target}/{rel}{SNAPSHOT_SUFFIX}"]),
+    )
+
+
+def service_argv(verb: str, settings: Settings) -> list[str]:
+    """`systemctl <verb> <unit>` for the unit on *this* host.
+
+    No sudo. `deploy/libnodes.service` sets NoNewPrivileges=yes, which makes sudo's setuid
+    bit inert — it refuses outright, with a different message from the "password required"
+    one people expect — so the privilege comes from polkit instead and the unit keeps its
+    hardening. See deploy/50-libnodes-urantia.rules.
+
+    `--no-ask-password` for the same reason BatchMode=yes is on every ssh in this program:
+    a headless service must fail fast rather than discover what the bus does about an
+    authentication prompt with no agent to answer it.
+
+    The unit name carries its `.service` suffix so what we invoke and what the polkit rule
+    matches cannot drift apart.
+    """
+    return ["systemctl", "--no-ask-password", verb, settings.local_service]
+
+
 class JobRunner:
     def __init__(
         self,
@@ -712,7 +1046,14 @@ class JobRunner:
         manifests: Manifests,
         probe: DeviceProbe,
         devices,
+        on_library_changed=None,
     ) -> None:
+        #: Called once after a pull reaches a terminal state, because a pull is the only
+        #: job that changes `library_root`. A callback rather than an import of AppState:
+        #: the runner is constructed by it, not the other way round, and defaulting to
+        #: None keeps every existing construction -- the whole test suite's included --
+        #: working untouched.
+        self._on_library_changed = on_library_changed
         self.settings = settings
         self.store = store
         self.index = index
@@ -731,6 +1072,14 @@ class JobRunner:
         self._workers: list[asyncio.Task] = []
         self._subs: set[asyncio.Queue] = set()
         self._watcher: asyncio.Task | None = None
+        #: Set means "no pull is rewriting the library, pushes may run". Cleared for the
+        #: duration of one, because concurrency is 3 on pi5 and a push carries -L: it
+        #: dereferences the symlinks as it goes, so one running beside a pull can read a
+        #: blob that has not landed yet (exit 24, "file has vanished") or one still in
+        #: .rsync-partial. The CAS makes a *finished* blob safe to read at any moment;
+        #: it says nothing about one mid-flight.
+        self._pull_gate = asyncio.Event()
+        self._pull_gate.set()
 
     # --- accessors --------------------------------------------------------
 
@@ -825,6 +1174,51 @@ class JobRunner:
             dry_run=dry_run,
             hold=hold and deferred,
             adopt=adopt,
+        )
+        self.store.create(job)
+        self._live[job.id] = job
+        self._terms[job.id] = deque(maxlen=self.settings.term_ring)
+        self._append_line(job, f"$ {job.command}", "cmd")
+        if not deferred:
+            self._queue.put_nowait(job.id)
+        self._emit(JobEvent("dock"))
+        return job
+
+    def submit_pull(
+        self,
+        device: Device,
+        *,
+        deferred: bool = False,
+        dry_run: bool = False,
+    ) -> Job:
+        """Queue a pull from an upstream node. The mirror image of `submit`.
+
+        No `_estimate`. That prices `sources` from the *local* index, which by definition
+        cannot know what the far end holds -- before the first pull it would be pricing a
+        different library, and after a successful one it would be pricing the answer as
+        the question. It costs nothing to omit: `_apply_progress` derives the bar from
+        rsync's own `to-chk`, and `files_total` is read only by the queued card and the
+        Jobs table. The templates guard on it so they say nothing rather than zero.
+
+        `sources` is the remote root, recorded as one name so the Jobs table has something
+        truthful to show. It is never passed to `_resolve`, and `build_pull_argv` does not
+        read it.
+        """
+        config = self.devices.config
+        argv = build_pull_argv(device, config, self.settings, dry_run=dry_run)
+        job = Job(
+            id=0,
+            device_id=device.id,
+            sources=[device.target.rstrip("/") + "/"],
+            label="(pull · whole root)",
+            # The destination of a pull is us. dock_meta reads this, and pointing it at
+            # the device would have the arrow the wrong way round.
+            dest=f"{str(self.settings.library_root).rstrip('/')}/",
+            state="deferred" if deferred else "queued",
+            created_at=time.time(),
+            argv=argv,
+            dry_run=dry_run,
+            kind="pull",
         )
         self.store.create(job)
         self._live[job.id] = job
@@ -964,10 +1358,260 @@ class JobRunner:
             finally:
                 self._queue.task_done()
 
+    # --- pull -------------------------------------------------------------
+
+    @property
+    def _service_hold(self) -> Path:
+        """Breadcrumb saying "LibNodes stopped the local service and owes it a start".
+
+        The `finally` in `_run_pull` covers a failed phase and an abort, because both of
+        those are ordinary returns. What it cannot cover is the process going away:
+        `JobRunner.stop()` cancels the workers, and `sudo systemctl restart libnodes` is
+        the routine dev loop on this host (CLAUDE.md §Commands) -- land one of those in
+        the catalog window and the site stays down with nothing running to bring it back.
+        `asyncio.shield` does not help; the loop closes underneath it.
+
+        So the durable half is a file, checked by `start()`. Same shape as var/probe.json:
+        written for exactly the case where an unclean exit is the thing that went wrong.
+        """
+        return self.settings.state_dir / "service-hold.json"
+
+    async def _service(self, job: Job, verb: str, log) -> int | None:
+        return await self._stream(job, service_argv(verb, self.settings), log)
+
+    def _phase(self, job: Job, text: str) -> None:
+        job.phase = text
+        self._append_line(job, f"— {text}", "info")
+        self._emit(JobEvent("progress", job.id))
+
+    async def _run_pull(self, job: Job, log) -> int | None:
+        """The six phases of a pull, in one coroutine so one `finally` can span them.
+
+        Chained jobs were the obvious alternative and are disqualified by exactly that:
+        "the local service comes back whatever happens" is a try/finally, and a finally
+        cannot span two jobs. A separate orchestrator outside JobRunner is disqualified by
+        procs.reap -- it would need its own registry, its own cancel-then-reap ordering,
+        its own log and SSE fan-out, and `JobRunner.stop()` would not reap its children.
+
+        Abort works here without special handling, and it is worth knowing why: `abort`
+        terminates the subprocess but does not cancel this task, so `_stream` returns
+        143/-15 as an ordinary value, the machine stops advancing, and the `finally` runs
+        because it is a return rather than an exception.
+        """
+        device = self.devices.config.by_id.get(job.device_id)
+        if device is None:
+            self._append_line(job, f"unknown device {job.device_id}", "err")
+            return 1
+        config = self.devices.config
+
+        self._phase(job, "1/6 · library")
+        code = await self._stream(job, job.argv, log)
+        if code is None:
+            return None
+        if code != 0:
+            return code
+        if job.dry_run:
+            # Checked before the snapshot, not after: a preview must never write a file
+            # onto the upstream and must never stop a service.
+            self._append_line(
+                job,
+                "dry run · nothing written, no snapshot taken, no service stopped",
+                "prog",
+            )
+            return code
+
+        rel = catalog_rel(self.settings)
+        if rel is None:
+            job.pull_warning = (
+                f"catalog not refreshed — {self.settings.catalog_db} is not inside "
+                f"{self.settings.library_root}, so there is no remote path to derive"
+            )
+            self._append_line(job, job.pull_warning, "warn")
+            return code
+        if not self.settings.local_service:
+            job.pull_warning = (
+                "catalog not refreshed — no LIBNODES_LOCAL_SERVICE declared, and "
+                "overwriting a live WAL database under a running reader corrupts it"
+            )
+            self._append_line(job, job.pull_warning, "warn")
+            return code
+
+        self._phase(job, "2/6 · snapshot")
+        snap = await self._stream(job, snapshot_argv(device, config, self.settings), log)
+        if snap != 0:
+            job.pull_warning = "catalog not refreshed — the upstream snapshot failed"
+            self._append_line(job, job.pull_warning, "warn")
+            await self._cleanup(job, device, config, log)
+            return code
+
+        stopped = False
+        try:
+            self._phase(job, "3/6 · stopping " + self.settings.local_service)
+            self._service_hold.parent.mkdir(parents=True, exist_ok=True)
+            self._service_hold.write_text(
+                json.dumps({"unit": self.settings.local_service, "job": job.id,
+                            "at": time.time()}),
+                encoding="utf-8",
+            )
+            if await self._service(job, "stop", log) != 0:
+                # Nothing is down: do not run `start` on the way out, or a pull would
+                # start a service somebody had deliberately stopped.
+                self._service_hold.unlink(missing_ok=True)
+                job.pull_warning = (
+                    f"catalog not refreshed — could not stop "
+                    f"{self.settings.local_service}. Install "
+                    f"/etc/polkit-1/rules.d/50-libnodes-urantia.rules; see deploy/README.md"
+                )
+                self._append_line(job, job.pull_warning, "err")
+                return code
+            stopped = True
+
+            self._phase(job, "4/6 · catalog")
+            # The stale write-ahead log goes *before* the new database lands, and the
+            # order is where the corruption lives: applying a WAL belonging to the old
+            # file over a fresh one is the one way this loses a catalog rather than
+            # merely failing. A clean stop checkpoints and unlinks them already; this is
+            # belt and braces.
+            for side in CATALOG_SIDECARS:
+                Path(str(self.settings.catalog_db) + side).unlink(missing_ok=True)
+            cat = await self._stream(
+                job, build_catalog_argv(device, config, self.settings), log
+            )
+            if cat != 0:
+                job.pull_warning = "catalog not refreshed — the swap failed"
+                self._append_line(job, job.pull_warning, "err")
+        finally:
+            if stopped:
+                self._phase(job, "5/6 · starting " + self.settings.local_service)
+                if await self._service(job, "start", log) == 0:
+                    self._service_hold.unlink(missing_ok=True)
+                else:
+                    job.pull_warning = (
+                        f"{self.settings.local_service} DID NOT RESTART — this host's "
+                        "site is down. Start it by hand."
+                    )
+                    self._append_line(job, job.pull_warning, "err")
+
+        await self._cleanup(job, device, config, log)
+        return code
+
+    async def _cleanup(self, job: Job, device: Device, config, log) -> None:
+        """Remove the snapshot from the upstream. Never fatal, and run on failure too.
+
+        An abandoned .pull-snapshot is 30 MB of somebody else's disk, and it would turn up
+        in the next scan's backlog -- the list that is supposed to mean "books you have
+        not pulled yet".
+        """
+        self._phase(job, "6/6 · cleanup")
+        try:
+            await self._stream(job, cleanup_argv(device, config, self.settings), log)
+        except Exception as exc:  # noqa: BLE001 - tidying must not fail a landed pull
+            self._append_line(job, f"could not remove the remote snapshot: {exc}", "warn")
+
+    async def _stream(self, job: Job, argv: list[str], log) -> int | None:
+        """Run one subprocess to completion, pumping its output into log, dock and ring.
+
+        Extracted from `_run` so a job can own several subprocesses *in sequence* — which
+        is what a pull is: transfer, snapshot, stop, catalog, start, cleanup. For a push
+        it is a pure extraction and nothing about it changed.
+
+        The load-bearing property is that `self._procs[job.id]` holds **at most one**
+        process at any instant, and is cleared before the next phase starts. `abort`,
+        `cancel` and `stop`'s `await reap(self._procs.values())` all assume exactly that;
+        a phase machine that registered two would leave one of them unreaped, which is the
+        `RuntimeError: Event loop is closed` procs.py exists to describe.
+
+        Returns the exit code, or None if the spawn itself failed — in which case the job
+        has already been marked failed and its events emitted, because there is nothing
+        for a caller to add.
+        """
+        log.write(f"$ {' '.join(shlex.quote(a) for a in argv)}\n")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                cwd=str(self.settings.library_root),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+        except OSError as exc:
+            job.state = "failed"
+            job.error = str(exc)
+            job.finished_at = time.time()
+            self.store.save(job)
+            self._append_line(job, str(exc), "err")
+            self._emit(JobEvent("done", job.id))
+            self._emit(JobEvent("dock"))
+            return None
+
+        self._procs[job.id] = proc
+        last_push = 0.0
+        last_term = 0.0
+
+        assert proc.stdout is not None
+        async for chunk in _iter_lines(proc.stdout):
+            log.write(chunk + "\n")
+            now = time.time()
+            match = PROGRESS_RE.match(chunk)
+            if match:
+                _apply_progress(job, match)
+                if now - last_push >= 0.5:  # ~2 Hz, per the SSE contract
+                    last_push = now
+                    self._emit(JobEvent("progress", job.id))
+                if now - last_term >= 1.0:
+                    last_term = now
+                    self._append_line(job, chunk.strip(), "prog")
+            elif chunk.strip():
+                text = chunk.rstrip()
+                event = FILE_RE.match(text)
+                if event is not None:
+                    # A file or directory rsync actually touched. Directories carry
+                    # a trailing slash and are noise in the "current file" readout.
+                    name = event.group("name")
+                    if not name.endswith("/"):
+                        job.current_file = name
+                        self._note_sent(job, name)
+                    size = event.group("size")
+                    pretty = name
+                    if size.isdigit() and not name.endswith("/"):
+                        pretty = f"{name}  {int(size):,}"
+                    self._append_line(job, pretty, "")
+                elif summary := SUMMARY_RE.match(text):
+                    # rsync's closing tally, and the only figure here that is bytes
+                    # on the wire rather than bytes of file.
+                    job.bytes_wire = sum(
+                        int(g.replace(",", "")) for g in summary.groups()
+                    )
+                    self._append_line(job, text, "info")
+                else:
+                    lowered = text.lower()
+                    css = (
+                        "err"
+                        if ("error" in lowered or "broken pipe" in lowered
+                            or "warning:" in lowered or lowered.startswith("rsync:"))
+                        else "info"
+                    )
+                    self._append_line(job, text, css)
+
+        code = await proc.wait()
+        self._procs.pop(job.id, None)
+        return code
+
     async def _run(self, job_id: int) -> None:
         job = self._live.get(job_id)
         if job is None or job.state not in ("queued", "deferred"):
             return
+
+        if job.kind == "pull":
+            # Take the gate and let the pushes already in flight finish. `concurrency` is
+            # 3 here, so without this a Kobo push could be dereferencing symlinks into a
+            # vault a pull is still filling.
+            self._pull_gate.clear()
+            while any(
+                j.state == "running" and j.kind != "pull" for j in self._live.values()
+            ):
+                await asyncio.sleep(0.2)
+        else:
+            await self._pull_gate.wait()
 
         job.state = "running"
         job.started_at = time.time()
@@ -983,80 +1627,26 @@ class JobRunner:
         log_path = self.settings.logs_dir / f"{job.id}.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *job.argv,
-                cwd=str(self.settings.library_root),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-        except OSError as exc:
-            job.state = "failed"
-            job.error = str(exc)
-            job.finished_at = time.time()
-            self.store.save(job)
-            self._append_line(job, str(exc), "err")
-            self._emit(JobEvent("done", job.id))
-            self._emit(JobEvent("dock"))
-            return
-
-        self._procs[job.id] = proc
-        last_push = 0.0
-        last_term = 0.0
-
         # buffering=1 (line buffered). Without it Python holds up to 8 KB, so "Open log"
         # on a running job showed an empty file — which is exactly when you most want to
         # read it. A long transfer wrote nothing to disk until it finished.
-        with log_path.open(
-            "w", encoding="utf-8", errors="replace", buffering=1
-        ) as log:
-            log.write(f"$ {job.command}\n")
-            assert proc.stdout is not None
-            async for chunk in _iter_lines(proc.stdout):
-                log.write(chunk + "\n")
-                now = time.time()
-                match = PROGRESS_RE.match(chunk)
-                if match:
-                    _apply_progress(job, match)
-                    if now - last_push >= 0.5:  # ~2 Hz, per the SSE contract
-                        last_push = now
-                        self._emit(JobEvent("progress", job.id))
-                    if now - last_term >= 1.0:
-                        last_term = now
-                        self._append_line(job, chunk.strip(), "prog")
-                elif chunk.strip():
-                    text = chunk.rstrip()
-                    event = FILE_RE.match(text)
-                    if event is not None:
-                        # A file or directory rsync actually touched. Directories carry
-                        # a trailing slash and are noise in the "current file" readout.
-                        name = event.group("name")
-                        if not name.endswith("/"):
-                            job.current_file = name
-                            self._note_sent(job, name)
-                        size = event.group("size")
-                        pretty = name
-                        if size.isdigit() and not name.endswith("/"):
-                            pretty = f"{name}  {int(size):,}"
-                        self._append_line(job, pretty, "")
-                    elif summary := SUMMARY_RE.match(text):
-                        # rsync's closing tally, and the only figure here that is bytes
-                        # on the wire rather than bytes of file.
-                        job.bytes_wire = sum(
-                            int(g.replace(",", "")) for g in summary.groups()
-                        )
-                        self._append_line(job, text, "info")
-                    else:
-                        lowered = text.lower()
-                        css = (
-                            "err"
-                            if ("error" in lowered or "broken pipe" in lowered
-                                or "warning:" in lowered or lowered.startswith("rsync:"))
-                            else "info"
-                        )
-                        self._append_line(job, text, css)
+        try:
+            with log_path.open(
+                "w", encoding="utf-8", errors="replace", buffering=1
+            ) as log:
+                if job.kind == "pull":
+                    code = await self._run_pull(job, log)
+                else:
+                    code = await self._stream(job, job.argv, log)
+        finally:
+            # In a `finally`, and unconditional: an exception on the way out of a pull
+            # must not wedge every push in the fleet behind a gate nobody will ever set
+            # again. Setting an already-set Event is a no-op, so a push may run this too.
+            self._pull_gate.set()
 
-            code = await proc.wait()
+        if code is None:
+            # The spawn itself failed; _stream has already marked the job and emitted.
+            return
 
         self._procs.pop(job.id, None)
         job.exit_code = code
@@ -1090,6 +1680,20 @@ class JobRunner:
                 self._append_line(
                     job, "dry run · nothing sent, manifest unchanged", "prog"
                 )
+            elif job.kind == "pull":
+                # No manifest. `_update_manifest` records "what this device has" by
+                # walking the *local* index for each source, which after a pull is
+                # inverted -- and it would run before the reindex below, so it would be
+                # recording the pre-pull index as a claim about the far end. The honest
+                # mechanism already exists and is correct for this node: a Scan lists the
+                # upstream with -l and reads the blake2b out of each link target, which is
+                # a content claim rather than a guess.
+                #
+                # No invalidate_space either: a pull does not change the *upstream's* disk
+                # usage. The figure that moved is this host's, which the rail reads live.
+                self._append_line(
+                    job, "pull complete · run a scan to refresh PRESENT ON", "prog"
+                )
             else:
                 self._update_manifest(job)
                 self.probe.invalidate_space(job.device_id)
@@ -1100,7 +1704,8 @@ class JobRunner:
         elif code in (15, -15, 143, 20):
             job.state = "aborted"
             job.error = "aborted"
-            self._record_partial(job)
+            if job.kind != "pull":
+                self._record_partial(job)
         else:
             job.state = "failed"
             job.error = f"rsync exited {code}"
@@ -1110,8 +1715,21 @@ class JobRunner:
             # Before the retry, not after it: each attempt starts rsync from scratch, so
             # attempt 2 skips what attempt 1 delivered and never names those files again.
             # Credit them now or lose them.
-            self._record_partial(job)
+            if job.kind != "pull":
+                self._record_partial(job)
             retries = self._retries_for(job)
+            if job.kind == "pull" and not job.phase.startswith("1/"):
+                # A pull retries itself only while it is still in the long transfer, where
+                # --partial-dir makes a retry cheap and nothing has been taken down. Past
+                # that, `retries: 2` would mean three stop/start cycles of the local
+                # service chasing a failure a human needs to look at.
+                self._append_line(
+                    job,
+                    f"not retried: the failure was in {job.phase or 'a later phase'}, "
+                    "past the point where a retry is free",
+                    "warn",
+                )
+                retries = 0
             if job.attempt <= retries:
                 # --partial is in the default flags, so the retry resumes byte-accurate.
                 self._append_line(
@@ -1124,6 +1742,17 @@ class JobRunner:
                 self._emit(JobEvent("dock"))
                 self._queue.put_nowait(job.id)
                 return
+
+        if job.kind == "pull" and not job.dry_run and self._on_library_changed:
+            # Every terminal outcome, failure and abort included: an interrupted pull has
+            # still written files, and an index that does not know about them makes those
+            # books invisible in the Library view *and* unpushable, because `_resolve`
+            # admits only what the index vouches for. After the catalog phase, never
+            # before it: LibraryIndex reads catalog_db for title/author, so reindexing
+            # first would bake the old catalog in. This is the only thing in the program
+            # that reindexes because of an event rather than a schedule.
+            self._append_line(job, "· reindexing the library", "prog")
+            self._on_library_changed()
 
         self.store.save(job)
         self._emit(JobEvent("done", job.id))
@@ -1145,6 +1774,11 @@ class JobRunner:
         truncated list is no longer a prefix of what rsync sent, and a manifest is worth
         nothing if it is only mostly right about which files exist.
         """
+        if job.kind == "pull":
+            # ~45k @-lines for a whole-root pull (20.8k links plus the vault), which
+            # flirts with SENT_CAP, and the list feeds only `_record_partial` -- which a
+            # pull does not use, because it records what a *device* holds.
+            return
         sent = self._sent.get(job.id)
         if sent is None:
             return
@@ -1263,6 +1897,28 @@ class JobRunner:
     # --- lifecycle --------------------------------------------------------
 
     def start(self) -> None:
+        # Before anything else, and synchronously: if we died inside a pull's catalog
+        # window, the local service is stopped and nobody else is going to start it. See
+        # `_service_hold` for why the `finally` cannot cover this case.
+        hold = self._service_hold
+        if hold.exists():
+            try:
+                unit = json.loads(hold.read_text(encoding="utf-8")).get("unit", "")
+            except (OSError, ValueError):
+                unit = self.settings.local_service
+            if unit:
+                subprocess.run(
+                    ["systemctl", "--no-ask-password", "start", unit],
+                    check=False,
+                    capture_output=True,
+                )
+                log.warning(
+                    "restarted %s: a pull had stopped it and this process did not "
+                    "survive to start it again",
+                    unit,
+                )
+            hold.unlink(missing_ok=True)
+
         # A job that was running when the process died cannot be resumed in place;
         # mark it failed so the history is honest and the user can retry.
         for job in self.store.unfinished():
@@ -1501,5 +2157,12 @@ __all__ = [
     "PROGRESS_RE",
     "build_argv",
     "full_sync_sources",
+    "build_pull_argv",
+    "build_catalog_argv",
+    "snapshot_argv",
+    "cleanup_argv",
+    "service_argv",
+    "catalog_rel",
+    "PULL_FLAGS",
     "mirror_sources",
 ]

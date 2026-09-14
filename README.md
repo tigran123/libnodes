@@ -75,7 +75,19 @@ itself because it depends on the exact behaviour of the flags:
 | `--no-perms` | **only** where the target filesystem cannot store them |
 | `--modify-window=1` | **only** on FAT, whose seconds field counts in twos |
 | `--size-only --no-times` | **only** where the target cannot store an mtime at all |
-| `--delete` | **only** on a mirror, where a stale leftover is a divergence |
+| `--delete` | **only** on a mirror, where a stale leftover is a divergence — and never in a pull, which has no branch that could add it |
+
+A **pull** — `sync_mode: upstream` — is built by a separate function, because in that
+direction most of this table means something else. `-L` goes, for the mirror's reason
+reached from the far side: the books *are* the symlinks. `-R` goes, and it is the one that
+fails silently: with a *remote* source it makes the remote's path a component of the
+destination, so `rsync -aR tigran@sigmaai.au:/Books/ /Books/` wants a second library at
+`/Books/Books/` with every link in it dangling — measured, no error, no warning. Every row
+marked "only where the target …" is a fact about the *device as a destination*, and on a
+pull the destination is this host, so none of them is emitted at all. And `--partial`
+becomes `--partial-dir=.rsync-partial`: plain `--partial` renames an interrupted file to
+its **final** name, which inside a content-addressed vault means a blob that does not hash
+to the name it is filed under.
 
 Those last four are why devices declare facts — `fs:` (vfat, exfat, ext4, …),
 `stores_times:` and `sync_mode:` — rather than a flag list: the filesystem, the mount and

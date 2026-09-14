@@ -239,6 +239,7 @@ sets four of them (`LIBRARY_ROOT`, `STATE_DIR`, `CATALOG_DB`, `CONCURRENCY=3`) a
 | `LIBNODES_STATE_DIR` | `<project>/var` | index, jobs, manifests, logs, devices.yaml, probe.json |
 | `LIBNODES_CATALOG_DB` | `/Books/.data/db/lib.db` | read-only; optional |
 | `LIBNODES_CONCURRENCY` | `1` | simultaneous rsyncs; the pi5 unit sets `3` |
+| `LIBNODES_LOCAL_SERVICE` | *(empty)* | the systemd unit **on this host** paused while a Pull swaps `lib.db` in. Empty skips the catalog phase rather than overwriting a live WAL database under a running reader. The pi5 unit sets `urantia-library.service` — see §Pull |
 | `LIBNODES_PROBE_INTERVAL` | `10` | seconds between reachability sweeps |
 | `LIBNODES_PROBE_BACKOFF_MAX` | `300` | ceiling on the per-device backoff — in effect, how long a recovery can go unnoticed when nobody has a Devices page open |
 | `LIBNODES_PROBE_BACKOFF_WATCHED` | `30` | the same ceiling while a Devices page is polling |
@@ -286,3 +287,65 @@ deploy is how you check the lock actually came back up.
 
 Changing the password and restarting logs everybody out — the cookie is signed with a key
 derived from the password, so old sessions stop verifying. There is nothing to clear.
+
+## Pull, and the one privilege LibNodes needs
+
+`sync_mode: upstream` (`var/devices.yaml`) makes a node a **pull source and never a push
+target**. sigmaai.au is the only one: it is the production library other admins upload to,
+so it is ahead of pi5 rather than behind it. Every writing action — Push Selected, Full
+Sync, Replicate, Adopt — refuses such a node at its route *and* in `jobs.build_argv`
+itself, so a code path nobody remembered cannot compose one.
+
+A Pull runs in six phases, and only the middle ones need anything special:
+
+1. the library — `rsync` from the upstream into `/Books`, both services still running;
+2. snapshot the upstream's catalog **while it keeps serving**, via
+   `python3 -c 'sqlite3 … .backup …'` over ssh. `Connection.backup` reads a live WAL
+   database without blocking its writer, which is why **production is never stopped**
+   (measured against sigmaai.au's live catalog: 82 tables, 7,224 pages, 1.07 s);
+3. `systemctl stop urantia-library.service` — **on pi5 only**;
+4. drop the snapshot in as `/Books/.data/db/lib.db`, stale `-wal`/`-shm` removed first;
+5. `systemctl start` again, in a `finally`;
+6. remove the snapshot from the upstream.
+
+So pi5's own site is down for the seconds phases 3-5 take, and sigmaai.au never is.
+
+### The polkit rule — install this, or the catalog phase cannot run
+
+`libnodes.service` sets `NoNewPrivileges=yes`, which makes `sudo`'s setuid bit inert: it
+refuses outright, with a different message from the "password required" one people expect,
+and **no sudoers rule fixes that**. The privilege comes from polkit instead, so the unit
+keeps every constraint it has. Install the copy that ships in this directory:
+
+```bash
+sudo install -m 0644 -o root -g root \
+    deploy/50-libnodes-urantia.rules /etc/polkit-1/rules.d/
+```
+
+polkit rescans `rules.d` on its own, but a JS syntax error is logged to the journal and
+the rule silently ignored, so verify rather than assume:
+
+```bash
+systemctl is-active urantia-library.service                       # expect: active
+systemctl --no-ask-password start urantia-library.service && echo AUTHORISED
+```
+
+Starting an already-active unit is a no-op and travels the exact path `stop` will, so that
+is a probe, not a change. `Interactive authentication required` means the rule did not
+take. Neither `pkcheck` form works as a probe here, and both were tried: with `--detail` it
+is refused to untrusted callers outright (`Only trusted callers … can use
+CheckAuthorization() and pass details`), and without it `action.lookup("unit")` is
+undefined, so a unit-scoped rule never matches and it reports "not authorised" whether or
+not the rule is installed.
+
+Until the rule is in place a Pull still transfers the books and then says
+`CATALOG NOT REFRESHED` in amber rather than half-running — the check is a preflight, so
+it never gets as far as stopping a service it cannot start again.
+
+### `var/service-hold.json`
+
+Written immediately before phase 3 and unlinked after phase 5. It exists for the one case
+a `finally` cannot cover: this process going away *inside* the quiet window, which
+`sudo systemctl restart libnodes` does in about a second. `JobRunner.start()` reads it,
+starts the unit named in it, and unlinks it, before accepting any work. Same shape as
+`var/probe.json` — a file that only matters across an unclean exit.

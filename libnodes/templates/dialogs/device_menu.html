@@ -20,6 +20,46 @@
         {% with device_id = device.id %}{% include "fragments/scan_status.html" %}{% endwith %}
       </div>
 
+      {# An upstream node's own two actions, and the only ones it gets besides Scan. Dry
+         run sits above Pull because the order is the advice -- the same reason a mirror's
+         does. #}
+      {% if device.is_upstream %}
+        {% set act = {
+          'label': 'Dry run',
+          'note': 'list what a Pull would bring across — changes nothing, here or there.
+                   Only the transfer runs, with -n: no snapshot is written onto
+                   ' ~ device.name ~ ' and no service is stopped.',
+          'cmd': commands.pull_dry_run,
+          'method': 'post', 'url': '/device/' ~ device.id ~ '/pull-dry-run',
+          'target': '#notices', 'swap': 'beforeend', 'close': true,
+        } %}
+        {% include "fragments/device_action.html" %}
+
+        {% set act = {
+          'label': 'Pull',
+          'note': 'copy ' ~ device.name ~ "'s library into " ~ library_root ~ ' — remote
+                   to local, whole root, adds and updates only. No --delete: nothing here
+                   is removed, including books the upstream has dropped. No -L: the CAS
+                   symlinks arrive as symlinks and the .data vault comes with them.
+                   urantia-library/ is held back so its configuration does not overwrite
+                   this host\'s own. Six steps; the catalog is snapshotted while
+                   ' ~ device.name ~ ' keeps serving, so only the reader HERE goes down,
+                   for seconds.',
+          'cmds': pull_plan,
+          'method': 'post', 'url': '/device/' ~ device.id ~ '/pull',
+          'target': '#notices', 'swap': 'beforeend', 'close': true,
+          'confirm': 'Pull ' ~ device.name ~ ' into ' ~ library_root ~ '? Steps 3-5 stop
+                      this host\'s reader for a few seconds and overwrite its catalog.
+                      Nothing is deleted, and nothing is sent to ' ~ device.name ~ '.',
+        } %}
+        {% include "fragments/device_action.html" %}
+      {% endif %}
+
+      {# Everything between here and Scan writes to the device, so an upstream node is
+         offered none of it: it is the library's source and LibNodes never pushes there.
+         Its own actions are above. #}
+      {% if not device.is_upstream %}
+
       {# A mirror node's Dry run is not the same offer as a reader's: it is the only way to
          read what --delete would remove before it removes it, so it is offered
          unconditionally rather than behind `full_sync`. A reader's is gated with Full Sync
@@ -58,7 +98,15 @@
         } %}
         {% include "fragments/device_action.html" %}
 
-      {% elif device.full_sync %}
+      {# `and not device.is_upstream` is belt and braces: the model coerces full_sync off
+         for an upstream node and the route refuses it, so this can only fire if both of
+         those regressed. It stays anyway, for the reason routes/jobs.py re-checks a form
+         post server-side — a hidden button is not a guard, and the converse is that a
+         guard costing one clause is worth keeping. The exclusivity below is with *mirror*,
+         which is exactly what made this dangerous: `upstream` is a value the `elif` knew
+         nothing about, so the moment sigmaai.au stopped being a mirror, Full Sync — a push
+         to production — would have appeared here. #}
+      {% elif device.full_sync and not device.is_upstream %}
         {% set act = {
           'label': 'Full Sync',
           'note': 'push the whole library — ' ~ library_root ~ ' in full. Adds and
@@ -71,6 +119,10 @@
         {% include "fragments/device_action.html" %}
       {% endif %}
 
+      {% endif %}{# not device.is_upstream — everything above writes #}
+
+      {# Scan is outside the gate: it reads. On an upstream node it is the action that
+         matters most, because the backlog the extras dialog lists is derived from it. #}
       {% set act = {
         'label': 'Scan device',
         'note': 'read what is already there · updates PRESENT ON',
@@ -80,6 +132,9 @@
       } %}
       {% include "fragments/device_action.html" %}
 
+      {# Adopt looks read-only and is not: --size-only makes it quieter, not harmless, so
+         it is gated with the writing actions even though it sits below Scan. #}
+      {% if not device.is_upstream %}
       {% set act = {
         'label': 'Adopt existing copy',
         'note': 'for a device already holding the library: repairs timestamps so future
@@ -91,6 +146,7 @@
         'confirm': 'Reconcile ' ~ device.name ~ ' against the library? Transfers no data.',
       } %}
       {% include "fragments/device_action.html" %}
+      {% endif %}{# not device.is_upstream #}
 
       {# Test is not here. It lives on the device row as its own button, because it is
          the only action that writes nothing and so needs no command read beforehand —

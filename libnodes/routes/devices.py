@@ -22,15 +22,20 @@ from ..probe import (
     charging_command,
     ssh_argv,
 )
-from ..config import SKIP_TOPLEVEL
+from ..config import PULL_EXCLUDES, SKIP_TOPLEVEL
 from ..procs import reap
 from ..scan import scan_argv
 from ..jobs import (
     Job,
     build_argv,
+    build_catalog_argv,
+    build_pull_argv,
+    cleanup_argv,
     full_sync_sources,
     hints_for_text,
     mirror_sources,
+    service_argv,
+    snapshot_argv,
 )
 from ..manifests import Extras
 from ..models import Device
@@ -539,6 +544,53 @@ def _preview(build) -> str:
         return f"unavailable — {exc}"
 
 
+def _pull_plan(app: AppState, device: Device) -> list[str]:
+    """Every command a Pull runs, in order — not just the transfer.
+
+    Showing only the rsync would hide the steps that carry the risk. The transfer is the
+    safe part: no --delete, no -L, and it writes nothing to the upstream. What deserves
+    reading before you press it is `systemctl stop` and an overwritten catalog database.
+    "The command is the documentation" (device_menu.html) cuts that way.
+
+    Built from the same functions the runner calls, so the strip cannot drift from what
+    runs — the lesson `_test_argv` already carries.
+    """
+    config = app.devices.config
+    steps: list[str] = []
+
+    def step(n: int, what: str, build) -> None:
+        try:
+            steps.append(f"{n}. {what}\n   {_shell(build())}")
+        except ValueError as exc:
+            steps.append(f"{n}. {what}\n   unavailable — {exc}")
+
+    unit = app.settings.local_service
+    step(1, "the library, both services still running",
+         lambda: build_pull_argv(device, config, app.settings))
+    step(2, "snapshot the upstream's catalog, without stopping it",
+         lambda: snapshot_argv(device, config, app.settings))
+    if unit:
+        steps.append(f"3. stop this host's reader\n   {_shell(service_argv('stop', app.settings))}")
+    else:
+        steps.append(
+            "3. stop this host's reader\n   unavailable — no LIBNODES_LOCAL_SERVICE "
+            "declared, so the catalog phase is skipped entirely"
+        )
+    step(4, "swap the catalog in", lambda: build_catalog_argv(device, config, app.settings))
+    if unit:
+        steps.append(f"5. start it again, whatever happened\n   {_shell(service_argv('start', app.settings))}")
+    else:
+        # Listed even when it cannot run, so the numbering never silently skips a step —
+        # a plan that jumps from 4 to 6 reads as a rendering bug rather than as a missing
+        # setting.
+        steps.append(
+            "5. start it again, whatever happened\n   unavailable — nothing was stopped"
+        )
+    step(6, "remove the snapshot from the upstream",
+         lambda: cleanup_argv(device, config, app.settings))
+    return steps
+
+
 def _whole_root_sources(app: AppState, device: Device) -> list[str]:
     """Everything this device's mode considers "the whole library".
 
@@ -546,7 +598,7 @@ def _whole_root_sources(app: AppState, device: Device) -> list[str]:
     a reader gets the browsable categories, a mirror gets the entire root including the
     vault it needs for its symlinks to resolve.
     """
-    if device.is_mirror:
+    if device.cas_tree:
         return mirror_sources(app.settings)
     return full_sync_sources(app.settings)
 
@@ -597,7 +649,16 @@ async def device_menu(request: Request, device_id: str):
                     lambda: build_argv(device, config, sources, app.settings, adopt=True)
                 ),
                 "scan": _shell(scan_argv(device, app.settings)),
+                "pull": _preview(
+                    lambda: build_pull_argv(device, config, app.settings)
+                ) if device.is_upstream else "",
+                "pull_dry_run": _preview(
+                    lambda: build_pull_argv(
+                        device, config, app.settings, dry_run=True
+                    )
+                ) if device.is_upstream else "",
             },
+            "pull_plan": _pull_plan(app, device) if device.is_upstream else [],
             "library_root": str(app.settings.library_root),
         }
     )
@@ -820,20 +881,43 @@ async def device_extras(request: Request, device_id: str):
             app.index.all_file_paths(),
             # A mirror is deliberately sent the infrastructure the index does not hold, so
             # on one of those these names are not orphans. See Manifests.extras.
-            expected_toplevel=SKIP_TOPLEVEL if device.is_mirror else frozenset(),
+            expected_toplevel=SKIP_TOPLEVEL if device.cas_tree else frozenset(),
         )
         if scanned is not None and app.index.meta().ready
         else Extras.unknown()
     )
+    # On an upstream the list is the pull backlog, and a backlog has to be honest about
+    # what the pull will decline to take: /Unsorted/ alone is 56 GB of the 56.5 GB listed
+    # here, so "a Pull brings exactly this across" would be a lie about almost all of it.
+    # Marked per row rather than filtered out, because "present there, and deliberately
+    # not coming" is worth seeing — it is the difference between a backlog and a mystery.
+    pull_held = 0
+    if device.is_upstream:
+        patterns = [
+            p.strip("/") for p in device.pull_excludes_with(PULL_EXCLUDES)
+        ]
+        for row in found.rows:
+            path = row["path"]
+            row["held_back"] = any(
+                path == pat or path.startswith(pat + "/") for pat in patterns
+            )
+            if row["held_back"]:
+                pull_held += 1
+
     ctx = base_context(request, "devices")
     ctx.update(
         {
             "device": device,
             "extras": found,
+            "pull_held": pull_held,
             "scan": app.scanner.result(device_id),
             "scanning": app.scanner.is_running(device_id),
             # So the Scan button here shows what it will run, like every action does.
             "commands": {"scan": _shell(scan_argv(device, app.settings))},
+            # The backlog dialog offers the Pull that would clear it, and shows the same
+            # six-step plan the Actions menu does — built by the same function, so the two
+            # cannot say different things about one action.
+            "pull_plan": _pull_plan(app, device) if device.is_upstream else [],
         }
     )
     return templates.TemplateResponse(request, "dialogs/device_extras.html", ctx)
@@ -866,7 +950,12 @@ async def device_adopt(request: Request, device_id: str):
     """
     app = state(request)
     device = app.devices.device(device_id)
-    if device is None:
+    # Adopt never asked what the device was, which is how it stayed the one writing
+    # endpoint that would still reach an upstream node after every other route had been
+    # taught to refuse -- it is `-a --size-only`, and --size-only makes it quieter, not
+    # read-only. build_argv refuses an upstream too; this is so the answer is a 404
+    # rather than a 500.
+    if device is None or device.is_upstream:
         return HTMLResponse("", status_code=404)
     sources = _whole_root_sources(app, device)
     reachable = app.probe.status(device_id).online
@@ -892,7 +981,9 @@ async def device_dry_run(request: Request, device_id: str):
     """
     app = state(request)
     device = app.devices.device(device_id)
-    if device is None:
+    # An upstream node previews a *pull*, at /pull-dry-run. Routing it here would build a
+    # push argv, which build_argv refuses outright.
+    if device is None or device.is_upstream:
         return HTMLResponse("", status_code=404)
     label = (
         "(dry run · whole root)" if device.is_mirror else "(dry run · full library)"
@@ -918,7 +1009,7 @@ async def device_full_sync(request: Request, device_id: str):
     """
     app = state(request)
     device = app.devices.device(device_id)
-    if device is None or not device.full_sync or device.is_mirror:
+    if device is None or not device.full_sync or device.is_mirror or device.is_upstream:
         return HTMLResponse("", status_code=404)
     sources = full_sync_sources(app.settings)
     reachable = app.probe.status(device_id).online
@@ -942,6 +1033,10 @@ async def device_replicate(request: Request, device_id: str):
     """
     app = state(request)
     device = app.devices.device(device_id)
+    # `not is_mirror` already excludes an upstream node, and deliberately so: this is the
+    # only --delete the program emits, and it is reachable from exactly one mode. Pinned
+    # by test_replicate_is_not_a_way_into_an_upstream_node so the exclusion cannot be
+    # widened back out by a well-meaning `cas_tree`.
     if device is None or not device.is_mirror:
         return HTMLResponse("", status_code=404)
     ctx = base_context(request, "devices")
@@ -956,6 +1051,57 @@ async def device_replicate(request: Request, device_id: str):
     except ValueError as exc:
         # build_argv refused: no sources, or a target at the root. Both are only unsafe
         # because this run carries --delete, so say so instead of queueing it.
+        ctx["message"] = str(exc)
+        return templates.TemplateResponse(
+            request, "fragments/error_toast.html", ctx, status_code=409
+        )
+    ctx["job"] = job
+    ctx["node"] = _one(request, device_id)
+    return templates.TemplateResponse(request, "fragments/queued.html", ctx)
+
+
+@router.post("/device/{device_id}/pull", response_class=HTMLResponse)
+async def device_pull(request: Request, device_id: str):
+    """Bring the upstream's library here. Only for `sync_mode: upstream`.
+
+    The mirror image of /replicate, and gated the same way: one mode, one action. Six
+    phases rather than one rsync — see JobRunner._run_pull — but one Job and one dock
+    card, because the `finally` that restarts this host's reader has to span all of them.
+    """
+    app = state(request)
+    device = app.devices.device(device_id)
+    if device is None or not device.is_upstream:
+        return HTMLResponse("", status_code=404)
+    ctx = base_context(request, "devices")
+    reachable = app.probe.status(device_id).online
+    try:
+        job = app.jobs.submit_pull(device, deferred=not reachable)
+    except ValueError as exc:
+        ctx["message"] = str(exc)
+        return templates.TemplateResponse(
+            request, "fragments/error_toast.html", ctx, status_code=409
+        )
+    ctx["job"] = job
+    ctx["node"] = _one(request, device_id)
+    return templates.TemplateResponse(request, "fragments/queued.html", ctx)
+
+
+@router.post("/device/{device_id}/pull-dry-run", response_class=HTMLResponse)
+async def device_pull_dry_run(request: Request, device_id: str):
+    """What a Pull would bring across, without bringing it.
+
+    Phase 1 with -n and nothing else: no snapshot is written onto the upstream and no
+    service is stopped, which is checked before the snapshot rather than after it.
+    """
+    app = state(request)
+    device = app.devices.device(device_id)
+    if device is None or not device.is_upstream:
+        return HTMLResponse("", status_code=404)
+    ctx = base_context(request, "devices")
+    reachable = app.probe.status(device_id).online
+    try:
+        job = app.jobs.submit_pull(device, deferred=not reachable, dry_run=True)
+    except ValueError as exc:
         ctx["message"] = str(exc)
         return templates.TemplateResponse(
             request, "fragments/error_toast.html", ctx, status_code=409

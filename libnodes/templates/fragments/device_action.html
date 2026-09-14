@@ -29,7 +29,21 @@
     <span class="action-note">{{ act.note }}</span>
   </div>
 
-  {% if act.cmd %}
+  {% if act.cmds %}
+    {# An action that is more than one command, which so far means Pull. Showing only its
+       transfer would hide the steps that carry the risk: the rsync has no --delete and no
+       -L and writes nothing to the far end, while steps 3 to 5 stop a service and
+       overwrite a database. One <code> each, each separately copyable, in the same slot a
+       single command uses so the dialog still reads as one list. #}
+    {% for cmd in act.cmds %}
+      <div class="action-cmd">
+        <code>{{ cmd }}</code>
+        <button class="btn btn-ghost btn-icon" type="button"
+                data-copy="{{ cmd }}"
+                title="Copy this command">⧉</button>
+      </div>
+    {% endfor %}
+  {% elif act.cmd %}
     <div class="action-cmd">
       <code>{{ act.cmd }}</code>
       <button class="btn btn-ghost btn-icon" type="button"
