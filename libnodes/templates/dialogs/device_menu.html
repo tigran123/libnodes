@@ -16,7 +16,10 @@
     </div>
 
     <div class="dialog-body">
-      <div id="scan-status-{{ device.id }}">
+      {# dom_id: `sigmaai.au` made this `#scan-status-sigmaai.au`, which CSS reads as an id
+         plus a class, matched nothing, and htmx answers an unresolvable target by not
+         sending the request at all — so Scan device did nothing, silently. #}
+      <div id="scan-status-{{ device.dom_id }}">
         {% with device_id = device.id %}{% include "fragments/scan_status.html" %}{% endwith %}
       </div>
 
@@ -134,7 +137,7 @@
                  does not stop it.',
         'cmd': commands.scan,
         'method': 'post', 'url': '/device/' ~ device.id ~ '/scan',
-        'target': '#scan-status-' ~ device.id, 'swap': 'innerHTML',
+        'target': '#scan-status-' ~ device.dom_id, 'swap': 'innerHTML',
       } %}
       {% include "fragments/device_action.html" %}
 

@@ -615,6 +615,22 @@ are listed.
   code default at 1 — the remaining shared resource is Wi-Fi airtime across the six wireless
   nodes, which is why the unit says 3 rather than "unbounded", and a host that has not
   declared itself should not assume either.
+- **A device id reaches the DOM through `Device.dom_id`, never raw.** htmx spans two worlds
+  with the same string: `hx-target="#node-<id>"` is a querySelector, and — the part that
+  cannot be escaped around — an out-of-band swap builds its own selector as
+  `"#" + element.getAttribute("id")` and runs *that* through `querySelectorAll` (verified in
+  the vendored 2.0.4, `oobSwap`). So the id **attribute** has to be selector-safe, not just
+  the targets. `sigmaai.au` found it: `#scan-status-sigmaai.au` parses as the id
+  `scan-status-sigmaai` plus the class `au`, matches nothing, and htmx answers an
+  unresolvable target by firing `htmx:targetError` and **not sending the request** — so Scan
+  device on that node did nothing at all, and the access log had no POST in it to say why.
+  Row Retry, card Retry and the Test dialog's out-of-band row refresh were broken the same
+  way. Not fixed by renaming the node: the id is the key in `manifests.db`, `jobs.db` and
+  `probe.json`, and it is the hostname. `dom_id` folds anything outside `[A-Za-z0-9_-]` to a
+  dash and is used for every `id=` and every `#`-selector; the **URLs keep the real id**.
+  `DevicesFile` refuses two ids that fold to the same `dom_id`. Pinned by
+  `tests/test_dom_ids.py`, which keeps a dotted id in its own fixture because the rest of
+  the fleet is dot-free — which is exactly why nothing caught this.
 - **Every template except `base.html` and the page templates must render standalone** — no
   `<html>`, no doctype. That is the HTMX contract, enforced by
   `test_fragments_render_standalone`. **A new fragment route must be added to `FRAGMENTS` in

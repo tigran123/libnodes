@@ -3,7 +3,8 @@
    lets the Test dialog carry a refreshed card along with its own payload. Undefined in
    the grid loop, and an undefined name is falsy, so that path is unaffected. #}
 <div class="card {{ 'is-active' if node.state == 'syncing' }}{{ 'is-offline' if node.offline }}"
-     id="card-{{ node.device.id }}"
+     {# dom_id, not id — see device_row.html. #}
+     id="card-{{ node.device.dom_id }}"
      data-node="{{ node.device.id }}"
      {% if oob %}hx-swap-oob="true"{% endif %}>
 
@@ -144,7 +145,7 @@
            Mirrors the table's own Retry in device_row.html. #}
         <button class="btn"
                 hx-post="/device/{{ node.device.id }}/probe"
-                hx-target="#card-{{ node.device.id }}"
+                hx-target="#card-{{ node.device.dom_id }}"
                 hx-swap="outerHTML"
                 hx-disabled-elt="this">Retry</button>
         <button class="btn is-disabled" disabled

@@ -417,6 +417,32 @@ class Device(BaseModel):
         return self.sync_mode == "upstream"
 
     @property
+    def dom_id(self) -> str:
+        """The id, made safe to put in a DOM id *and* in a CSS selector.
+
+        An HTML id may legally contain a dot; a CSS id selector may not, unescaped. htmx
+        spans both: `hx-target="#node-<id>"` is a querySelector, and -- the part that
+        cannot be escaped around -- an out-of-band swap builds its own selector as
+        `"#" + element.getAttribute("id")` and runs *that* through querySelectorAll. So the
+        id attribute itself has to be selector-safe; escaping only the targets would leave
+        every OOB refresh silently dropped.
+
+        `sigmaai.au` is the id that found this. `#scan-status-sigmaai.au` parses as the id
+        `scan-status-sigmaai` plus the class `au`, matches nothing, and htmx answers an
+        unresolvable target by firing htmx:targetError and **not sending the request** --
+        so Scan device on that node did nothing at all, with no request in the log to say
+        why. Row Retry, card Retry and the Test dialog's out-of-band row refresh were
+        broken the same way.
+
+        Not solved by changing the id: it is the key in manifests.db, jobs.db and
+        probe.json, and it is the hostname, which is the honest name for the node. This is
+        a presentation concern, so it stays in the presentation layer. Every id already in
+        use is unaffected -- `_slug` allows only [a-z0-9_-] before it falls back, so a dot
+        is the one character that has ever reached here.
+        """
+        return re.sub(r"[^A-Za-z0-9_-]", "-", self.id)
+
+    @property
     def cas_tree(self) -> bool:
         """This node's tree *is* the CAS shape: symlinks into .data/, vault and all.
 
@@ -489,6 +515,27 @@ class DevicesFile(BaseModel):
     @property
     def by_id(self) -> dict[str, Device]:
         return {d.id: d for d in self.devices}
+
+    @model_validator(mode="after")
+    def _dom_ids_stay_distinct(self) -> "DevicesFile":
+        """Two ids must not collapse to one `dom_id`, or they share a row in the DOM.
+
+        `dom_id` folds everything outside [A-Za-z0-9_-] to a dash, so `sigmaai.au` and a
+        node called `sigmaai-au` would both render `id="node-sigmaai-au"` -- and every
+        swap aimed at either would hit whichever came first. Vanishingly unlikely and
+        cheap to rule out, and the validation strip is where a devices.yaml problem is
+        supposed to appear.
+        """
+        seen: dict[str, str] = {}
+        for device in self.devices:
+            clash = seen.get(device.dom_id)
+            if clash is not None:
+                raise ValueError(
+                    f"{device.id!r} and {clash!r} both render as {device.dom_id!r} in the "
+                    "page — give one of them a different id"
+                )
+            seen[device.dom_id] = device.id
+        return self
 
     @property
     def profiles(self) -> int:
