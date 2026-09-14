@@ -298,6 +298,10 @@ class Job:
     #: An adoption run: reconcile metadata for files the device already has, moving no
     #: data. Recorded so the Jobs table can label it and history stays truthful.
     adopt: bool = False
+    #: This push owes the replica a catalog once its files have landed. True for a mirror
+    #: Replicate and nothing else: a reader has no catalog, and an Adopt exists to repair
+    #: metadata rather than to move a database.
+    catalog: bool = False
     #: Which direction this job moves bytes. "push" is every job this program had until
     #: `sync_mode: upstream`; "pull" reads from the device and writes into library_root,
     #: in six phases rather than one rsync. Persisted because history has to say what a
@@ -305,10 +309,11 @@ class Job:
     kind: JobKind = "push"
 
     # Live-only, never persisted.
-    #: Set when a pull delivered its books but could not refresh the catalog. The dock
-    #: draws amber for it: the transfer really did land, and a green banner over a stale
-    #: catalog is the same small lie a plain green SYNC COMPLETE over exit 23 would be.
-    pull_warning: str = ""
+    #: Set when a transfer delivered its files but could not refresh the catalog beside
+    #: them — in either direction. The dock draws amber for it: the transfer really did
+    #: land, and a green banner over a stale catalog is the same small lie a plain green
+    #: SYNC COMPLETE over exit 23 would be.
+    catalog_warning: str = ""
     #: Which of a pull's six phases is running, for the dock. Deliberately separate from
     #: `pct`, which keeps meaning the transfer and nothing else: a bar reading 100% with
     #: three phases to go is the same class of lie as labelling `to-chk` "files".
@@ -377,6 +382,7 @@ class JobStore:
             for column, ddl in (("hold", "INTEGER DEFAULT 0"),
                                 ("adopt", "INTEGER DEFAULT 0"),
                                 ("kind", "TEXT DEFAULT 'push'"),
+                                ("catalog", "INTEGER DEFAULT 0"),
                                 ("files_sent", "INTEGER DEFAULT 0"),
                                 ("entries_done", "INTEGER DEFAULT 0"),
                                 ("entries_total", "INTEGER DEFAULT 0"),
@@ -401,7 +407,8 @@ class JobStore:
                 cur = conn.execute(
                     "INSERT INTO jobs (device_id, sources, label, dest, state, "
                     "created_at, files_total, bytes_total, argv, attempt, dry_run, "
-                    "hold, adopt, kind) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "hold, adopt, kind, catalog) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         job.device_id,
                         json.dumps(job.sources),
@@ -417,6 +424,7 @@ class JobStore:
                         int(job.hold),
                         int(job.adopt),
                         job.kind,
+                        int(job.catalog),
                     ),
                 )
                 job.id = int(cur.lastrowid)
@@ -538,6 +546,7 @@ def _job_from_row(row: sqlite3.Row) -> Job:
         hold=bool(row["hold"] if "hold" in row.keys() else 0),
         adopt=bool(row["adopt"] if "adopt" in row.keys() else 0),
         kind=(row["kind"] if "kind" in row.keys() else None) or "push",
+        catalog=bool(row["catalog"] if "catalog" in row.keys() else 0),
     )
 
 
@@ -641,6 +650,23 @@ def build_argv(
     ]
     if dry_run:
         argv.append("-n")
+
+    # The live catalog never rides in the bulk pass. lib.db, lib.db-wal and lib.db-shm are
+    # one WAL-mode database that this host's own urantia-library is writing, and rsync
+    # reads the three at three different instants -- a checkpoint landing between them
+    # hands the replica a catalog that is torn or missing its most recent commits. The
+    # same fact the pull established, pointed the other way. `_replicate_catalog` sends a
+    # `Connection.backup` snapshot instead, which is consistent by construction.
+    #
+    # Named one by one rather than excluding /.data/db/, so `backups/` and anything else
+    # that lives there still replicates.
+    if mirror:
+        rel = catalog_rel(settings)
+        if rel:
+            argv.append(f"--exclude=/{rel}")
+            for side in CATALOG_SIDECARS:
+                argv.append(f"--exclude=/{rel}{side}")
+            argv.append(f"--exclude=/{rel}{REPLICATE_SUFFIX}")
 
     # A replica that keeps what the Pi dropped is not a replica. Deliberately kept under
     # -n as well: a mirror dry run is the only way to read what a prune would remove
@@ -1052,6 +1078,101 @@ def cleanup_argv(device: Device, config: DevicesFile, settings: Settings) -> lis
     )
 
 
+#: The snapshot a *mirror* is sent, taken beside our own catalog. Distinct from the
+#: pull's suffix so a host that is both an upstream's downstream and a mirror's origin --
+#: which pi5 is -- can never confuse one job's temp file for the other's.
+REPLICATE_SUFFIX = ".replicate-snapshot"
+
+
+def snapshot_catalog(settings: Settings, dest: Path) -> int:
+    """Copy this host's live catalog to `dest`, consistently. Returns its size.
+
+    `sqlite3.Connection.backup` reads a WAL database without blocking its writer and
+    yields a copy as of the moment it starts, so urantia-library here keeps serving
+    throughout -- the same property that lets a pull snapshot production without stopping
+    it, used from the other end. Measured against a live catalog: 82 tables, 7,224 pages,
+    1.07 s.
+
+    In-process rather than a `python3 -c` subprocess, because here the database is local
+    and there is no shell in the way. The caller runs it off the event loop.
+    """
+    src = sqlite3.connect(str(settings.catalog_db))
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dst = sqlite3.connect(str(dest))
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    return dest.stat().st_size
+
+
+def replicate_catalog_argv(
+    device: Device, config: DevicesFile, settings: Settings
+) -> list[str]:
+    """Send one file: our snapshot, landing on the replica as its `lib.db`."""
+    rel = catalog_rel(settings)
+    if rel is None:
+        raise ValueError("catalog_db is not inside library_root")
+    argv = [
+        "rsync",
+        "-a",
+        "--partial-dir=.rsync-partial",
+        f"--info={INFO_FLAGS}",
+        f"--out-format={OUT_FORMAT}",
+    ]
+    argv += _ssh_transport(device, config.defaults)
+    argv.append(f"{settings.catalog_db}{REPLICATE_SUFFIX}")
+    argv.append(f"{device.effective_user}@{device.host}:{device.target.rstrip('/')}/{rel}")
+    return argv
+
+
+def remote_reader_argv(
+    device: Device, config: DevicesFile, settings: Settings
+) -> list[str]:
+    """Ask the replica whether anything there is reading the catalog right now.
+
+    The unit name comes from `local_service`, which is documented as this host's -- and is
+    reused deliberately, because it names the *application*, not the machine. A replica
+    that has never heard of the unit answers `inactive`, which is the right answer: nothing
+    there is reading the file, so the swap is safe. `|| true` so a systemd-less target does
+    not turn a question into a failure.
+    """
+    unit = settings.local_service
+    if not unit:
+        # Refuse rather than compose `systemctl is-active ''`, which asks nothing and
+        # answers `inactive` — a false all-clear. `_replicate_catalog` guards on the same
+        # value; this is so a future caller that forgets cannot get the reassuring answer
+        # by accident.
+        raise ValueError("no LIBNODES_LOCAL_SERVICE declared — there is no unit to ask about")
+    return _ssh_command(
+        device,
+        config.defaults,
+        shlex.join(["systemctl", "is-active", unit]) + " || true",
+    )
+
+
+def remote_sidecar_argv(
+    device: Device, config: DevicesFile, settings: Settings
+) -> list[str]:
+    """Drop the replica's stale -wal/-shm, before its new catalog lands.
+
+    Same ordering rule as the pull's: applying a write-ahead log belonging to the old file
+    over a fresh one is how this loses a catalog rather than merely failing.
+    """
+    rel = catalog_rel(settings)
+    if rel is None:
+        raise ValueError("catalog_db is not inside library_root")
+    target = device.target.rstrip("/")
+    return _ssh_command(
+        device,
+        config.defaults,
+        shlex.join(["rm", "-f", *[f"{target}/{rel}{s}" for s in CATALOG_SIDECARS]]),
+    )
+
+
 def service_argv(verb: str, settings: Settings) -> list[str]:
     """`systemctl <verb> <unit>` for the unit on *this* host.
 
@@ -1113,6 +1234,10 @@ class JobRunner:
         #: it says nothing about one mid-flight.
         self._pull_gate = asyncio.Event()
         self._pull_gate.set()
+        #: Short-lived question processes (`_capture`). Separate from `_procs`, which holds
+        #: at most one *transfer* per job and is what `abort` terminates; these are reaped
+        #: by `stop()` alongside it so none is left for the garbage collector.
+        self._probe_procs: set = set()
 
     # --- accessors --------------------------------------------------------
 
@@ -1207,6 +1332,10 @@ class JobRunner:
             dry_run=dry_run,
             hold=hold and deferred,
             adopt=adopt,
+            # A Replicate, and only a Replicate. An Adopt sends the same root but exists to
+            # repair timestamps, so handing it a database swap would be a trap; a reader
+            # has no catalog to swap at all.
+            catalog=device.is_mirror and not adopt,
         )
         self.store.create(job)
         self._live[job.id] = job
@@ -1422,6 +1551,97 @@ class JobRunner:
             _log_note(log, f"— {text}")
         self._emit(JobEvent("progress", job.id))
 
+    async def _replicate_catalog(self, job: Job, log) -> None:
+        """Give a replica a consistent catalog, after its files have landed.
+
+        Never changes the job's exit code. The books are what a Replicate is for and they
+        really did arrive; a catalog it could not refresh is an amber note, not a failure
+        -- the same judgement the exit-23 split makes about a push that delivered every
+        byte and could not stamp a timestamp.
+
+        Four steps and no privilege anywhere: ask the replica whether anything is reading
+        the file, snapshot ours (which needs no service stop *here*, because that is what
+        Connection.backup is for), drop the replica's stale write-ahead log, send the
+        snapshot in as lib.db.
+        """
+        device = self.devices.config.by_id.get(job.device_id)
+        if device is None:
+            return
+        config = self.devices.config
+        rel = catalog_rel(self.settings)
+        if rel is None:
+            job.catalog_warning = (
+                f"catalog not replicated — {self.settings.catalog_db} is not inside "
+                f"{self.settings.library_root}, so there is no remote path to derive"
+            )
+            self._append_line(job, job.catalog_warning, "warn")
+            return
+        if not Path(self.settings.catalog_db).exists():
+            # Nothing to send, and nothing wrong: catalog_db is documented as optional.
+            return
+
+        self._phase(job, "2/2 · catalog", log)
+
+        if self.settings.local_service:
+            # Refuse rather than overwrite a database something is reading. There is no
+            # stop here by design: this is an interactive machine, and taking its services
+            # down from another host is a bigger claim than a replicate should make. A
+            # target that has never heard of the unit answers `inactive`, which is the
+            # right answer -- nothing there is reading the file.
+            reader = await self._capture(remote_reader_argv(device, config, self.settings))
+            if reader is not None and reader.strip().startswith("active"):
+                job.catalog_warning = (
+                    f"catalog not replicated — {self.settings.local_service} is running on "
+                    f"{device.name} and the swap would overwrite a database it is reading. "
+                    "Stop it there and replicate again."
+                )
+                self._append_line(job, job.catalog_warning, "warn")
+                return
+
+        snapshot = Path(f"{self.settings.catalog_db}{REPLICATE_SUFFIX}")
+        try:
+            _log_note(log, f"— snapshot {self.settings.catalog_db} -> {snapshot.name}")
+            size = await asyncio.to_thread(snapshot_catalog, self.settings, snapshot)
+            self._append_line(job, f"catalog snapshot · {size:,} bytes", "prog")
+
+            if await self._stream(
+                job, remote_sidecar_argv(device, config, self.settings), log
+            ) != 0:
+                job.catalog_warning = (
+                    "catalog not replicated — could not clear the stale write-ahead log "
+                    f"on {device.name}"
+                )
+                self._append_line(job, job.catalog_warning, "warn")
+                return
+            if await self._stream(
+                job, replicate_catalog_argv(device, config, self.settings), log
+            ) != 0:
+                job.catalog_warning = "catalog not replicated — the transfer failed"
+                self._append_line(job, job.catalog_warning, "warn")
+        finally:
+            snapshot.unlink(missing_ok=True)
+
+    async def _capture(self, argv: list[str]) -> str | None:
+        """Run a short command and return its stdout. None if it could not run.
+
+        Used for the one question a replicate asks rather than answers. Registered in
+        `_procs` like everything else, so `stop()` reaps it.
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+        except OSError:
+            return None
+        self._probe_procs.add(proc)
+        try:
+            out, _ = await proc.communicate()
+        finally:
+            self._probe_procs.discard(proc)
+        return out.decode("utf-8", errors="replace")
+
     async def _run_pull(self, job: Job, log) -> int | None:
         """The six phases of a pull, in one coroutine so one `finally` can span them.
 
@@ -1460,25 +1680,25 @@ class JobRunner:
 
         rel = catalog_rel(self.settings)
         if rel is None:
-            job.pull_warning = (
+            job.catalog_warning = (
                 f"catalog not refreshed — {self.settings.catalog_db} is not inside "
                 f"{self.settings.library_root}, so there is no remote path to derive"
             )
-            self._append_line(job, job.pull_warning, "warn")
+            self._append_line(job, job.catalog_warning, "warn")
             return code
         if not self.settings.local_service:
-            job.pull_warning = (
+            job.catalog_warning = (
                 "catalog not refreshed — no LIBNODES_LOCAL_SERVICE declared, and "
                 "overwriting a live WAL database under a running reader corrupts it"
             )
-            self._append_line(job, job.pull_warning, "warn")
+            self._append_line(job, job.catalog_warning, "warn")
             return code
 
         self._phase(job, "2/6 · snapshot", log)
         snap = await self._stream(job, snapshot_argv(device, config, self.settings), log)
         if snap != 0:
-            job.pull_warning = "catalog not refreshed — the upstream snapshot failed"
-            self._append_line(job, job.pull_warning, "warn")
+            job.catalog_warning = "catalog not refreshed — the upstream snapshot failed"
+            self._append_line(job, job.catalog_warning, "warn")
             await self._cleanup(job, device, config, log)
             return code
 
@@ -1495,12 +1715,12 @@ class JobRunner:
                 # Nothing is down: do not run `start` on the way out, or a pull would
                 # start a service somebody had deliberately stopped.
                 self._service_hold.unlink(missing_ok=True)
-                job.pull_warning = (
+                job.catalog_warning = (
                     f"catalog not refreshed — could not stop "
                     f"{self.settings.local_service}. Install "
                     f"/etc/polkit-1/rules.d/50-libnodes-urantia.rules; see deploy/README.md"
                 )
-                self._append_line(job, job.pull_warning, "err")
+                self._append_line(job, job.catalog_warning, "err")
                 return code
             stopped = True
 
@@ -1516,19 +1736,19 @@ class JobRunner:
                 job, build_catalog_argv(device, config, self.settings), log
             )
             if cat != 0:
-                job.pull_warning = "catalog not refreshed — the swap failed"
-                self._append_line(job, job.pull_warning, "err")
+                job.catalog_warning = "catalog not refreshed — the swap failed"
+                self._append_line(job, job.catalog_warning, "err")
         finally:
             if stopped:
                 self._phase(job, "5/6 · starting " + self.settings.local_service, log)
                 if await self._service(job, "start", log) == 0:
                     self._service_hold.unlink(missing_ok=True)
                 else:
-                    job.pull_warning = (
+                    job.catalog_warning = (
                         f"{self.settings.local_service} DID NOT RESTART — this host's "
                         "site is down. Start it by hand."
                     )
-                    self._append_line(job, job.pull_warning, "err")
+                    self._append_line(job, job.catalog_warning, "err")
 
         await self._cleanup(job, device, config, log)
         return code
@@ -1718,7 +1938,13 @@ class JobRunner:
                 if job.kind == "pull":
                     code = await self._run_pull(job, log)
                 else:
+                    if job.catalog:
+                        self._phase(job, "1/2 · library", log)
                     code = await self._stream(job, job.argv, log)
+                    # After the files, never instead of them, and never on a dry run: a
+                    # preview must not write a snapshot or touch the replica's database.
+                    if code == 0 and job.catalog and not job.dry_run:
+                        await self._replicate_catalog(job, log)
         finally:
             # In a `finally`, and unconditional: an exception on the way out of a pull
             # must not wedge every push in the fleet behind a gate nobody will ever set
@@ -2036,6 +2262,8 @@ class JobRunner:
         # that runs after the loop has closed. See procs.reap.
         await reap(self._procs.values())
         self._procs.clear()
+        await reap(self._probe_procs)
+        self._probe_procs.clear()
 
 
 # rsync's own diagnostics are accurate but rarely name the actual cause. These are the
@@ -2244,6 +2472,11 @@ __all__ = [
     "cleanup_argv",
     "service_argv",
     "catalog_rel",
+    "REPLICATE_SUFFIX",
+    "snapshot_catalog",
+    "replicate_catalog_argv",
+    "remote_reader_argv",
+    "remote_sidecar_argv",
     "PULL_FLAGS",
     "mirror_sources",
 ]

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import shlex
 import time
+from pathlib import Path
 from dataclasses import dataclass
 
 from fastapi import APIRouter, Form, Request
@@ -27,7 +28,12 @@ from ..procs import reap
 from ..scan import scan_argv
 from ..jobs import (
     Job,
+    REPLICATE_SUFFIX,
     build_argv,
+    catalog_rel,
+    remote_reader_argv,
+    remote_sidecar_argv,
+    replicate_catalog_argv,
     build_catalog_argv,
     build_pull_argv,
     cleanup_argv,
@@ -600,6 +606,44 @@ def _pull_plan(app: AppState, device: Device) -> list[str]:
     return steps
 
 
+def _replicate_plan(app: AppState, device: Device, sources: list[str]) -> list[str]:
+    """Replicate's commands: the files, then the catalog beside them.
+
+    Shown in full for the reason Pull's is. The rsync is the readable part; the steps that
+    touch a database are the ones worth reading before pressing anything.
+    """
+    config = app.devices.config
+    try:
+        steps = [
+            "1. the library, --delete and all\n   "
+            + _shell(build_argv(device, config, sources, app.settings))
+        ]
+    except ValueError as exc:
+        return [f"unavailable — {exc}"]
+
+    if catalog_rel(app.settings) is None or not Path(app.settings.catalog_db).exists():
+        return steps
+    if app.settings.local_service:
+        steps.append(
+            "2. is anything reading the catalog there?\n   "
+            + _shell(remote_reader_argv(device, config, app.settings))
+        )
+    steps.append(
+        "3. snapshot ours, with this host's own reader still serving\n   "
+        f"sqlite3 .backup {app.settings.catalog_db} "
+        f"-> {app.settings.catalog_db}{REPLICATE_SUFFIX}"
+    )
+    steps.append(
+        "4. clear the replica's stale write-ahead log\n   "
+        + _shell(remote_sidecar_argv(device, config, app.settings))
+    )
+    steps.append(
+        "5. send the snapshot in as its lib.db\n   "
+        + _shell(replicate_catalog_argv(device, config, app.settings))
+    )
+    return steps
+
+
 def _whole_root_sources(app: AppState, device: Device) -> list[str]:
     """Everything this device's mode considers "the whole library".
 
@@ -668,6 +712,9 @@ async def device_menu(request: Request, device_id: str):
                 ) if device.is_upstream else "",
             },
             "pull_plan": _pull_plan(app, device) if device.is_upstream else [],
+            "replicate_plan": (
+                _replicate_plan(app, device, sources) if device.is_mirror else []
+            ),
             "library_root": str(app.settings.library_root),
         }
     )

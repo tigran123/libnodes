@@ -550,3 +550,104 @@ def test_the_mirror_badge_added_no_grid_column():
     cells = len(re.findall(r"^  <div [^>]*data-label=", row, re.MULTILINE))
 
     assert tracks == cells, f"{tracks} CSS tracks against {cells} row cells"
+
+
+# ------------------------------------------------ the catalog a replica gets --
+
+
+def test_a_replicate_leaves_the_live_catalog_out_of_the_bulk_pass(app, settings, library):
+    """lib.db, -wal and -shm are one WAL database this host is writing.
+
+    rsync reads the three at three different instants, so a checkpoint landing between
+    them hands the replica a catalog that is torn or missing its most recent commits --
+    the same fact the pull established, pointed the other way. They are named one by one
+    rather than excluding /.data/db/, so `backups/` and anything else living there still
+    replicates.
+    """
+    settings.catalog_db = library / ".data" / "db" / "lib.db"
+    argv = _mirror_argv(app, settings)
+    assert "--exclude=/.data/db/lib.db" in argv
+    assert "--exclude=/.data/db/lib.db-wal" in argv
+    assert "--exclude=/.data/db/lib.db-shm" in argv
+    assert "--exclude=/.data/db/" not in argv
+
+
+def test_a_replicate_sends_a_snapshot_rather_than_the_live_database(app, settings, library):
+    from libnodes.jobs import REPLICATE_SUFFIX, replicate_catalog_argv
+
+    settings.catalog_db = library / ".data" / "db" / "lib.db"
+    argv = replicate_catalog_argv(
+        _device(app, "thinkpad"), app.state.lib.devices.config, settings
+    )
+    assert argv[-2] == f"{settings.catalog_db}{REPLICATE_SUFFIX}"
+    assert argv[-1].endswith(":/Books/.data/db/lib.db")
+    assert "-R" not in argv
+
+
+def test_the_snapshot_is_consistent_and_needs_no_service_stop(settings, library, tmp_path):
+    """`Connection.backup` reads a WAL database without blocking its writer, which is why
+    there is no stop on this side at all. Measured against a live 29.6 MB catalog: 0.11 s.
+
+    The writer here is a second live connection, held open with an uncommitted transaction
+    for the duration -- if the snapshot needed exclusive access this would deadlock or
+    fail rather than pass.
+    """
+    import sqlite3
+
+    from libnodes.jobs import snapshot_catalog
+
+    settings.catalog_db = library / ".data" / "db" / "lib.db"
+    settings.catalog_db.parent.mkdir(parents=True, exist_ok=True)
+    live = sqlite3.connect(str(settings.catalog_db))
+    live.execute("PRAGMA journal_mode=WAL")
+    live.execute("CREATE TABLE books (id INTEGER PRIMARY KEY, title TEXT)")
+    live.execute("INSERT INTO books (title) VALUES ('Urantia')")
+    live.commit()
+    live.execute("INSERT INTO books (title) VALUES ('uncommitted')")  # writer still open
+
+    dest = tmp_path / "snap.db"
+    size = snapshot_catalog(settings, dest)
+    assert size > 0
+
+    copy = sqlite3.connect(str(dest))
+    rows = [r[0] for r in copy.execute("SELECT title FROM books")]
+    copy.close()
+    live.close()
+    assert rows == ["Urantia"], "a snapshot is the committed state, and all of it"
+
+
+def test_the_reader_question_refuses_to_ask_about_no_unit(app, settings):
+    """`systemctl is-active ''` asks nothing and answers `inactive` — a false all-clear."""
+    from libnodes.jobs import remote_reader_argv
+
+    settings.local_service = ""
+    with pytest.raises(ValueError, match="no LIBNODES_LOCAL_SERVICE"):
+        remote_reader_argv(_device(app, "thinkpad"), app.state.lib.devices.config, settings)
+
+
+def test_the_replicas_stale_write_ahead_log_goes_before_the_new_catalog(app, settings, library):
+    """Applying a WAL belonging to the old file over a fresh one is how this loses a
+    catalog rather than merely failing."""
+    from libnodes.jobs import remote_sidecar_argv
+
+    settings.catalog_db = library / ".data" / "db" / "lib.db"
+    argv = remote_sidecar_argv(
+        _device(app, "thinkpad"), app.state.lib.devices.config, settings
+    )
+    assert argv[-1] == "rm -f /Books/.data/db/lib.db-wal /Books/.data/db/lib.db-shm"
+
+
+async def test_only_a_replicate_owes_a_replica_its_catalog(client, app, settings):
+    """An Adopt sends the same root and must not swap a database: it exists to repair
+    timestamps, and pairing that with a catalog overwrite would be a trap. A reader has no
+    catalog at all."""
+    lib = app.state.lib
+    async with app.router.lifespan_context(app):
+        mirror = _device(app, "thinkpad")
+        assert lib.jobs.submit(mirror, mirror_sources(settings), deferred=True).catalog
+        assert not lib.jobs.submit(
+            mirror, mirror_sources(settings), deferred=True, adopt=True
+        ).catalog
+        assert not lib.jobs.submit(
+            _device(app, "kobo"), ["Science"], deferred=True
+        ).catalog

@@ -88,9 +88,13 @@
           'label': 'Replicate',
           'note': 'replicate ' ~ library_root ~ ' verbatim — symlinks kept as symlinks,
                    the .data vault carried with them, urantia-library/ included.
-                   --delete removes anything on the device that is no longer here,
-                   including under urantia-library/.',
-          'cmd': commands.replicate,
+                   --delete removes anything on the device that is no longer here.
+                   The catalog does not ride in that transfer: it is snapshotted here --
+                   with this host\'s own reader still serving -- and sent in afterwards,
+                   because rsync reading a live WAL database delivers a torn one. If
+                   anything is reading the catalog on the replica, the swap is skipped
+                   and says so rather than overwriting it.',
+          'cmds': replicate_plan,
           'method': 'post', 'url': '/device/' ~ device.id ~ '/replicate',
           'target': '#notices', 'swap': 'beforeend', 'close': true,
           'confirm': 'Replicate ' ~ library_root ~ ' onto ' ~ device.name ~ '? This

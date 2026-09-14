@@ -635,7 +635,7 @@ async def test_a_pull_restarts_the_local_service_even_when_the_catalog_fails(pul
     assert pull_rig.steps() == [
         "pull", "snapshot", "stop", "catalog", "start", "cleanup"
     ]
-    assert "catalog" in (job.pull_warning or "").lower()
+    assert "catalog" in (job.catalog_warning or "").lower()
 
 
 async def test_a_pull_that_never_stopped_the_service_never_starts_it(pull_rig):
@@ -657,7 +657,7 @@ async def test_a_failed_snapshot_leaves_the_books_but_says_the_catalog_is_stale(
     steps = pull_rig.steps()
     assert steps == ["pull", "snapshot", "cleanup"]
     assert job.state == "done"
-    assert job.pull_warning
+    assert job.catalog_warning
 
 
 async def test_a_failed_transfer_never_reaches_the_catalog_at_all(pull_rig):
@@ -743,7 +743,7 @@ async def test_a_pull_retries_its_transfer_but_not_its_catalog_swap(
     pull_rig.codes["pull"] = 0
     pull_rig.codes["catalog"] = 1
     job = await pull_rig.run()
-    assert job.state == "done" and job.pull_warning
+    assert job.state == "done" and job.catalog_warning
     assert job.state != "queued"
 
 
