@@ -125,7 +125,9 @@
          matters most, because the backlog the extras dialog lists is derived from it. #}
       {% set act = {
         'label': 'Scan device',
-        'note': 'read what is already there · updates PRESENT ON',
+        'note': 'read what is already there · updates PRESENT ON. Runs on the server,
+                 not as a job — it will not appear under Jobs, and closing this dialog
+                 does not stop it.',
         'cmd': commands.scan,
         'method': 'post', 'url': '/device/' ~ device.id ~ '/scan',
         'target': '#scan-status-' ~ device.id, 'swap': 'innerHTML',

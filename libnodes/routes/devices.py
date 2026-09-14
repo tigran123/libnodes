@@ -105,6 +105,14 @@ class DeviceView:
     #: holds, and the result echoes the same line. Built by `_test_argv`, once, so the
     #: two cannot disagree.
     test_command: str = ""
+    #: A listing is running against this node right now.
+    #:
+    #: A scan is not a Job — it is `Scanner`, its own machinery, and it never appears in
+    #: the dock or on /jobs. Until this flag existed the *only* place a running one could
+    #: be seen was inside the two dialogs that offer it, so closing one made the work
+    #: invisible and "Close" read as "Cancel". It does not cancel: `Scanner.start` owns
+    #: the task and nothing in the dialog is holding it up.
+    scanning: bool = False
 
     @property
     def state(self) -> str:
@@ -341,6 +349,7 @@ def device_views(app: AppState) -> list[DeviceView]:
                 battery=app.probe.battery(device.id),
                 last_sync=app.manifests.last_sync(device.id),
                 job=running.get(device.id),
+                scanning=app.scanner.is_running(device.id),
                 test_command=_shell(_test_argv(device, app.settings)),
             )
         )

@@ -35,6 +35,13 @@
             title="sync_mode: upstream — the library's source. LibNodes pulls from here
                    and never pushes, replicates, adopts or deletes there.">UPSTREAM</span>
     {% endif %}
+    {% if node.scanning %}
+      {# See device_row.html: a scan has nowhere else to be seen, and it is independent of
+         both the state chain and the mode chain. #}
+      <span class="badge badge-accent"
+            title="a listing is running against this device. It keeps going if you close
+                   the dialog you started it from — nothing there is holding it up.">SCANNING</span>
+    {% endif %}
   </div>
 
   {# Two lines became one: address left, target right, wrapping back to two only where

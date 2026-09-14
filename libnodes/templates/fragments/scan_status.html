@@ -6,7 +6,11 @@
        hx-target="this"
        hx-swap="outerHTML">
     <span class="dot dot-accent dot-pulse"></span>
-    scanning… {{ '~35s for a full library' }}
+    {# "this keeps going if you close" is not reassurance padding: a scan is not a Job, so
+       it never reaches the dock or /jobs, and closing the dialog it was started from used
+       to be the last anyone saw of it. The row and the card now carry a SCANNING badge for
+       the same reason. #}
+    scanning… ~35s for a full library · this keeps going if you close
   </div>
 {% elif scan and scan.error %}
   <div class="mono t-err">scan failed: {{ scan.error }}</div>

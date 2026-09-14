@@ -45,7 +45,9 @@
       {% if scanning %}
         <div class="meta">
           Listing {{ device.display_target }} — about 35s for a full library. This dialog
-          fills in by itself when the listing lands.
+          fills in by itself when the listing lands, and Close does not stop it: the scan
+          runs on the server and the row carries a SCANNING badge until it finishes.
+          It is not a job, so it will not appear under Jobs.
         </div>
 
       {% elif not index_meta.ready %}

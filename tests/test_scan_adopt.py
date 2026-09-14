@@ -930,3 +930,53 @@ def test_the_opt_out_is_a_device_fact_not_a_filesystem_one(app, settings):
     argv = build_argv(kobo, lib.devices.config, ["Science"], settings)
     assert "--modify-window=1" in argv, "the FAT window is still per-filesystem"
     assert "--size-only" not in argv
+
+
+# ------------------------------------------------- a scan you cannot lose sight of --
+
+
+async def test_a_running_scan_is_visible_outside_the_dialog_that_started_it(client, app):
+    """A scan is not a Job, and that is the whole trap.
+
+    It runs under `Scanner`, never reaches the dock or /jobs, and until this badge existed
+    the only place a running one could be seen was inside the two dialogs that offer it.
+    So: start a scan, press Close, and the work vanishes — which reads as "Close
+    cancelled it". Measured from the journal on 2026-09-14, where exactly that happened:
+
+        20:52:02  GET  /device/dragon/extras      (never scanned — offers Scan)
+        20:52:06  POST /device/dragon/scan
+        20:52:06  GET  /device/dragon/extras      (the 3s poll, now `scanning`)
+        20:52:09  GET  /device/dragon/extras
+        20:52:11  the scan finished, 91,021 files
+        20:53:59  GET  /device/dragon/extras      ("scanned 1m ago")
+
+    Nothing was cancelled and nothing could have been; there was simply nowhere to look.
+    """
+    app.state.lib.scanner._running.add("kobo")
+    for view in ("/devices/rows", "/devices/grid"):
+        page = await client.get(view)
+        assert "SCANNING" in page.text, view
+
+    app.state.lib.scanner._running.discard("kobo")
+    for view in ("/devices/rows", "/devices/grid"):
+        page = await client.get(view)
+        assert "SCANNING" not in page.text, view
+
+
+async def test_the_scanning_notice_says_closing_does_not_stop_it(client, app):
+    """Close is the right label — it does not cancel — so the dialog has to say so.
+
+    `Scanner.start` owns the task; nothing in the dialog is holding it up. The fix for a
+    button that reads as "Cancel" is to stop the work disappearing when it is pressed,
+    which is the badge above, and to say plainly what pressing it does.
+    """
+    app.state.lib.scanner._running.add("kobo")
+    extras = (await client.get("/device/kobo/extras")).text
+    assert "does not stop it" in extras
+    assert "will not appear under Jobs" in extras
+
+
+async def test_the_scan_action_sets_the_expectation_before_the_click(client):
+    """Cheaper than explaining it afterwards: the note says it is not a job."""
+    menu = (await client.get("/device/kobo/menu")).text
+    assert "not as a job" in menu
