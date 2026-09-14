@@ -24,7 +24,14 @@
 
   <div class="titlebar">
     <h1 class="title">Devices</h1>
-    <span class="title-meta">{{ nodes|length }} devices · {{ profiles }} profiles</span>
+    {# `total` rather than `nodes|length`: the count beside it is fleet-wide
+       (Config.profiles counts distinct types across every device), so a filtered
+       figure here made one sentence count two populations -- /devices?q=lg read
+       "3 devices · 3 profiles" when those three are one profile. `total` is the same
+       reachable_count the chip's denominator comes from, so the two cannot drift.
+       device_status.html carries this span out of band on its own 10s poll; the id
+       is what it aims at. #}
+    <span id="device-meta" class="title-meta">{{ total }} devices · {{ profiles }} profiles</span>
 
     <div class="titlebar-right">
       <label class="field" style="width:230px">

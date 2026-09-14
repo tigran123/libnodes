@@ -1,4 +1,20 @@
 {# Top-bar chips. Standalone fragment, polled every 10s. #}
+
+{# The Devices subtitle lives down in the titlebar, outside every polled container, so
+   this poll carries it out of band. Without that it keeps whatever devices.yaml said
+   when the page loaded: edit the file and the subtitle sits one device short for ever,
+   beside the chip below that corrected itself within a tick and cards that had too --
+   three figures on one page, one of them stale, and nothing failing anywhere. `total`
+   rather than a filtered count because that is the chip's own denominator
+   (probe.reachable_count), so the subtitle and the chip cannot disagree. Only when
+   swapping, though: devices.html includes this fragment inline in the topbar, and an
+   unguarded span would put a second id="device-meta" on the page at first paint. Same
+   shape, and the same `oob` flag, as file_rows.html's result counter. #}
+{% if oob %}
+<span id="device-meta" class="title-meta" hx-swap-oob="true">
+  {{ total }} devices · {{ profiles }} profiles
+</span>
+{% endif %}
 <span class="chip">
   <span class="dot {{ 'dot-ok' if online else 'dot-err' }}"></span>
   sshd {{ online }}/{{ total }} reachable

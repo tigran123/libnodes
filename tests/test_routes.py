@@ -185,6 +185,52 @@ async def test_rescan_keeps_the_filter_too(client):
     button = button.split('hx-post="/devices/rescan"')[1].split(">")[0]
     assert 'hx-include="[name=q]"' in button
 
+
+def _subtitle(text: str) -> tuple[int, int]:
+    """The titlebar subtitle's two numbers, wherever it was rendered."""
+    m = re.search(r"(\d+) devices · (\d+) profiles", text)
+    assert m, "no subtitle in this response"
+    return int(m.group(1)), int(m.group(2))
+
+
+async def test_the_subtitle_rides_the_status_poll(client):
+    """The subtitle sits in .titlebar, outside #device-rows and outside #device-status,
+    so nothing on the page repainted it: edit devices.yaml and it stayed one device short
+    until a reload, beside a chip and a set of cards that had both already corrected
+    themselves. The 10s status poll carries it out of band rather than earning a third
+    request of its own."""
+    r = await client.get("/devices/status")
+    span = r.text.split('id="device-meta"')[1].split(">")[0]
+    assert 'hx-swap-oob="true"' in span
+    assert _subtitle(r.text)[0] == 2
+
+
+async def test_the_subtitle_and_the_chip_count_the_same_fleet(client):
+    """Both halves come from `probe.reachable_count`, so the sentence and the chip beside
+    it can never disagree about how big the fleet is — which is the whole point of putting
+    the subtitle on this response rather than on the filtered rows one."""
+    text = (await client.get("/devices/status")).text
+    devices, _profiles = _subtitle(text)
+    reachable = re.search(r"sshd \d+/(\d+) reachable", text)
+    assert reachable and int(reachable.group(1)) == devices
+
+
+async def test_the_subtitle_is_a_fleet_count_not_a_filtered_one(client):
+    """`profiles` is fleet-wide by construction — distinct types across every device — so
+    a filtered count beside it made one sentence count two populations: a filter down to
+    the Kobo read "1 devices · 2 profiles" when that one device is one type. The table
+    narrows; the subtitle does not."""
+    r = await client.get("/devices", params={"q": "kobo"})
+    assert _subtitle(r.text) == (2, 2)
+    assert "Test Phone" not in r.text
+
+
+async def test_the_page_renders_one_subtitle(client):
+    """devices.html includes device_status.html inline in its topbar, so without the
+    `{% if oob %}` guard the page would carry two id="device-meta" spans and htmx would
+    repaint whichever it found first."""
+    assert (await client.get("/devices")).text.count('id="device-meta"') == 1
+
     # `data`, not `params`: htmx puts hx-include values in the body of a POST, and a
     # query-parameter handler binds None there however the button is wired.
     swept = await client.post("/devices/rescan", data={"q": "phone"})

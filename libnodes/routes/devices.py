@@ -385,6 +385,11 @@ def devices_context(
             # is an mtime check, the same one `.config` two lines up already made, and
             # the inotify watcher is what actually re-reads the file.
             "issues": app.devices.issues,
+            # Whether device_status.html should carry the titlebar subtitle out of band.
+            # False here and flipped by the /devices/status handler alone -- the page
+            # renders that fragment inline in its topbar, where an oob span would be a
+            # duplicate id. Same flag, same reason, as routes/library.py's file rows.
+            "oob": False,
             # Set here rather than in the page handler alone, so the fragments and the
             # rescan agree with the branch devices.html rendered. They can trust the
             # cookie because it is only ever written from an explicit `?view=`.
@@ -432,8 +437,15 @@ async def device_grid(request: Request, q: str | None = None):
 
 @router.get("/devices/status", response_class=HTMLResponse)
 async def device_status(request: Request):
-    """The top-bar chips — polled alongside the table."""
-    return templates.TemplateResponse(request, "device_status.html", devices_context(request))
+    """The top-bar chips — polled alongside the table.
+
+    And the titlebar subtitle with them, out of band. It counts the same fleet the chip
+    does and is the only figure on the page no container repaints, so it rides the poll
+    that is already on the wire rather than earning a third one.
+    """
+    ctx = devices_context(request)
+    ctx["oob"] = True
+    return templates.TemplateResponse(request, "device_status.html", ctx)
 
 
 def _one(request: Request, device_id: str) -> DeviceView | None:
