@@ -24,7 +24,10 @@ was live at some point while this was written:
 from __future__ import annotations
 
 import asyncio
+import os
+import shlex
 from pathlib import Path
+from typing import Sequence
 
 import pytest
 
@@ -545,18 +548,30 @@ def trace(tmp_path: Path) -> Path:
     return tmp_path / "trace.txt"
 
 
-def _recorder(tmp_path: Path, trace: Path, name: str, exit_code: int = 0) -> list[str]:
+def _recorder(
+    tmp_path: Path,
+    trace: Path,
+    name: str,
+    exit_code: int = 0,
+    emits: Sequence[str] = (),
+) -> list[str]:
     """A stand-in command that appends its own name to the trace and exits as told.
 
     Order is the thing being asserted in most of these — that the stale write-ahead log is
     gone before the new catalog lands, that `start` follows `stop` whatever happened in
     between — so a recorder that keeps the sequence is worth more than a mock that counts
     calls.
+
+    `emits` writes lines to stdout first, so a phase can hand the runner the genuine
+    `@%l|%n` output the parser reads. That is how `_credit_pull` is exercised: what a pull
+    records is a function of what rsync said it received.
     """
     script = tmp_path / f"fake-{name}"
+    body = "".join(f"printf '%s\\n' {shlex.quote(line)}\n" for line in emits)
     script.write_text(
         "#!/bin/sh\n"
         f"echo {name} >> {trace}\n"
+        f"{body}"
         f"exit {exit_code}\n"
     )
     script.chmod(0o755)
@@ -578,11 +593,14 @@ def pull_rig(monkeypatch, app, settings, library, tmp_path, trace):
     settings.local_service = "fake.service"
 
     codes = {"pull": 0, "snapshot": 0, "stop": 0, "catalog": 0, "start": 0, "cleanup": 0}
+    #: @-lines the transfer phase prints, i.e. what the upstream sent us.
+    emits: dict[str, list[str]] = {"pull": []}
 
     def install():
         monkeypatch.setattr(
             J, "build_pull_argv",
-            lambda *a, **k: _recorder(tmp_path, trace, "pull", codes["pull"]))
+            lambda *a, **k: _recorder(
+                tmp_path, trace, "pull", codes["pull"], emits["pull"]))
         monkeypatch.setattr(
             J, "snapshot_argv",
             lambda *a, **k: _recorder(tmp_path, trace, "snapshot", codes["snapshot"]))
@@ -608,6 +626,7 @@ def pull_rig(monkeypatch, app, settings, library, tmp_path, trace):
 
     rig = type("Rig", (), {})()
     rig.codes, rig.run, rig.steps, rig.settings = codes, run, steps, settings
+    rig.emits = emits
     return rig
 
 
@@ -687,13 +706,86 @@ async def test_the_snapshot_is_removed_from_the_upstream_even_when_a_phase_fails
     assert pull_rig.steps()[-1] == "cleanup"
 
 
-async def test_a_pull_writes_no_manifest_row_for_the_upstream_node(pull_rig, app):
-    """`_update_manifest` records what a *device* holds by walking the local index, which
-    after a pull is inverted — and it would run before the reindex, so it would record the
-    pre-pull index as a claim about the far end."""
+def _blob_of(settings, rel: str) -> str:
+    return os.path.basename(os.readlink(settings.library_root / rel))
+
+
+async def test_a_pull_credits_the_upstream_with_what_it_received(pull_rig, app, settings):
+    """PRESENT ON went blank on a book we had just pulled *from* that node, and stayed
+    blank until somebody ran a scan — sigmaai.au's last scan predated the file by three
+    days. A file we received from a node is a file that node has, which is the strongest
+    evidence of the three PRESENT ON draws on and the only one a pull generates.
+
+    Not `_update_manifest`: that walks the *local* index for each source, which after a
+    pull is inverted in direction, and it runs before the reindex. This reads the @-lines
+    and then the filesystem.
+    """
     lib = app.state.lib
+    blob = _blob_of(settings, "Science/Physics/Feynman.djvu")
+    pull_rig.emits["pull"] = [
+        f"@720|.data/{blob}",
+        "@140|Science/Physics/Feynman.djvu",
+    ]
     await pull_rig.run()
-    assert lib.manifests.summary("source")[0] == 0
+
+    rows = {r.path: r for r in lib.manifests.rows_for("source")}
+    assert set(rows) == {"Science/Physics/Feynman.djvu"}, (
+        "the vault is not a library row: `.data/` is in SKIP_TOPLEVEL and no PRESENT ON "
+        "chip is ever about a blob"
+    )
+    row = rows["Science/Physics/Feynman.djvu"]
+    assert row.source == "pull"
+    assert row.blob == blob, (
+        "a CAS node's row carries the blake2b out of the link target, which is a content "
+        "claim rather than the size guess a listing settles for"
+    )
+
+
+async def test_a_pull_credits_only_what_actually_landed(pull_rig, app, settings):
+    """rsync prints a name when it *starts* sending it, and `--partial-dir` keeps an
+    interrupted file out of its final name. So the filesystem decides, not the @-line —
+    which is what makes this safe to run on an abort as well as a clean exit."""
+    lib = app.state.lib
+    pull_rig.emits["pull"] = [
+        "@140|Science/Physics/Feynman.djvu",
+        "@999|Fiction/Never-Arrived.epub",
+    ]
+    await pull_rig.run()
+    assert lib.manifests.paths_for("source") == {"Science/Physics/Feynman.djvu"}
+
+
+async def test_an_interrupted_pull_still_credits_what_it_brought(pull_rig, app, settings):
+    """Every terminal outcome, for the same reason the reindex runs on all of them: the
+    books are here and the node that sent them still holds them."""
+    lib = app.state.lib
+    pull_rig.emits["pull"] = ["@140|Science/Physics/Feynman.djvu"]
+    pull_rig.codes["pull"] = 1
+    job = await pull_rig.run()
+    assert job.state == "failed"
+    assert lib.manifests.paths_for("source") == {"Science/Physics/Feynman.djvu"}
+
+
+async def test_a_previewed_pull_credits_nothing(pull_rig, app, settings):
+    """A dry run changes nothing anywhere, and a manifest is somewhere."""
+    lib = app.state.lib
+    pull_rig.emits["pull"] = ["@140|Science/Physics/Feynman.djvu"]
+    await pull_rig.run(dry_run=True)
+    assert lib.manifests.rows_for("source") == []
+
+
+async def test_a_scan_retracts_what_a_pull_claimed(app, settings):
+    """A pull row was true when it was written and nothing else would ever take it back:
+    delete the book upstream and it would read present for ever. A scan has just looked,
+    so it overrules the transfer — while push rows, which are a claim about a device we
+    write *to*, survive as they always have."""
+    m = app.state.lib.manifests
+    m.record("source", [("Science/Physics/Feynman.djvu", "abc", 12, 1, 0)], source="pull")
+    m.record("kobo", [("Science/Physics/Feynman.djvu", "abc", 12, 1, 0)], source="push")
+
+    m.replace_scan("source", [("Fiction/Joyce/Ulysses.pdf", "def", 34, 2, 0)])
+
+    assert m.paths_for("source") == {"Fiction/Joyce/Ulysses.pdf"}
+    assert m.paths_for("kobo") == {"Science/Physics/Feynman.djvu"}
 
 
 async def test_a_pull_asks_for_a_reindex_and_a_push_does_not(pull_rig, app, monkeypatch):

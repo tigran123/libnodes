@@ -1438,6 +1438,52 @@ def test_the_desktop_card_grid_reflows_with_the_screen():
     assert columns(1090) == 2, "three columns do not fit inside the panel at 1090px"
 
 
+def test_the_filename_is_never_elided():
+    """The filename is the row's identity, so it wraps rather than ellipsising.
+
+    Both halves matter and they are deliberately different: `.file-name` must not be able
+    to elide, and `.file-title` — the catalog title beside it, a nicety — must still be
+    able to. Asserting that the name *wraps* and forgetting that the title still clips
+    would let a later tidy-up unify them and give every row a two-line Russian title.
+    """
+    css = (ROOT / "libnodes" / "static" / "app.css").read_text()
+
+    name = css.split("\n.file-name {")[1].split("}")[0]
+    assert "text-overflow" not in name and "nowrap" not in name, (
+        "the filename elides again — on a Tab S4 in portrait that cut a 56-character "
+        "transliterated name after 23 characters, which is not a name you can recognise"
+    )
+    assert "overflow-wrap: anywhere" in name, (
+        "these names carry no spaces, so nothing wraps without an explicit break "
+        "opportunity — and only `anywhere` also lets the 1fr NAME track shrink"
+    )
+
+    title = css.split("\n.file-title {")[1].split("}")[0]
+    assert "text-overflow: ellipsis" in title and "nowrap" in title, (
+        "the catalog title is the line that is allowed to clip; it has a tooltip and the "
+        "filename does not need one"
+    )
+
+
+def test_a_stacked_row_gives_the_filename_its_own_line():
+    """Below 1089px every cell is a flex row, and that put the name and the catalog title
+    side by side sharing one line — both ellipsised on the narrowest screen in the fleet.
+    The NAME cell is a grid instead, and the title is pinned to the second column or
+    auto-placement drops it back under the label."""
+    css = (ROOT / "libnodes" / "static" / "app.css").read_text()
+    block = _media_block(css, "@media (max-width: 1089px) {\n  .thead.file-grid")
+
+    cell = _rule(block, '.trow.file-grid > [data-label="Name"]')
+    assert "display: grid" in cell, "the NAME cell is a flex row again"
+    label = int(re.search(r"width: (\d+)px", _rule(block, ".trow.file-grid > [data-label]::before")).group(1))
+    assert f"grid-template-columns: {label}px" in cell, (
+        f"column 1 must be the {label}px the ::before label actually draws"
+    )
+
+    title = _rule(block, '.trow.file-grid > [data-label="Name"] .file-title')
+    assert "grid-column: 2" in title
+
+
 def test_the_size_and_date_columns_cannot_wrap():
     """SIZE and MODIFIED hold a formatted string of known width, so their track floors are
     that string rather than a guess.

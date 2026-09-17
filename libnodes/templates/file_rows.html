@@ -39,7 +39,10 @@
         <span class="file-name" title="{{ row.path }}">{{ row.label }}</span>
       {% endif %}
       {% if row.title and row.title != row.name %}
-        <span class="file-title">{{ row.title }}{% if row.author %} · {{ row.author }}{% endif %}</span>
+        {# The one line here that still elides, so it is the one line that needs a tooltip:
+           the filename above it wraps in full now, and this is the nicety beside it. #}
+        <span class="file-title"
+              title="{{ row.title }}{% if row.author %} · {{ row.author }}{% endif %}">{{ row.title }}{% if row.author %} · {{ row.author }}{% endif %}</span>
       {% endif %}
     </div>
 

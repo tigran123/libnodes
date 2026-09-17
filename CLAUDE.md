@@ -112,16 +112,34 @@ are listed.
   truncated book until something notices. This is the one deliberate deviation from
   `BASE_FLAGS`. `--delete` is not conditional in a pull — it is absent, with no branch that
   could add it.
-- **A pull never writes a manifest, and is the only job that reindexes.** `_update_manifest`
-  records "what this device has" by walking the *local* index, which after a pull is
-  inverted in direction — and it would run before the reindex, so it would record the
-  pre-pull index as a claim about the far end. A pull says `run a scan to refresh PRESENT
-  ON` instead, which is honest because an upstream Scan reads the blake2b out of each link
-  target. It calls `reindex_soon` on every terminal outcome including abort (an interrupted
-  pull has still written files, and books the index does not know about are invisible in
-  the Library view *and* unpushable), and never on a dry run, and always *after* the
-  catalog phase — `LibraryIndex` reads `catalog_db` for title/author, so reindexing first
-  bakes the old catalog in.
+- **A pull writes the manifest from what rsync received, never from the index, and is the
+  only job that reindexes.** `_update_manifest` records "what this device has" by walking
+  the *local* index, which after a pull is inverted in direction — and it would run before
+  the reindex, so it would record the pre-pull index as a claim about the far end. For a
+  year it therefore wrote nothing at all and said `run a scan to refresh PRESENT ON`, and
+  that was a worse answer than it sounds: a book pulled from sigmaai.au on 2026-09-17 read
+  as absent *from the node it had just come from*, because that node's last scan was three
+  days older than the book. `_credit_pull` uses the evidence the transfer itself produced —
+  rsync names every file it received, and a file we received from a node is a file that
+  node has. Three things make it honest. The @-lines are filtered by `SKIP_TOPLEVEL`, so
+  the 20.8k vault blobs and the catalog snapshot never become library rows (`_note_sent`).
+  The **filesystem** decides, not the @-line: rsync prints a name when it *starts* sending
+  it and `--partial-dir` keeps an interrupted file out of its final name, so a path that is
+  not there is not credited — which is what lets this run on an abort as well as a clean
+  exit, and why `_record_partial`'s `files_sent` truncation is not reused (the filtered
+  `.data/` lines still counted toward `xfr#`, so the list is no longer a prefix). And the
+  rows are `source='pull'`, which `replace_scan` deletes alongside its own: a scan has just
+  looked at the far end and must be able to retract what a transfer once implied, or a book
+  deleted upstream reads present for ever. A dry run credits nothing. It calls
+  `reindex_soon` on every terminal outcome including abort (an interrupted pull has still
+  written files, and books the index does not know about are invisible in the Library view
+  *and* unpushable), and never on a dry run, and always *after* the catalog phase —
+  `LibraryIndex` reads `catalog_db` for title/author, so reindexing first bakes the old
+  catalog in. The credit runs *before* that reindex, and can, because it reads the
+  filesystem rather than the index. Pinned by `tests/test_upstream.py`
+  `::test_a_pull_credits_the_upstream_with_what_it_received`,
+  `::test_a_pull_credits_only_what_actually_landed` and
+  `::test_a_scan_retracts_what_a_pull_claimed`.
 - **A pull that stopped `urantia-library` and did not start it must never be green — and
   the `finally` is not enough.** Abort is safe as it stands: it terminates the subprocess
   without cancelling `_run`, so `_stream` returns 143 as an ordinary value and the
@@ -321,6 +339,20 @@ are listed.
   (`fmt` still removes every directory on its own: a directory's `fmt` is NULL and NULL
   satisfies no `IN`.) Pinned by
   `tests/test_routes.py::test_a_directory_link_carries_only_where_it_is_going`.
+- **The filename never elides; the catalog title beside it always may.** `.file-name` wraps
+  (`overflow-wrap: anywhere` — these names have no spaces, and only `anywhere` also lets the
+  1fr NAME track shrink to its floor), and below 1089px the NAME cell is a **grid** rather
+  than the flex every other cell uses, so the name owns column 2 and the title drops to a
+  second row of it. As a flex item the title sat *beside* the name and the two shared one
+  line: on a Tab S4 in portrait — 700 CSS px at `--scale` 1.35, the narrowest screen in the
+  fleet — both ellipsised at about 23 characters, and
+  `Poxititeli-avtomobilej-Zapiski-sledovatelja-1965.fb2.zip` is not a name you can recognise
+  from its opening. The NAME track floor stays **140px** and must: at 1090px the table has
+  not stacked yet *and* the rail is still 190px of flow, so the seven floors have only
+  `1090/1.21 - 226 = 674px` of panel, and raising NAME to 240 buys a band where the row
+  overflows `.panel`'s `overflow: hidden` in silence. Wrapping is what makes the narrow
+  floor affordable. Pinned by `tests/test_battery.py::test_the_filename_is_never_elided`
+  and `::test_a_stacked_row_gives_the_filename_its_own_line`.
 - **The Library filter narrows one level; it is not a search.** `children()`
   (`libnodes/library.py`) is always `parent IS ?`, and `q` adds `name LIKE '%q%'` to it.
   It used to replace the scope instead — `(path = ? OR path LIKE 'p/%') AND is_dir = 0` —

@@ -36,7 +36,7 @@ from typing import Literal, Sequence
 from .config import PULL_EXCLUDES, SKIP_TOPLEVEL, Settings
 from .probe import SERVER_ALIVE_COUNT_MAX, SERVER_ALIVE_INTERVAL, DeviceProbe
 from .procs import reap
-from .library import LibraryIndex
+from .library import LibraryIndex, blob_from_link
 from .manifests import Manifests
 from .models import Device, DevicesFile
 
@@ -1988,19 +1988,17 @@ class JobRunner:
                     job, "dry run · nothing sent, manifest unchanged", "prog"
                 )
             elif job.kind == "pull":
-                # No manifest. `_update_manifest` records "what this device has" by
-                # walking the *local* index for each source, which after a pull is
-                # inverted -- and it would run before the reindex below, so it would be
-                # recording the pre-pull index as a claim about the far end. The honest
-                # mechanism already exists and is correct for this node: a Scan lists the
-                # upstream with -l and reads the blake2b out of each link target, which is
-                # a content claim rather than a guess.
+                # The manifest is written below by `_credit_pull`, on every terminal
+                # outcome rather than only this one, and it is deliberately not
+                # `_update_manifest`: that walks the *local* index for each source, which
+                # after a pull is inverted, and it would run before the reindex -- so it
+                # would record the pre-pull index as a claim about the far end. What a
+                # pull knows instead is which files it received, each of them evidence
+                # about the node it received them from.
                 #
                 # No invalidate_space either: a pull does not change the *upstream's* disk
                 # usage. The figure that moved is this host's, which the rail reads live.
-                self._append_line(
-                    job, "pull complete · run a scan to refresh PRESENT ON", "prog"
-                )
+                self._append_line(job, "pull complete", "prog")
             else:
                 self._update_manifest(job)
                 self.probe.invalidate_space(job.device_id)
@@ -2050,6 +2048,13 @@ class JobRunner:
                 self._queue.put_nowait(job.id)
                 return
 
+        if job.kind == "pull" and not job.dry_run:
+            # Before the reindex, and for the same "every terminal outcome" reason: an
+            # interrupted pull has still received files, and the node that sent them still
+            # holds them. It reads the filesystem rather than the index, so it does not
+            # care that the reindex has not run yet.
+            self._credit_pull(job)
+
         if job.kind == "pull" and not job.dry_run and self._on_library_changed:
             # Every terminal outcome, failure and abort included: an interrupted pull has
             # still written files, and an index that does not know about them makes those
@@ -2073,7 +2078,7 @@ class JobRunner:
         return device.retries_with(self.devices.config.defaults)
 
     def _note_sent(self, job: Job, name: str) -> None:
-        """Remember a name off an @-line, for `_record_partial`.
+        """Remember a name off an @-line, for `_record_partial` and `_credit_pull`.
 
         Bounded because this is per-job memory, but generously: the whole library is
         24,616 files, so SENT_CAP holds the worst real case at roughly 3 MB of strings.
@@ -2081,10 +2086,12 @@ class JobRunner:
         truncated list is no longer a prefix of what rsync sent, and a manifest is worth
         nothing if it is only mostly right about which files exist.
         """
-        if job.kind == "pull":
-            # ~45k @-lines for a whole-root pull (20.8k links plus the vault), which
-            # flirts with SENT_CAP, and the list feeds only `_record_partial` -- which a
-            # pull does not use, because it records what a *device* holds.
+        if job.kind == "pull" and name.split("/", 1)[0] in SKIP_TOPLEVEL:
+            # A whole-root pull prints ~45k @-lines and only 20.8k of them are books: the
+            # rest is the vault, `Recommended/` and the catalog snapshot, none of which a
+            # PRESENT ON chip is ever about. SKIP_TOPLEVEL is precisely the set the index
+            # walk drops at depth 0, so what survives here is what `presence` can ask
+            # about -- and the survivors fit SENT_CAP with room to spare.
             return
         sent = self._sent.get(job.id)
         if sent is None:
@@ -2135,6 +2142,69 @@ class JobRunner:
         self.probe.invalidate_space(job.device_id)
         self._append_line(
             job, f"✓ manifest credited with {len(recorded):,} delivered files", "prog"
+        )
+
+    def _credit_pull(self, job: Job) -> None:
+        """Credit an upstream with the files it just sent us.
+
+        A pull cannot take `_update_manifest`: that walks the *local* index for each
+        source, which after a pull is inverted in direction, and it would run before the
+        reindex — recording the pre-pull index as a claim about the far end. But the
+        transfer holds better evidence than any inference. rsync names every file it
+        received, and a file we received from a node is a file that node has; for a CAS
+        upstream the name arrives with its blake2b target, which is the same content
+        claim a scan makes rather than the size guess a push manifest settles for.
+
+        The *filesystem* decides, not the @-line. rsync prints a name when it starts
+        sending it, so the last line of an interrupted run names a file that never
+        landed, and `--partial-dir` keeps that one out of its final name. So a path that
+        is not there now is simply not credited, which is what makes this safe to run on
+        an abort as well as a clean exit. `_record_partial`'s `files_sent` truncation
+        cannot do that job here: the `.data/` lines `_note_sent` filters out still
+        counted toward `xfr#`, so the surviving list is no longer a prefix of anything.
+        """
+        if job.dry_run:
+            return
+        names = self._sent.get(job.id)
+        if names is None:
+            self._append_line(
+                job,
+                f"too many files to track ({SENT_CAP:,}+) · "
+                "manifest not updated, run a scan to resync PRESENT ON",
+                "warn",
+            )
+            return
+        root = self.settings.library_root
+        recorded: list[tuple] = []
+        for path in names:
+            full = root / path
+            try:
+                st = os.lstat(full)
+            except OSError:
+                continue
+            if os.path.islink(full):
+                # Size through the vault, exactly as a scan of a CAS node resolves it:
+                # the link's own 140 bytes would be a lie about the book. With the blob
+                # recorded `_compare` never reaches the size anyway -- it is here for the
+                # link whose target is not a blob, where the size is all there is.
+                blob = blob_from_link(os.readlink(full))
+                try:
+                    size = os.stat(full).st_size
+                except OSError:
+                    size = 0
+                recorded.append((path, blob, size, int(st.st_mtime), 0))
+            elif os.path.isdir(full):
+                recorded.append((path, None, 0, int(st.st_mtime), 1))
+            else:
+                recorded.append((path, None, st.st_size, int(st.st_mtime), 0))
+        if not recorded:
+            return
+        self.manifests.record(job.device_id, recorded, source="pull")
+        self._append_line(
+            job,
+            f"✓ {job.device_id} credited with {len(recorded):,} files it sent · "
+            "a scan still answers for the rest",
+            "prog",
         )
 
     def _update_manifest(self, job: Job) -> None:

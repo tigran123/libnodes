@@ -70,7 +70,7 @@ class DeviceState:
 
     @property
     def verb(self) -> str:
-        return "pushed" if self.source == "push" else "seen in scan"
+        return {"push": "pushed", "pull": "pulled"}.get(self.source, "seen in scan")
 
 
 @dataclass(frozen=True)
@@ -186,13 +186,22 @@ class Manifests:
     def replace_scan(
         self, device_id: str, entries: Iterable[tuple[str, str | None, int | None, int | None]]
     ) -> int:
-        """A scan is authoritative: it replaces every scan-sourced row for the device."""
+        """A scan is authoritative: it replaces every scan-sourced row for the device.
+
+        And every pull-sourced one, which is the same rule and not a second one. A pull
+        row says "this node sent us this file", which was true when it was written and
+        can stop being true the moment somebody deletes the book upstream -- and nothing
+        else would ever retract it, so it would read present for ever. A scan has just
+        looked; it gets to overrule what a transfer once implied. Push rows survive, as
+        they always have: they are a claim about a device we write to, which no scan of
+        some other node contradicts.
+        """
         rows = list(entries)
         conn = self._connect()
         try:
             with conn:
                 conn.execute(
-                    "DELETE FROM manifest WHERE device_id = ? AND source = 'scan'",
+                    "DELETE FROM manifest WHERE device_id = ? AND source IN ('scan', 'pull')",
                     (device_id,),
                 )
         finally:
@@ -384,6 +393,8 @@ class Manifests:
         cannot contain a file LibNodes did not send, so subtracting the library from it
         always yields nothing whatever the device holds. note10 carried 20,782 push rows
         and no scan, and reported a clean bill of health it had no way to have checked.
+        A pull row is no better here for the mirror-image reason: it records what the
+        node sent *us*, so it can never name a file we do not have.
 
         Each row carries the decoded name when one can be recovered, and whether that
         name is in the library — which is what makes it safe to delete.

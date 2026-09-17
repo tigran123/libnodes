@@ -1620,25 +1620,33 @@ ul {
   background-repeat: no-repeat;
 }
 
-/* display:block is load-bearing: text-overflow:ellipsis has no effect on an inline box,
-   so without it a long filename overflows its cell and prints over the FORMAT column. */
+/* The filename never elides. It used to: nowrap + text-overflow, which on a Tab S4 in
+   portrait (700 CSS px at --scale 1.35) cut
+   "Poxititeli-avtomobilej-Zapiski-sledovatelja-1965.fb2.zip" after 23 characters — and a
+   transliterated name is not a title you can recognise from its opening, it is the one
+   thing on the row that says *which book this is*. So it wraps to as many lines as it
+   needs, and the catalog title below it keeps the ellipsis instead: that one is a nicety,
+   this one is the row's identity.
+   overflow-wrap rather than word-break, and `anywhere` rather than `break-word`: these
+   names carry no spaces at all, so there is no break opportunity to prefer, and only
+   `anywhere` also shrinks the cell's min-content contribution — without it the 1fr NAME
+   track floors at the longest unbroken word and pushes the whole grid wide.
+   display:block stays, for the hit-area reason a.file-name documents below. */
 .file-name {
   display: block;
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--ink-2);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
 
 /* A directory's name is the way into it, so it is an anchor; a file's name stays an inert
    span. inline-block rather than the block above, and the difference is the hit area: at
    block width the whole 1fr NAME cell would navigate, and a directory row — the one row
    you most need to be able to *tick*, since ticking one is how a whole subtree gets
-   pushed — would have nothing left to click on but the 11px checkbox. inline-block still
-   ellipsises; it is the bare *inline* box the note above is about. vertical-align: top so
-   the line box gains no descender and the row does not grow by 3px.
+   pushed — would have nothing left to click on but the 11px checkbox. It wraps like the
+   block above does, and max-width: 100% is what holds it inside the cell while it does.
+   vertical-align: top so the line box gains no descender and the row does not grow by 3px.
    --ink against the files' --ink-2 is the entire affordance: no icon, no underline until
    hover. The trailing "/" that `Entry.label` already appends says which rows are which. */
 a.file-name {
@@ -2360,6 +2368,27 @@ a.file-name:hover {
     color: var(--muted);
     width: 92px;
     flex-shrink: 0;
+  }
+
+  /* NAME is the one cell whose value can be longer than the row is wide, and the filename
+     is what you came here to read. Grid rather than the flex every other cell uses: as a
+     flex item the name sat *beside* the catalog title and the two of them shared one line,
+     so both ellipsised at around 23 characters on a Tab S4 in portrait -- 700 CSS px at
+     --scale 1.35, the narrowest screen in the fleet. Here the ::before label holds column
+     1, the name takes column 2 and wraps to as many lines as it needs, and the title drops
+     to a second row of that same column where it can go on eliding.
+     2px of row-gap, not the 8px the cells share: the title is a continuation of the name
+     above it, not the next field down. */
+  .trow.file-grid > [data-label="Name"] {
+    display: grid;
+    grid-template-columns: 92px minmax(0, 1fr);
+    align-items: start;
+    gap: 2px 8px;
+  }
+
+  /* Auto-placement would put it back under the label in column 1. */
+  .trow.file-grid > [data-label="Name"] .file-title {
+    grid-column: 2;
   }
 
   .trow.file-grid .cell-r, .trow.file-grid .cell-actions, .trow.file-grid .push-cell {
