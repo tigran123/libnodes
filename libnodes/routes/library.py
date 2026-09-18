@@ -10,7 +10,6 @@ from fastapi.responses import HTMLResponse
 from ..deps import base_context, state
 from ..libpos import library_href, remember
 from ..library import SORTS, Entry, normalise
-from ..state import AppState
 from ..templating import templates
 
 router = APIRouter()
@@ -19,7 +18,6 @@ def library_context(
     request: Request,
     p: str = "",
     q: str = "",
-    fmt: list[str] | None = None,
     sort: str = "name",
 ) -> dict:
     app = state(request)
@@ -27,10 +25,9 @@ def library_context(
 
     entry = app.index.require(p)
     path = entry.path
-    fmts = [f for f in (fmt or []) if f]
     sort = sort if sort in SORTS else "name"
 
-    rows = app.index.children(path, q=q or None, fmts=fmts or None, sort=sort)
+    rows = app.index.children(path, q=q or None, sort=sort)
     total_files, total_bytes = app.index.child_count(path)
 
     device_ids = [d.id for d in app.devices.config.devices]
@@ -51,7 +48,6 @@ def library_context(
             "entry": entry,
             "path": path,
             "q": q,
-            "fmt": fmts,
             "sort": sort,
             "rows": rows,
             "presence": presence,
@@ -80,7 +76,6 @@ async def library_page(
     request: Request,
     p: str = "",
     q: str = "",
-    fmt: list[str] = Query(default=[]),
     sort: str = "name",
 ):
     """The one full page. It records where it is, so the rail can come back here.
@@ -88,7 +83,7 @@ async def library_page(
     `ctx["path"]` and not `p`: that is the normalised path `index.require` has already
     vouched for, so nothing a query string can say reaches the cookie unchecked.
     """
-    ctx = library_context(request, p, q, fmt, sort)
+    ctx = library_context(request, p, q, sort)
     response = templates.TemplateResponse(request, "library.html", ctx)
     remember(response, ctx["path"])
     return response
@@ -99,7 +94,6 @@ async def lib_pane(
     request: Request,
     p: str = "",
     q: str = "",
-    fmt: list[str] = Query(default=[]),
     sort: str = "name",
 ):
     """The whole panel. A breadcrumb segment and a directory name both swap it, so the
@@ -115,7 +109,7 @@ async def lib_pane(
     /lib/list and /lib/selection deliberately do not record anything. Filtering, sorting
     and ticking a box do not move you, and the filter fires on every keystroke.
     """
-    ctx = library_context(request, p, q, fmt, sort)
+    ctx = library_context(request, p, q, sort)
     response = templates.TemplateResponse(request, "lib_pane.html", ctx)
     remember(response, ctx["path"])
     return response
@@ -126,11 +120,10 @@ async def lib_list(
     request: Request,
     p: str = "",
     q: str = "",
-    fmt: list[str] = Query(default=[]),
     sort: str = "name",
 ):
     """File-table body plus an out-of-band refresh of the result counter."""
-    ctx = library_context(request, p, q, fmt, sort)
+    ctx = library_context(request, p, q, sort)
     ctx["oob"] = True
     return templates.TemplateResponse(request, "file_rows.html", ctx)
 
@@ -162,15 +155,6 @@ async def lib_selection(
         }
     )
     return templates.TemplateResponse(request, "selection_bar.html", ctx)
-
-
-@router.post("/lib/reindex", response_class=HTMLResponse)
-async def reindex(request: Request):
-    app: AppState = state(request)
-    app.reindex_soon()
-    ctx = base_context(request, "library")
-    ctx["index_meta"] = app.index.meta()
-    return templates.TemplateResponse(request, "fragments/reindexing.html", ctx)
 
 
 @router.get("/lib/index-status", response_class=HTMLResponse)

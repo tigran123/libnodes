@@ -60,7 +60,15 @@ def commafy(num: int | float | None) -> str:
 
 
 def reltime(ts: float | None, now: float | None = None) -> str:
-    """`14m ago` / `yesterday` / `4d ago` — the LAST SYNC and index-freshness columns."""
+    """`14m ago` / `yesterday` / `4d ago` — every "how old is this" on the page.
+
+    One vocabulary on purpose. The index's age had its own `fresh 18m` beside the Devices
+    chip's `last scan 3s ago`, and once Rescan rebuilt the index as well as probing the
+    fleet the two read as one fact stated two ways that disagreed. They are two clocks --
+    the probe re-checks some node every ~10 s on its own, the index moves only on Rescan,
+    a pull or the 30-min timer -- so what they share is the format and a named subject,
+    never the number.
+    """
     if not ts:
         return "never"
     now = now if now is not None else time.time()
@@ -100,21 +108,6 @@ def until(ts: float | None, now: float | None = None) -> str:
     if delta < 86400:
         return f"in {int(delta // 3600)}h"
     return f"in {int(delta // 86400)}d"
-
-
-def freshness(ts: float | None, now: float | None = None) -> str:
-    """`fresh 3m` — the rail's index-age readout."""
-    if not ts:
-        return "never"
-    now = now if now is not None else time.time()
-    delta = max(0.0, now - ts)
-    if delta < 60:
-        return f"fresh {int(delta)}s"
-    if delta < 3600:
-        return f"fresh {int(delta // 60)}m"
-    if delta < 86400:
-        return f"fresh {int(delta // 3600)}h"
-    return f"fresh {int(delta // 86400)}d"
 
 
 def hhmmss(seconds: float | None) -> str:
@@ -176,7 +169,6 @@ def build_templates() -> Jinja2Templates:
         commafy=commafy,
         reltime=reltime,
         until=until,
-        freshness=freshness,
         hhmmss=hhmmss,
         clock=clock,
         isodate=isodate,
@@ -205,7 +197,6 @@ __all__ = [
     "hsize_short",
     "commafy",
     "reltime",
-    "freshness",
     "hhmmss",
     "clock",
     "isodate",

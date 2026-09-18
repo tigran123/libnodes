@@ -15,7 +15,7 @@ link* (`/library?p=Fiction%2FLeonid-Perov`) and nothing else, so a typed URL, a 
 the Back button all go on meaning exactly what they say, and there is no state in which the
 address bar and the listing disagree.
 
-The directory and nothing else: `q`, `fmt` and `sort` are not carried, which is what
+The directory and nothing else: `q` and `sort` are not carried, which is what
 entering a directory already does — the row link carries `p` alone and the pane comes back
 with an empty filter box.
 """

@@ -12,7 +12,7 @@
 {% endblock %}
 
 {% block rail_foot %}
-  <div class="stat"><span>index</span><b class="v-ok">{{ index_meta.indexed_at|freshness }}</b></div>
+  <div class="stat"><span>index</span><b class="v-ok">{{ index_meta.indexed_at|reltime }}</b></div>
   <div class="stat"><span>entries</span><b>{{ index_meta.entry_count|commafy }}</b></div>
   <div class="stat">
     <span>{{ library_root }}</span>

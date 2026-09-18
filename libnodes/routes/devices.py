@@ -520,7 +520,8 @@ async def device_probe(request: Request, device_id: str):
 
 @router.post("/devices/rescan", response_class=HTMLResponse)
 async def devices_rescan(request: Request, q: str | None = Form(default=None)):
-    """Sweep every device, ignoring backoff — without making the browser wait.
+    """Sweep every device, ignoring backoff, and rebuild the library index — without
+    making the browser wait for either.
 
     Awaiting this would make Rescan cost one connect timeout per unreachable node. The
     returned fragment schedules a single follow-up refresh to pick up the results.
@@ -534,6 +535,10 @@ async def devices_rescan(request: Request, q: str | None = Form(default=None)):
     """
     app = state(request)
     app.probe.rescan_soon(force=True)
+    # The Library's ⟳ folded into this button: one "look again" control rather than two
+    # glyphs meaning different things on two pages. Cheap to pair -- the walk is ~0.6 s on
+    # pi5 on its own worker thread, and reindex_soon is a no-op while one is in flight.
+    app.reindex_soon()
     ctx = devices_context(request, q)
     ctx["rescanning"] = True
     template = "device_grid.html" if ctx["view"] == "grid" else "device_rows.html"

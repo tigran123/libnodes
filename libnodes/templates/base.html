@@ -74,10 +74,20 @@
         {# Outside the block above, beside the theme toggle, for the same reason it is:
            page templates override topbar_right (devices_yaml.html does), and anything
            inside it disappears on those pages. A plain form, so logging out does not
-           depend on htmx or on script at all. #}
+           depend on htmx or on script at all.
+           An icon rather than the words, which were 80 of the 363 px a 412px phone has
+           for this bar and left the index chip ~165 px to elide into. SVG for the theme
+           toggle's reason below: a glyph is a bet on the Nexus 10's fonts. #}
         {% if auth_enabled %}
         <form method="post" action="/logout" style="display:contents">
-          <button class="btn btn-icon" type="submit" title="Log out">Log out</button>
+          <button class="btn btn-icon logout" type="submit" title="Log out" aria-label="Log out">
+            {# A door, and an arrow leaving through it. #}
+            <svg viewBox="0 0 16 16" width="15" height="15" fill="none"
+                 stroke="currentColor" stroke-width="1.4" stroke-linecap="round"
+                 stroke-linejoin="round" aria-hidden="true">
+              <path d="M6.5 2.5H3.5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h3M10.5 5l3 3-3 3M13.5 8H6.5"/>
+            </svg>
+          </button>
         </form>
         {% endif %}
         {# Drawn as SVG rather than ☾/☼, and for a measured reason: U+263E is in none

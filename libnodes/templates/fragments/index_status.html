@@ -1,8 +1,15 @@
+{# Swapped into #index-status. While a rebuild runs it carries its own 2s poll, and the
+   poll goes away with the swap that reports it finished -- so it stops by itself, and a
+   rebuild started anywhere (Rescan on Devices, the 30-min timer, a pull) shows here. #}
 {% if index_meta.running %}
-  <span class="dot dot-accent dot-pulse"></span> reindexing…
+  <span hx-get="/lib/index-status"
+        hx-trigger="every 2s"
+        hx-target="#index-status"
+        hx-swap="innerHTML"
+        style="display:contents"><span class="dot dot-accent dot-pulse"></span> reindexing…</span>
 {% elif index_meta.ready %}
   <span class="dot dot-ok"></span>
-  index {{ index_meta.indexed_at|freshness }} · {{ index_meta.entry_count|commafy }} entries
+  index {{ index_meta.indexed_at|reltime }} · {{ index_meta.entry_count|commafy }} entries
 {% else %}
   <span class="dot dot-warn"></span> index not built
 {% endif %}

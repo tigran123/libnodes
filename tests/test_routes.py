@@ -291,7 +291,7 @@ async def test_the_subtitle_and_the_chip_count_the_same_fleet(client):
     the subtitle on this response rather than on the filtered rows one."""
     text = (await client.get("/devices/status")).text
     devices, _profiles = _subtitle(text)
-    reachable = re.search(r"sshd \d+/(\d+) reachable", text)
+    reachable = re.search(r"\d+/(\d+) online", text)
     assert reachable and int(reachable.group(1)) == devices
 
 
@@ -561,11 +561,16 @@ async def test_a_directory_link_carries_only_where_it_is_going(client):
     for leaked in ("p=Science&", "q=sci", "sort=size"):
         assert leaked not in rows, f"the directory link smuggled {leaked}"
 
-    # A format filter still removes every directory: a directory's fmt is NULL, and NULL
-    # satisfies no `fmt IN (...)`. That half is unchanged and still worth pinning.
-    r = await client.get("/lib/pane", params={"fmt": ["epub"]})
-    rows = r.text.split('<div id="file-rows">')[1]
-    assert '<a class="file-name"' not in rows
+
+async def test_the_library_has_no_format_filter(client):
+    """EPUB/PDF/DJVU chips were a hardcoded three-item list that took a whole row of the
+    filterbar on a phone (210 px of bar, 178 without them, measured at 412 px) and hid
+    every directory whenever one was on, NULL satisfying no `fmt IN (...)`. They went
+    end to end, so no hx-include may still ask for them either."""
+    for route in ("/library", "/lib/pane"):
+        r = await client.get(route)
+        assert 'name="fmt"' not in r.text
+        assert "[name=fmt]" not in r.text
 
 
 async def test_the_breadcrumb_is_one_link_per_ancestor_plus_a_root(client):
@@ -587,13 +592,36 @@ async def test_the_breadcrumb_is_one_link_per_ancestor_plus_a_root(client):
     assert 'class="leaf"' in top
 
 
-async def test_the_only_reindex_control_survived_the_tree(client):
-    """It lived in the tree pane's header alone. Deleting that pane without moving it
-    would have left the route and the status chip working and no way to reach either."""
-    r = await client.get("/lib/pane")
-    assert 'hx-post="/lib/reindex"' in r.text
-    # In the filter bar, not orphaned somewhere below the table.
-    assert r.text.index('hx-post="/lib/reindex"') < r.text.index('class="lib-body"')
+async def test_rescan_is_the_one_reindex_control(client, app, monkeypatch):
+    """The Library's ⟳ folded into Rescan on Devices. It was the only manual reindex
+    control in the app, so it may go only because this button now does its job -- a book
+    copied into /Books by hand would otherwise wait up to reindex_interval to appear."""
+    calls = []
+    monkeypatch.setattr(app.state.lib, "reindex_soon", lambda: calls.append(1))
+    assert (await client.post("/devices/rescan")).status_code == 200
+    assert calls == [1]
+
+    devices = (await client.get("/devices")).text
+    start = devices.index('hx-post="/devices/rescan"')
+    button = devices[devices.rindex("<button", 0, start) : devices.index("</button>", start)]
+    assert "<svg" in button and 'title="Rescan:' in button
+
+    pane = (await client.get("/lib/pane")).text
+    assert "/lib/reindex" not in pane and "⟳" not in pane
+    assert (await client.post("/lib/reindex")).status_code in (404, 405)
+
+
+async def test_the_index_chip_polls_only_while_a_rebuild_runs(client, app, monkeypatch):
+    """A rebuild can now start from another page, so the chip carries its own poll while
+    one runs, and the swap that reports it finished removes the poll with it."""
+    index = app.state.lib.index
+    monkeypatch.setattr(index, "_running", True)
+    running = (await client.get("/lib/index-status")).text
+    assert 'hx-get="/lib/index-status"' in running and "every 2s" in running
+
+    monkeypatch.setattr(index, "_running", False)
+    done = (await client.get("/lib/index-status")).text
+    assert "hx-get" not in done and "entries" in done
 
 
 async def test_the_pane_still_guards_the_paths_the_tree_route_used_to(client):
@@ -614,3 +642,24 @@ async def test_the_table_does_not_smuggle_its_own_directory_into_a_link(client):
     assert 'hx-disinherit="hx-include"' in form
     # The form's own include is what the selection bar is built from and must survive.
     assert 'hx-include="#lib-params"' in form
+
+
+async def test_the_index_and_the_fleet_state_their_age_the_same_way(client):
+    """Rescan now moves both, so the two ages share one vocabulary and each names its
+    subject. They are still two clocks -- the probe ticks every ~10 s by itself -- so this
+    pins the words, not the numbers."""
+    library = (await client.get("/library")).text
+    devices = (await client.get("/devices")).text
+    assert "fresh " not in library
+    assert "last scan" not in devices
+    assert "devices checked " in devices
+    assert re.search(r"index (\d+[smhd] ago|just now|yesterday|never)", library)
+
+
+async def test_the_fleet_chip_counts_green_dots_in_plain_words(client):
+    """`online` because the figure is `Reachability.online` -- the green dots, not the
+    amber ones -- and no "sshd" prefix, which cost a phone a third of what it could show."""
+    status = (await client.get("/devices/status")).text
+    assert re.search(r"\d+/\d+ online", status)
+    assert "sshd" not in status and "reachable" not in status
+    assert 'class="chip chip-checked"' in status

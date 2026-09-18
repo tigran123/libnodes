@@ -883,6 +883,19 @@ ul {
   color: var(--accent-hi);
 }
 
+/* The toggle's sizing for the same reason and in the same place -- after .btn, or it
+   loses the cascade. line-height: 0 so the box is the 15px svg and not a text strut, which
+   puts the pair at the same ~41 real px on a phone instead of the 80 the words took. The
+   border stays: this is the button that ends the session, and the toggle beside it is the
+   one that can afford to look like a glyph. Rescan on Devices is the same kind of
+   bordered icon button and takes the same box. */
+.logout,
+.rescan {
+  line-height: 0;
+  padding: 4px 7px;
+  color: var(--ink-2);
+}
+
 /* Which of the two is drawn, keyed off the attribute the server stamps on <html> and
    app.js toggles. Dark is the default -- no attribute -- and the default offers the sun. */
 .theme-toggle .theme-moon,
@@ -1453,18 +1466,25 @@ ul {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 14px var(--gutter) var(--gutter);
+  /* No top padding, deliberately -- it lives on .pathline. See there. */
+  padding: 0 var(--gutter) var(--gutter);
 }
 
 /* Sticky, because this is now the only way *out* of a directory and Science/ lists 1,452
    of them — without it you scroll back to the top to go up one level. .lib-body is the
    scroller, so the offset is measured from there. The opaque background is mandatory, not
-   decoration: rows read straight through a transparent crumb as they pass under it. */
+   decoration: rows read straight through a transparent crumb as they pass under it.
+   The 14px above the crumb is its own padding and not the scroller's, and that is not
+   tidiness either: Chrome pins a sticky child at the scroller's *content* box, so while
+   .lib-body carried `padding-top: 14px` the crumb stuck 14px below the edge and the rows
+   scrolled on through that band above it -- 18.9 real px on a 412px phone at --scale 1.35,
+   measured with tools/shot.py, and 0 once the padding moved onto the opaque crumb. */
 .pathline {
   position: sticky;
   top: 0;
   z-index: 3;
   background: var(--bg);
+  padding-top: 14px;
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
@@ -2591,8 +2611,13 @@ a.file-name:hover {
      all because a flex parent blockifies it. */
   .topbar-right .chip {
     display: inline-block;
-    /* Unscaled viewport unit -- see --scale. */
-    max-width: calc(40vw / var(--scale));
+    /* Unscaled viewport unit -- see --scale. 50vw because that is the room there is once
+       Log out became an icon: on a 412px phone the bar has 363 real px, the rail toggle
+       and the two ~41px buttons take 153 of them with their gaps, leaving 210 (51vw).
+       At 40vw the chip stopped at 165 and read "index fresh …". It still elides past the
+       cap -- the full string is 330 px -- and still shrinks below it on a narrower phone,
+       being flex-shrink: 1 with min-width: 0, so the buttons are never what gives way. */
+    max-width: calc(50vw / var(--scale));
     min-width: 0;
     flex-shrink: 1;
     overflow: hidden;
@@ -2603,6 +2628,14 @@ a.file-name:hover {
   .topbar-right .chip .dot {
     display: inline-block;
     vertical-align: middle;
+  }
+
+  /* Two chips and three icon buttons do not fit a phone's bar: on 412px both chips
+     elided to "ssh…" and "devic…" and said nothing. The age of the last sweep is the one
+     that can go -- the dots below are that same fact, per node -- which leaves the count
+     the whole room it needs. */
+  .topbar-right .chip-checked {
+    display: none;
   }
 
   /* The breadcrumb stacks above its totals rather than sharing their line: a deep path
@@ -2624,8 +2657,8 @@ a.file-name:hover {
     padding-right: 12px;
   }
 
-  /* Filter takes its own row; the format/sort controls follow underneath rather than
-     being pushed off the edge. */
+  /* Filter takes its own row; the sort and reindex controls follow underneath rather
+     than being pushed off the edge. */
   .filterbar {
     height: auto;
     min-height: var(--bar);

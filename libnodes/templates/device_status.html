@@ -15,11 +15,20 @@
   {{ total }} devices · {{ profiles }} profiles
 </span>
 {% endif %}
-<span class="chip">
+{# "online" is the exact word: the count is Reachability.online, state == "online", so it
+   is the green dots and nothing else -- amber and red are not in it. The "sshd" prefix
+   only said how that is measured and cost 5 of the ~15 characters a 412px phone shows of
+   this chip, so the how moved into the tooltip. #}
+<span class="chip" title="nodes whose ssh port answered a TCP connect in the last sweep; sleeping and offline nodes are not counted">
   <span class="dot {{ 'dot-ok' if online else 'dot-err' }}"></span>
-  sshd {{ online }}/{{ total }} reachable
+  {{ online }}/{{ total }} online
 </span>
-<span class="chip">last scan {{ last_scan|reltime }}</span>
+{# Named for what it dates -- the newest reachability check of any node -- in the same
+   words the Library uses for the index: "devices checked 3s ago" beside "index 18m ago".
+   "last scan" read as the Rescan button's whole effect, and a Scan is something else
+   again here (the per-device rsync listing). chip-checked because it goes on a narrow
+   screen: every dot on the page already says the same, a node at a time. #}
+<span class="chip chip-checked">devices checked {{ last_scan|reltime }}</span>
 {% if issues %}
   {# devices.yaml failed to parse or validate. The config in memory is the last good one,
      so nothing else on the page looks wrong -- this chip is the whole warning. It rides

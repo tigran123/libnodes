@@ -12,7 +12,7 @@
              hx-trigger="keyup changed delay:120ms, search"
              hx-target="#file-rows"
              hx-swap="innerHTML"
-             hx-include="#lib-params, [name=fmt]:checked, [name=sort]">
+             hx-include="#lib-params, [name=sort]">
     </label>
     <span id="result-count" class="result-count">
       {{ total_files|commafy }} → {{ match_count|commafy }} matches · {{ '%.0f'|format(elapsed_ms) }}ms
@@ -23,44 +23,16 @@
       <input type="hidden" name="p" value="{{ path }}">
     </span>
 
-    <span class="segmented">
-      {% for f in ['epub', 'pdf', 'djvu'] %}
-        <label class="{{ 'is-active' if f in fmt }}">
-          <input type="checkbox" name="fmt" value="{{ f }}" hidden
-                 {{ 'checked' if f in fmt }}
-                 hx-get="/lib/list"
-                 hx-trigger="change"
-                 hx-target="#file-rows"
-                 hx-swap="innerHTML"
-                 hx-include="#lib-params, [name=q], [name=fmt]:checked, [name=sort]">
-          {{ f|upper }}
-        </label>
-      {% endfor %}
-    </span>
-
     <select class="btn" name="sort"
             hx-get="/lib/list"
             hx-trigger="change"
             hx-target="#file-rows"
             hx-swap="innerHTML"
-            hx-include="#lib-params, [name=q], [name=fmt]:checked">
+            hx-include="#lib-params, [name=q]">
       <option value="name" {{ 'selected' if sort == 'name' }}>name ↑</option>
       <option value="size" {{ 'selected' if sort == 'size' }}>size ↓</option>
       <option value="modified" {{ 'selected' if sort == 'modified' }}>modified ↓</option>
     </select>
-
-    {# This lived in the tree pane's header and moved here rather than dying with it: it
-       is the only manual reindex control in the app. Last in the bar, past the three
-       controls that act on what is on screen, because it acts on the index behind them.
-       Bordered rather than .btn-ghost — in a label strip a borderless glyph read as a
-       caption, but here it sits beside a bordered <select class="btn"> and has to read as
-       its peer. #}
-    <button class="btn btn-icon" type="button"
-            hx-post="/lib/reindex"
-            hx-target="#index-status"
-            hx-swap="innerHTML"
-            hx-disabled-elt="this"
-            title="Rebuild the index">⟳</button>
   </div>
 
   <div class="lib-body">

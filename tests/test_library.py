@@ -103,12 +103,6 @@ def test_filter_narrows_the_current_level(index):
     assert index.children("Fiction", q="Feynman") == []
 
 
-def test_format_filter(index):
-    pdfs = index.children("Science/Physics", q="a", fmts=["pdf"])
-    assert pdfs
-    assert {e.fmt for e in pdfs} == {"pdf"}
-
-
 def test_sorting(index):
     by_size = index.children("Science/Physics", sort="size")
     assert by_size[0].size >= by_size[-1].size

@@ -11,12 +11,24 @@
         style="display:contents">
     {% include "device_status.html" %}
   </span>
-  <button class="btn"
+  {# Two jobs, one button: every node is probed again and /Books is re-walked. The
+     Library had its own ⟳ for the second, and two look-again glyphs doing different
+     things on two pages read as one. SVG rather than U+27F3, for the reason the theme
+     toggle's comment in base.html records. #}
+  <button class="btn btn-icon rescan"
+          title="Rescan: check every device now, and rebuild the library index"
+          aria-label="Rescan"
           hx-post="/devices/rescan"
           hx-target="#device-rows"
           hx-swap="innerHTML"
           hx-include="[name=q]"
-          hx-disabled-elt="this">Rescan</button>
+          hx-disabled-elt="this">
+    <svg viewBox="0 0 16 16" width="15" height="15" fill="none"
+         stroke="currentColor" stroke-width="1.4" stroke-linecap="round"
+         stroke-linejoin="round" aria-hidden="true">
+      <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2v3h-3"/>
+    </svg>
+  </button>
 {% endblock %}
 
 {% block body %}

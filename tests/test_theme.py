@@ -235,6 +235,41 @@ def test_the_theme_icon_is_drawn_and_not_typed():
     assert '[data-theme="light"] .theme-toggle .theme-moon {' in css
 
 
+def test_log_out_is_an_icon_sized_like_the_toggle():
+    """The words were 80 of the 363 px a 412px phone has for the top bar, and left the
+    index chip ~165 px, so it read "index fresh …". An SVG and not a glyph for the
+    toggle's reason above, and a rule after .btn for the cascade's."""
+    import re
+    from pathlib import Path
+
+    base = (Path(__file__).resolve().parent.parent / "libnodes" / "templates" / "base.html").read_text()
+    start = base.index('<button class="btn btn-icon logout"')
+    button = base[start : base.index("</button>", start)]
+    assert "<svg" in button
+    assert 'aria-label="Log out"' in button
+    # The only text left is inside attributes and the Jinja comment.
+    visible = re.sub(r"\{#.*?#\}|<[^>]*>", "", button[button.index(">") + 1 :], flags=re.S)
+    assert visible.strip() == ""
+
+    css = _css()
+    assert css.index("\n.logout,\n.rescan {") > css.index("\n.btn {")
+
+
+def test_the_pinned_crumb_owns_the_padding_above_it():
+    """Chrome pins a sticky child at its scroller's content box, so a `padding-top` on
+    .lib-body is a band the rows scroll through above the crumb -- 18.9 real px on a
+    phone, measured. The 14px has to be the opaque crumb's own."""
+    import re
+
+    css = _css()
+    body = css[css.index("\n.lib-body {") : css.index("}", css.index("\n.lib-body {"))]
+    pad = re.search(r"padding: (\S+)", body).group(1)
+    assert pad in ("0", "0px"), f".lib-body has a top padding again: {pad}"
+    crumb = css[css.index("\n.pathline {") : css.index("}", css.index("\n.pathline {"))]
+    assert "position: sticky" in crumb
+    assert re.search(r"padding-top: [1-9]", crumb)
+
+
 async def test_both_theme_icons_are_always_in_the_dom(client):
     """CSS picks between them, so both ship on every page and in either theme. If only
     the current one were rendered the client toggle would have nothing to switch to."""

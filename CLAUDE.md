@@ -339,8 +339,7 @@ are listed.
   of searching the subtree, so `Audio` at the root leaves the `Audio/` row and you can
   click it. Dropping `q` *is* the behaviour — the link swaps the whole `#lib` pane, so the
   pane comes back with an empty box and the full listing, which is what a tree click did.
-  (`fmt` still removes every directory on its own: a directory's `fmt` is NULL and NULL
-  satisfies no `IN`.) Pinned by
+  Pinned by
   `tests/test_routes.py::test_a_directory_link_carries_only_where_it_is_going`.
 - **The filename never elides; the catalog title beside it always may.** `.file-name` wraps
   (`overflow-wrap: anywhere` — these names have no spaces, and only `anywhere` also lets the
@@ -817,7 +816,7 @@ are listed.
   `LIBNODES_`-prefixed environment variables automatically. Add them to the env table in
   `deploy/README.md` at the same time.
 - Number, size and time formatting belongs in the Jinja filters in
-  `libnodes/templating.py` (`hsize`, `hsize_short`, `commafy`, `reltime`, `freshness`,
+  `libnodes/templating.py` (`hsize`, `hsize_short`, `commafy`, `reltime`,
   `hhmmss`, `clock`, `isodate`) — not in handlers, not inline in templates.
 - **Comments explain why, and cite the measurement when one drove the decision** —
   `24,616 lines around 4 real transfers`, `~29 s`, `76 s / 258 MB`, `894G for a 248G

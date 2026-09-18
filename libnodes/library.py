@@ -48,7 +48,6 @@ CREATE TABLE entries (
 CREATE INDEX ix_entries_parent ON entries(parent);
 CREATE INDEX ix_entries_name   ON entries(name COLLATE NOCASE);
 CREATE INDEX ix_entries_blob   ON entries(blob);
-CREATE INDEX ix_entries_fmt    ON entries(fmt);
 CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT);
 """
 
@@ -246,7 +245,6 @@ class LibraryIndex:
         path: str,
         *,
         q: str | None = None,
-        fmts: Sequence[str] | None = None,
         sort: str = "name",
         limit: int = 2000,
     ) -> list[Entry]:
@@ -273,10 +271,6 @@ class LibraryIndex:
         if q:
             where.append("name LIKE ? ESCAPE '\\'")
             params.append(f"%{_escape_like(q)}%")
-
-        if fmts:
-            where.append("fmt IN (%s)" % ",".join("?" * len(fmts)))
-            params += [f.lower() for f in fmts]
 
         order = SORTS.get(sort, SORTS["name"])
         sql = (
