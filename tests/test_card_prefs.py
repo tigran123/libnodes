@@ -120,8 +120,8 @@ async def test_an_unknown_key_hides_nothing(client, app):
 
 async def test_everything_hidden_is_still_a_card(client, app):
     """The dot, the name and the badge are not tickable. Something has to say which
-    device this is, and the root div's id is the hx-target of the card's own Retry and of
-    the Test dialog's out-of-band swap."""
+    device this is, and the root div's id is the target of the Test dialog's
+    out-of-band swap."""
     _wake(app)
     html = await _grid(client, SEP.join(key for key, _l, _n in CARD_FIELDS))
     assert 'id="card-kobo"' in html
@@ -167,8 +167,8 @@ async def test_the_storage_line_survives_losing_either_half(client, app):
 async def test_the_tick_takes_the_buttons_off_every_card(client, app):
     """Whatever the dot says.
 
-    This first exempted a red or a syncing card, on the reasoning that Retry is the only
-    per-device re-probe in GRID and Abort the only way to stop a push. On this fleet six
+    This first exempted a red or a syncing card, on the reasoning that Retry (since folded
+    into Test) was the only per-device re-probe in GRID and Abort the only way to stop a push. On this fleet six
     of ten nodes are red at any moment, so the tick left the buttons on most of the cards
     and read as doing nothing at all -- which is what it was reported as, on two different
     browsers. A preference that holds only for the cards you were not looking at is not a
@@ -186,7 +186,7 @@ async def test_the_tick_takes_the_buttons_off_every_card(client, app):
     )
     red = await _grid(client, "actions")
     assert not _shows(red, "actions"), "a red card kept the row the tick removed"
-    assert "/device/kobo/probe" not in red
+    assert "/device/kobo/test" not in red
 
 
 async def test_a_syncing_card_drops_them_too_and_keeps_its_badge(client, app, monkeypatch):
@@ -287,22 +287,42 @@ async def test_the_table_is_not_touched_by_any_of_this(client, app, hidden):
 # ------------------------------------------------------------ every render --
 
 
-async def test_every_path_that_draws_a_card_reads_the_preference(client, app):
+async def test_every_path_that_draws_a_card_reads_the_preference(client, app, monkeypatch):
     """The card renders from more places than the grid, and the one that fails quietly is
     the Test dialog's out-of-band swap -- htmx drops a swap whose target is missing and
     says nothing. These two go through base_context alone, which is why the map lives
     there rather than in devices_context."""
     _wake(app)
-    # libnodes_view too: /device/{id}/probe answers with a *row* unless this browser is
-    # in GRID, which is itself a thing the card view gets right.
+    # libnodes_view too: the Test dialog carries a *row* unless this browser is in GRID,
+    # which is itself a thing the card view gets right.
     cookies = {CARD_COOKIE: "addr", "libnodes_view": "grid"}
 
     one = (await client.get("/device/kobo/card", cookies=cookies)).text
     assert not _shows(one, "addr") and _shows(one, "target")
 
-    probed = (await client.post("/device/kobo/probe", cookies=cookies)).text
-    assert 'id="card-kobo"' in probed, "the probe stopped answering with a card"
-    assert not _shows(probed, "addr")
+    # No ssh and no connect: only the card the dialog carries is under test here.
+    import asyncio
+
+    class _Proc:
+        returncode = 255
+
+        async def communicate(self):
+            return (b"", b"")
+
+    async def fake_exec(*a, **k):
+        return _Proc()
+
+    async def refused(*a, **k):
+        raise ConnectionRefusedError
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(asyncio, "open_connection", refused)
+
+    tested = (await client.post("/device/kobo/test", cookies=cookies)).text
+    assert 'id="card-kobo"' in tested, "the Test dialog stopped carrying a card"
+    # The dialog above it echoes the ssh command, address and all; only the card counts.
+    card = tested[tested.index('id="card-kobo"'):]
+    assert not _shows(card, "addr")
 
 
 def test_the_card_never_hides_anything_with_css():

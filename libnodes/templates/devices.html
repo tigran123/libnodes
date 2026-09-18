@@ -76,7 +76,7 @@
        `_filtered` short-circuits, and innerHTML puts the whole fleet back under a box
        still reading `lg` -- every ten seconds, for ever, because innerHTML leaves this
        div and its trigger intact. hx-disinherit rides along because hx-include is
-       inherited and every row's Test/Retry/Abort button lives inside here; that is the
+       inherited and every row's Test/Abort button lives inside here; that is the
        same bug #sel-form carries hx-disinherit for in lib_pane.html. #}
     <div id="device-rows"
          hx-get="/devices/grid"

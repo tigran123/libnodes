@@ -224,17 +224,52 @@ async def test_a_grid_page_keeps_its_cards_when_filtered_or_rescanned(client):
     assert 'hx-get="/devices/grid"' in rescan.text
 
 
-async def test_a_retry_in_grid_replaces_one_card(client):
+@pytest.fixture
+def quiet_test(monkeypatch):
+    """Press Test without spending an ssh or a connect: the dialog's own output is not
+    what these assert on, only the device it carries out of band."""
+    import asyncio
+
+    class _Proc:
+        returncode = 255
+
+        async def communicate(self):
+            return (b"", b"ssh: connect to host kobo: No route to host\n")
+
+    async def fake_exec(*a, **k):
+        return _Proc()
+
+    async def refused(*a, **k):
+        raise ConnectionRefusedError
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(asyncio, "open_connection", refused)
+
+
+async def test_a_test_in_grid_refreshes_one_card(client, quiet_test):
+    """Test is the only per-device re-probe since Retry went, so its out-of-band refresh
+    is what repaints a card. Aimed at a #node-<id> that grid mode does not render, htmx
+    drops the swap silently and the card keeps the reading the test just contradicted."""
     client.cookies.set("libnodes_view", "grid")
-    r = await client.post("/device/kobo/probe")
+    r = await client.post("/device/kobo/test")
     assert 'id="card-kobo"' in r.text
     assert 'id="node-kobo"' not in r.text
 
 
-async def test_a_retry_in_table_still_replaces_one_row(client):
-    r = await client.post("/device/kobo/probe")
+async def test_a_test_in_table_refreshes_one_row(client, quiet_test):
+    r = await client.post("/device/kobo/test")
     assert 'id="node-kobo"' in r.text
     assert 'id="card-kobo"' not in r.text
+
+
+def test_there_is_no_retry_beside_test():
+    """Retry was a TCP connect and a re-render, and Test does both before its ssh -- so a
+    red row carried two buttons for one job. The Actions tooltip names Test instead."""
+    for name in ("device_row.html", "device_card.html"):
+        text = (TEMPLATES_DIR / name).read_text(encoding="utf-8")
+        assert ">Retry<" not in text, name
+        assert "/probe\"" not in text, name
+        assert "Retry first" not in text, name
 
 
 async def test_switching_view_keeps_the_filter(client):
@@ -249,7 +284,7 @@ async def test_the_ten_second_poll_carries_the_filter(client, view, fragment):
     the whole fleet back under a box still reading `lg` — every ten seconds, for ever,
     since innerHTML leaves the polling div and its trigger intact.
 
-    hx-disinherit ships with it: hx-include is inherited and every row's Test/Retry/Abort
+    hx-disinherit ships with it: hx-include is inherited and every row's Test/Abort
     button is inside this container. That is the bug #sel-form carries one for.
     """
     r = await client.get("/devices", params={"view": view})

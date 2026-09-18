@@ -496,28 +496,6 @@ async def device_card(request: Request, device_id: str):
     return templates.TemplateResponse(request, "device_card.html", ctx)
 
 
-@router.post("/device/{device_id}/probe", response_class=HTMLResponse)
-async def device_probe(request: Request, device_id: str):
-    """Re-probe one device.
-
-    The TCP connect is awaited because the user asked for it and it is bounded by
-    `probe_timeout`. The `df` probe is not — it spawns ssh and can take 15s, which has
-    no business sitting in a request.
-    """
-    app = state(request)
-    device = app.devices.device(device_id)
-    if device is None:
-        return HTMLResponse("", status_code=404)
-    await app.probe.probe(device)
-    if app.probe.status(device_id).online:
-        app.probe.probe_space_soon(device, force=True)
-    # The card's Retry swaps this into #card-<id> and the row's into #node-<id>. Answering
-    # with a row either way put one table row where every card had been.
-    if resolved_view(request) == "grid":
-        return await device_card(request, device_id)
-    return await device_row(request, device_id)
-
-
 @router.post("/devices/rescan", response_class=HTMLResponse)
 async def devices_rescan(request: Request, q: str | None = Form(default=None)):
     """Sweep every device, ignoring backoff, and rebuild the library index — without

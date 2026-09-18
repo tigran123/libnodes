@@ -130,7 +130,9 @@
 
     {% else %}
       {# Every action behind this menu needs the device to answer, so it is offered
-         only when the dot is green. Retry re-probes and brings it back. #}
+         only when the dot is green. Test re-probes and brings it back: it runs the same
+         connect a Retry button used to, before its ssh, and refreshes this row out of
+         band. That made Retry a strict subset of the button beside it, so it went. #}
       {# Print what the connect actually reported, in both states. `sleeping` means only
          "it failed and this node answered within the last half hour" — it carries no
          diagnosis, so the old fixed "sshd asleep" invented one: fair for a refused
@@ -156,13 +158,8 @@
               title="{{ node.test_command }}">Test</button>
 
       {% if not node.online %}
-        <button class="btn"
-                hx-post="/device/{{ node.device.id }}/probe"
-                hx-target="#node-{{ node.device.dom_id }}"
-                hx-swap="outerHTML"
-                hx-disabled-elt="this">Retry</button>
         <button class="btn is-disabled" disabled
-                title="{{ node.device.name }} is not answering — Retry first">Actions</button>
+                title="{{ node.device.name }} is not answering — Test first">Actions</button>
       {% else %}
         {# One entry point for everything that writes: Full Sync, Adopt and Scan, each
            showing the command it will run. #}

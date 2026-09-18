@@ -509,7 +509,7 @@ async def test_both_views_draw_the_same_bolt(client, app):
     from libnodes.templating import TEMPLATES_DIR
 
     # device_card.html, not device_grid.html: the card body moved out of the grid's loop
-    # into its own fragment so /device/{id}/card can answer a Retry with one card.
+    # into its own fragment so /device/{id}/card can answer with one card.
     for name in ("device_row.html", "device_card.html"):
         text = (TEMPLATES_DIR / name).read_text(encoding="utf-8")
         assert '{% include "charging_bolt.html" %}' in text, name
@@ -1362,7 +1362,8 @@ def test_a_tablet_in_portrait_fits_two_cards():
 
     The floor is the card's own, measured against the running service by forcing the columns
     narrower and narrower: content first overflows the box at 210px and the Test/Retry/Actions
-    strip at 200px, so 220 is the floor and the declared value keeps a margin over it. The
+    strip (Retry has since gone) at 200px, so 220 is the floor and the declared value keeps a
+    margin over it. The
     first attempt borrowed 256px from the desktop's narrowest three-up card instead, which
     needed 736 real px for a second column -- and a Galaxy Tab S4 is 700 CSS px, not the 800
     a Nexus 10 of the same size and resolution reports, so one tablet got two columns and the
@@ -1542,8 +1543,8 @@ def test_the_card_offers_every_action_the_row_does():
 
     The card was written without Test and stayed that way: the grid offered every action
     that *writes* -- Full Sync, Adopt, Scan, all behind Actions -- and withheld the only
-    one that changes nothing. So a red node in GRID could be retried but not diagnosed
-    without switching back to TABLE, which is the one moment the diagnosis is wanted.
+    one that changes nothing. So a red node in GRID could not be diagnosed without
+    switching back to TABLE, which is the one moment the diagnosis is wanted.
     Compared by endpoint rather than by label, because that is what an action *is*.
     """
     templates = ROOT / "libnodes" / "templates"

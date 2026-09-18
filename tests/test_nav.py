@@ -81,6 +81,6 @@ async def test_a_stale_page_recovers_by_following_the_redirect(client):
 
 async def test_old_post_actions_redirect_without_losing_the_method(client):
     """308, not 302 — a POST must not silently become a GET."""
-    r = await client.post("/node/kobo/probe", follow_redirects=False)
+    r = await client.post("/node/kobo/test", follow_redirects=False)
     assert r.status_code == 308
-    assert r.headers["location"] == "/device/kobo/probe"
+    assert r.headers["location"] == "/device/kobo/test"

@@ -8,8 +8,8 @@ A dot makes `#scan-status-sigmaai.au` parse as the id `scan-status-sigmaai` plus
 htmx:targetError and **not sending the request at all**.
 
 So "Scan device" on that node did nothing whatsoever, with no request in the access log to
-say why, for as long as the node existed. Row Retry, card Retry and the Test dialog's
-out-of-band row refresh were broken the same way and had never been pressed.
+say why, for as long as the node existed. Row Retry, card Retry (both since removed) and the
+Test dialog's out-of-band row refresh were broken the same way and had never been pressed.
 
 The fleet these tests otherwise use is all dot-free, which is exactly why nothing caught
 it. This module keeps one node with a dot in its id.

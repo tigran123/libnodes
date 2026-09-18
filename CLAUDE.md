@@ -374,7 +374,7 @@ are listed.
   trigger intact, and with nothing failing anywhere. Rescan had the same hole, against a
   `q` parameter `devices_rescan` has always declared. `hx-disinherit="hx-include"` ships
   beside it: `hx-include` is inherited and that container holds every row's
-  Test/Retry/Abort button — the entry below, from the other page. Pinned by
+  Test/Abort button — the entry below, from the other page. Pinned by
   `tests/test_routes.py::test_the_ten_second_poll_carries_the_filter` and
   `::test_rescan_keeps_the_filter_too`.
 - **`#sel-form` must keep `hx-disinherit="hx-include"`.** `hx-include` is inherited, and
@@ -638,9 +638,9 @@ are listed.
   the Devices layout is now remembered in the `libnodes_view` cookie (`routes/devices.py`),
   so a browser stays in GRID instead of being reset to TABLE by every navigation. That
   turned three table-only fragments from unreachable into routine: the filter box's
-  `hx-get`, `devices_rescan`'s template, and the card's Retry — which targeted
-  `#device-rows` with `innerHTML` and so replaced all 9 cards with the single row
-  `/device/{id}/probe` answered with. Each resolves through `resolved_view`, which trusts
+  `hx-get`, `devices_rescan`'s template, and the card's Retry (since removed) — which
+  targeted `#device-rows` with `innerHTML` and so replaced all 9 cards with the single row
+  its endpoint answered with. Each resolves through `resolved_view`, which trusts
   the cookie because the cookie is only ever written from an explicit `?view=` and
   therefore always agrees with the branch that rendered. The card body lives in
   `device_card.html` for the same reason `device_row.html` exists — so one card can be
@@ -648,14 +648,20 @@ are listed.
   aimed at a `#node-<id>` that grid mode does not render, htmx dropped that swap silently.
   Pinned by `tests/test_routes.py::test_the_devices_view_survives_a_trip_to_the_library`,
   `::test_a_grid_page_keeps_its_cards_when_filtered_or_rescanned` and
-  `::test_a_retry_in_grid_replaces_one_card`. A bare `/devices` must keep writing no
+  `::test_a_test_in_grid_refreshes_one_card`. A bare `/devices` must keep writing no
   cookie — `::test_a_bare_devices_page_does_not_pin_its_own_default` — or the rail link
   freezes whichever default it just guessed.
   TABLE and GRID are two renderings of one fleet, not two feature sets, and the card was
   written without Test — it offered every action that *writes*, all behind Actions, and
-  withheld the only one that changes nothing, so a red node in GRID could be retried but
-  not diagnosed. `test_the_card_offers_every_action_the_row_does` compares the two
+  withheld the only one that changes nothing, so a red node in GRID could not be
+  diagnosed. `test_the_card_offers_every_action_the_row_does` compares the two
   templates by endpoint rather than by label, because that is what an action is.
+  There is no Retry beside Test, in either view. It was a TCP connect and a re-render,
+  and `device_test` runs that same `probe.probe()` after its ssh and carries the refreshed
+  row or card out of band — so a red node had two buttons for one job, and the disabled
+  Actions said "Retry first" when Test did it just as well. `POST /device/{id}/probe` went
+  with it; Rescan is the fleet-wide re-probe. Pinned by
+  `tests/test_routes.py::test_there_is_no_retry_beside_test`.
   The Settings tick that hides the card's button row is the one exception, and it is a
   *whole-fleet* exception on purpose. It first exempted a red or syncing card, on exactly
   the reasoning above — and that was wrong here, where six of ten nodes are red at any
@@ -723,8 +729,8 @@ are listed.
   `scan-status-sigmaai` plus the class `au`, matches nothing, and htmx answers an
   unresolvable target by firing `htmx:targetError` and **not sending the request** — so Scan
   device on that node did nothing at all, and the access log had no POST in it to say why.
-  Row Retry, card Retry and the Test dialog's out-of-band row refresh were broken the same
-  way. Not fixed by renaming the node: the id is the key in `manifests.db`, `jobs.db` and
+  Row Retry, card Retry (both since removed) and the Test dialog's out-of-band row refresh
+  were broken the same way. Not fixed by renaming the node: the id is the key in `manifests.db`, `jobs.db` and
   `probe.json`, and it is the hostname. `dom_id` folds anything outside `[A-Za-z0-9_-]` to a
   dash and is used for every `id=` and every `#`-selector; the **URLs keep the real id**.
   `DevicesFile` refuses two ids that fold to the same `dom_id`. Pinned by

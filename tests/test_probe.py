@@ -322,22 +322,6 @@ async def test_rescan_returns_before_the_probe_finishes(client, app, monkeypatch
     assert "/devices/rows" in response.text
 
 
-async def test_single_device_probe_is_bounded(client, app, monkeypatch, settings):
-    """One node may be awaited — but only for probe_timeout, never for the df probe."""
-
-    async def never(*a, **k):
-        await asyncio.sleep(30)
-
-    monkeypatch.setattr("asyncio.open_connection", never)
-
-    started = time.perf_counter()
-    response = await client.post("/device/kobo/probe")
-    elapsed = time.perf_counter() - started
-
-    assert response.status_code == 200
-    assert elapsed < settings.probe_timeout + 1.5, f"probe took {elapsed:.1f}s"
-
-
 async def test_page_renders_while_every_device_hangs(client, monkeypatch):
     """Requests read the cached dict; they never probe. This is the core rule."""
 
@@ -549,12 +533,12 @@ async def test_actions_is_disabled_unless_the_device_is_green(client, app, monke
         parts = html.split('id="node-')
         return next(p for p in parts if p.startswith(device_id + '"'))
 
-    # Offline: greyed out, with Retry offered instead.
+    # Offline: greyed out, with Test the only way to ask again.
     lib.probe._slot("kobo").reach = Reachability(state="offline", checked_at=_time.time())
     kobo = row_for((await client.get("/devices/rows")).text, "kobo")
     assert "is-disabled" in kobo
     assert "/device/kobo/menu" not in kobo
-    assert "/device/kobo/probe" in kobo
+    assert "/device/kobo/test" in kobo
 
     # Sleeping is amber, not green — same treatment.
     lib.probe._slot("kobo").reach = Reachability(
