@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from urllib.parse import quote, unquote
 
 import pytest
 
@@ -129,6 +130,85 @@ async def test_an_unknown_view_falls_back_without_writing_a_cookie(client):
     r = await client.get("/devices", params={"view": "nonsense"})
     assert 'hx-get="/devices/rows"' in r.text
     assert "libnodes_view" not in r.headers.get("set-cookie", "")
+
+
+# ------------------------------------------------ the remembered library position --
+#
+# The same bug as the block above, from the other page: the rail's Library link is a bare
+# /library, so walking to Devices and back landed at /Books however deep you had been.
+# The cookie fills in the *link*; it never reinterprets a bare /library, so a typed URL,
+# a bookmark and the Back button all still mean exactly what they say.
+
+
+def _library_link(html: str) -> str:
+    """The rail's Library href, which is the whole feature."""
+    m = re.search(r'<a class="nav-item[^"]*"\s+href="([^"]*)">Library</a>', html)
+    assert m, "no Library link in the rail"
+    return m.group(1)
+
+
+async def test_the_library_position_survives_a_trip_to_the_devices_page(client):
+    await client.get("/lib/pane", params={"p": "Science/Physics"})
+    back = await client.get("/devices")  # the rail link: no query at all
+    assert _library_link(back.text) == "/library?p=Science%2FPhysics"
+
+
+async def test_going_back_to_the_root_is_remembered_too(client):
+    """The breadcrumb's root link is a bare /lib/pane, and it must not be the one
+    navigation the memory ignores — otherwise deliberately going up to /Books and walking
+    away brings you back down again."""
+    await client.get("/lib/pane", params={"p": "Science/Physics"})
+    await client.get("/lib/pane")
+    back = await client.get("/jobs")
+    assert _library_link(back.text) == "/library"
+
+
+async def test_the_library_page_points_its_own_rail_at_itself(client):
+    """base_context reads the cookie, which on this request is still one navigation
+    behind. A rail link aimed somewhere other than the page on screen is the "the URL
+    moved and the content did not" failure again."""
+    await client.get("/lib/pane", params={"p": "Fiction"})
+    here = await client.get("/library", params={"p": "Science"})
+    assert _library_link(here.text) == "/library?p=Science"
+
+
+@pytest.mark.parametrize("stale", ["Science/Gone", "../etc", ".data", "urantia-library"])
+async def test_a_remembered_directory_that_no_longer_exists_is_forgotten(client, stale):
+    """The one thing `resolved_view` never has to do: "grid" cannot go stale and a path
+    can. `index.require` answers a renamed, deleted or infrastructure path with a 400, so
+    an unvalidated cookie would break the rail link itself."""
+    client.cookies.set("libnodes_lib_path", quote(stale, safe=""))
+    r = await client.get("/devices")
+    assert r.status_code == 200
+    assert _library_link(r.text) == "/library"
+
+
+async def test_a_file_is_not_a_position(client):
+    """`p` lists a directory. A cookie naming a book would render its parent's listing
+    under a breadcrumb claiming otherwise."""
+    client.cookies.set(
+        "libnodes_lib_path", quote("Science/Physics/Feynman.djvu", safe="")
+    )
+    assert _library_link((await client.get("/devices")).text) == "/library"
+
+
+async def test_a_path_that_is_not_a_cookie_value_still_survives(app):
+    """A comma, a space and a Cyrillic name — none of which is a cookie-octet, and all of
+    which exist in a real /Books. Unencoded, http.cookies quotes and escapes the whole
+    value and it comes back unsplittable: the bug `cardprefs.SEP` records, which only a
+    test ever caught. The fixture library is ASCII, so this is checked directly."""
+    from fastapi.responses import Response
+
+    from libnodes.libpos import POS_COOKIE, remember
+
+    for path in ("Fiction/Perov, L/Book 1965", "Художественная/Перов"):
+        response = Response()
+        remember(response, path)
+        header = response.headers["set-cookie"]
+        assert "," not in header.split(";")[0], "a comma reached the cookie value"
+
+        sent = header.split(";")[0].split("=", 1)[1]
+        assert unquote(sent) == path
 
 
 async def test_a_grid_page_keeps_its_cards_when_filtered_or_rescanned(client):

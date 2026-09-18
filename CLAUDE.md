@@ -627,6 +627,31 @@ are listed.
   `::test_abort_is_still_reachable_with_the_buttons_off`, which checks the claim in that
   last sentence rather than assuming it.
 
+- **The Library's position fills the rail *link*, and never reinterprets a bare
+  `/library`.** `libnodes/libpos.py`, written by `/library` and `/lib/pane`, read in
+  `deps.base_context` as `library_href`. Same bug as `libnodes_view` from the other page:
+  the rail is a plain `href` with no query string, the Library's position lives only in
+  `?p=`, so walking to Devices and back landed at `/Books` however deep you were. What the
+  cookie must *not* do is change what a URL means — it fills in the link
+  (`/library?p=Fiction%2FLeonid-Perov`), so a typed URL, a bookmark and Back all still say
+  what they say, and the address bar can never disagree with the listing. `library_context`
+  overwrites `library_href` with the path on screen, because `base_context` read a cookie
+  that is one navigation behind. Three things differ from `libnodes_view` and each is
+  load-bearing. A bare `/lib/pane` records the **root** rather than writing nothing: that
+  rule exists so arriving by the rail cannot pin a default the handler *guessed*, and there
+  is no guess here — a bare call is the breadcrumb's root link, and the root is then where
+  you are. The value is **validated against the index on every read**, because `"grid"`
+  cannot go stale and a path can: renamed, deleted, or hand-edited to `.data`, all of which
+  `index.require` answers with a 400 — which would take out `/devices` and `/jobs` too, for
+  a rail link nobody clicked, so `resolved_pos` swallows `PathError` and forgets instead.
+  And it is **percent-encoded**, for the `cardprefs.SEP` reason reached from a worse angle:
+  a path can hold a comma, a space or Cyrillic, none of them cookie-octets. `/lib/list` and
+  `/lib/selection` write nothing — filtering, sorting and ticking do not move you, and the
+  filter fires on every keystroke. Pinned by `tests/test_routes.py`
+  `::test_the_library_position_survives_a_trip_to_the_devices_page`,
+  `::test_going_back_to_the_root_is_remembered_too`,
+  `::test_a_remembered_directory_that_no_longer_exists_is_forgotten` and
+  `::test_a_path_that_is_not_a_cookie_value_still_survives`.
 - **A GRID card's fields are per browser, and the cookie names what is *hidden*.**
   `libnodes/cardprefs.py`, ticked at `/settings`, read once in `deps.base_context` so all
   six paths that render a card get it — `/devices/grid`, `/device/{id}/card`,

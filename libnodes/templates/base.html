@@ -29,7 +29,7 @@
       <div class="rail-group">
         <div class="section-label">Orchestrate</div>
         <a class="nav-item {% if active == 'devices' %}is-active{% endif %}" href="/devices">Devices</a>
-        <a class="nav-item {% if active == 'library' %}is-active{% endif %}" href="/library">Library</a>
+        <a class="nav-item {% if active == 'library' %}is-active{% endif %}" href="{{ library_href }}">Library</a>
         <a class="nav-item {% if active == 'jobs' %}is-active{% endif %}" href="/jobs">
           Jobs
           {% if job_count %}<span class="nav-count">{{ job_count }}</span>{% endif %}

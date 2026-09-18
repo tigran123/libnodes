@@ -8,6 +8,7 @@ from fastapi import Request
 
 from .cardprefs import resolved_cards
 from .host import host_stats
+from .libpos import library_href, resolved_pos
 from .state import AppState
 
 
@@ -52,6 +53,11 @@ def base_context(request: Request, active: str) -> dict:
         # alone, and the second of those is the swap that fails *silently* when a name is
         # missing -- the failure already recorded against #device-rows in CLAUDE.md.
         "card_show": resolved_cards(request),
+        # Where the rail's Library link goes. Here rather than in the library's own
+        # context because the rail is drawn on every page *except* the one that knows:
+        # the whole point is to get back from Devices and Jobs. `library_context`
+        # overwrites it with the directory actually on screen -- see the note there.
+        "library_href": library_href(resolved_pos(request, app.index)),
     }
     # Namespaced under `dock` rather than merged: the Jobs page has its own `jobs`
     # variable (the whole history table), which would otherwise clobber the dock's

@@ -8,6 +8,7 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse
 
 from ..deps import base_context, state
+from ..libpos import library_href, remember
 from ..library import SORTS, Entry, normalise
 from ..state import AppState
 from ..templating import templates
@@ -40,6 +41,11 @@ def library_context(
     meta = app.index.meta()
 
     ctx = base_context(request, "library")
+    # The rail's own Library link, overwritten because base_context read it from the
+    # cookie and the cookie is one navigation behind: on /library?p=A it still holds
+    # wherever you were before. A rail link pointing somewhere other than the page you
+    # are looking at is the "the URL moved and the content did not" failure again.
+    ctx["library_href"] = library_href(path)
     ctx.update(
         {
             "entry": entry,
@@ -77,9 +83,15 @@ async def library_page(
     fmt: list[str] = Query(default=[]),
     sort: str = "name",
 ):
-    return templates.TemplateResponse(
-        request, "library.html", library_context(request, p, q, fmt, sort)
-    )
+    """The one full page. It records where it is, so the rail can come back here.
+
+    `ctx["path"]` and not `p`: that is the normalised path `index.require` has already
+    vouched for, so nothing a query string can say reaches the cookie unchecked.
+    """
+    ctx = library_context(request, p, q, fmt, sort)
+    response = templates.TemplateResponse(request, "library.html", ctx)
+    remember(response, ctx["path"])
+    return response
 
 
 @router.get("/lib/pane", response_class=HTMLResponse)
@@ -91,9 +103,22 @@ async def lib_pane(
     sort: str = "name",
 ):
     """The whole panel. A breadcrumb segment and a directory name both swap it, so the
-    listing, the crumb and the selection change together."""
+    listing, the crumb and the selection change together.
+
+    It records the position too, and it is the one that matters: walking the tree never
+    reloads the page, so without this the cookie would only ever hold where you *arrived*.
+    A bare call records the root, which is right rather than the `/devices` hazard
+    restated -- that rule is that arriving by the rail must not pin a default the handler
+    merely guessed, and there is no guess here: a bare /lib/pane is the breadcrumb's root
+    link, and the root is then where you are.
+
+    /lib/list and /lib/selection deliberately do not record anything. Filtering, sorting
+    and ticking a box do not move you, and the filter fires on every keystroke.
+    """
     ctx = library_context(request, p, q, fmt, sort)
-    return templates.TemplateResponse(request, "lib_pane.html", ctx)
+    response = templates.TemplateResponse(request, "lib_pane.html", ctx)
+    remember(response, ctx["path"])
+    return response
 
 
 @router.get("/lib/list", response_class=HTMLResponse)
