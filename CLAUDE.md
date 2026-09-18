@@ -736,6 +736,15 @@ are listed.
   `DevicesFile` refuses two ids that fold to the same `dom_id`. Pinned by
   `tests/test_dom_ids.py`, which keeps a dotted id in its own fixture because the rest of
   the fleet is dot-free — which is exactly why nothing caught this.
+- **A dialog scrolls in its body; the dialog itself never outgrows the screen.**
+  `.backdrop` is a fixed box that centres its child and does not scroll, so a dialog
+  taller than the viewport spills past *both* edges and its head and its only Close
+  become unreachable — sigmaai.au's Actions on a phone could be left only by Android's
+  Back (`shots/mobile-actions.jpg`). `.dialog` is capped at `100dvh / var(--scale)`
+  (zoom does not scale viewport units) and `.dialog-body` is the scroller, with its
+  children `flex-shrink: 0` so an inner scroller is not squeezed first. `app.js` also
+  closes the topmost `.backdrop` on Escape or a tap that starts and ends on it. Pinned by
+  `tests/test_theme.py::test_a_dialog_taller_than_the_screen_scrolls_and_keeps_its_close`.
 - **Every template except `base.html` and the page templates must render standalone** — no
   `<html>`, no doctype. That is the HTMX contract, enforced by
   `test_fragments_render_standalone`. **A new fragment route must be added to `FRAGMENTS` in

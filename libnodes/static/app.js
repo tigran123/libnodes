@@ -1,10 +1,10 @@
 /* LibNodes client behaviour.
  *
  * Deliberately tiny. The design's rule is that state lives on the server and the DOM
- * carries whatever the client still needs, so this file only does the four things HTML
- * and HTMX genuinely cannot: toggle the mobile rail, keep the terminal bounded and
- * pinned to its tail, remember the dock's collapsed state across page swaps, and
- * implement shift-click range selection.
+ * carries whatever the client still needs, so this file only does the things HTML
+ * and HTMX genuinely cannot: toggle the mobile rail, close a dialog from outside it,
+ * keep the terminal bounded and pinned to its tail, remember the dock's collapsed state
+ * across page swaps, and implement shift-click range selection.
  */
 (function () {
   "use strict";
@@ -117,6 +117,31 @@
     if (shell && shell.classList.contains("rail-open") && !e.target.closest(".rail")) {
       shell.classList.remove("rail-open");
     }
+  });
+
+  /* --- dialogs: tap outside or Escape closes ----------------------------- */
+
+  /* Every dialog is a .backdrop that its Close button removes, and that button was the
+     only way out -- which on a phone meant none at all once the dialog outgrew the screen
+     and took its foot with it. Removing is exactly what Close does, so this is no new
+     state. The press has to START on the backdrop as well as end there: selecting a
+     command to copy and releasing past the dialog's edge is a click on the backdrop too. */
+  var pressedBackdrop = null;
+
+  document.addEventListener("pointerdown", function (e) {
+    pressedBackdrop = e.target.classList && e.target.classList.contains("backdrop")
+      ? e.target : null;
+  });
+
+  document.addEventListener("click", function (e) {
+    if (e.target === pressedBackdrop) e.target.remove();
+    pressedBackdrop = null;
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    var open = document.querySelectorAll(".backdrop");
+    if (open.length) open[open.length - 1].remove();
   });
 
   /* --- terminal: bound the DOM and stay at the tail ---------------------- */

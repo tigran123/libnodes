@@ -2092,13 +2092,30 @@ a.file-name:hover {
   padding: 20px;
 }
 
+/* The dialog is capped at the screen and its body scrolls, so the head and the foot --
+   whose Close is the way out -- are always on it. Without the cap a dialog taller than
+   the viewport was centred by .backdrop and so spilled past BOTH edges of a fixed box
+   that does not scroll: sigmaai.au's Actions on a phone showed a slice of the Pull note
+   and nothing else, no Close, and only Android's Back to leave by
+   (shots/mobile-actions.jpg). Divided by --scale because zoom does not scale viewport
+   units (see .shell); the 40px is .backdrop's padding. dvh after vh so a phone's
+   collapsing toolbar is allowed for where the browser knows the unit. */
 .dialog {
   width: 454px;
   max-width: 100%;
+  max-height: calc(100vh / var(--scale) - 40px);
+  max-height: calc(100dvh / var(--scale) - 40px);
+  display: flex;
+  flex-direction: column;
   background: var(--panel);
   border: 1px solid var(--border-hi);
   border-radius: var(--r-panel);
   overflow: hidden;
+}
+
+.dialog-head,
+.dialog-foot {
+  flex-shrink: 0;
 }
 
 .dialog-head {
@@ -2116,6 +2133,16 @@ a.file-name:hover {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* The body scrolls instead of its children shrinking: a child with its own overflow
+   (the extras dialog's 340px panel, job_log's term) has a flex min-height of 0 and would
+   otherwise be squeezed to nothing before the body ever scrolled. */
+.dialog-body > * {
+  flex-shrink: 0;
 }
 
 .dialog-foot {
@@ -2160,8 +2187,13 @@ a.file-name:hover {
   padding-top: 10px;
 }
 
+/* Wraps, and the note has a 220px basis, so on a phone the note takes its own line under
+   the button. Unwrapped, the 150px button left it ~120px of a 305px dialog (412px /
+   --scale 1.35) and the Pull note stood one word to a line, a screen and a half tall.
+   The 720px desktop dialog leaves it 540px, so nothing moves there. */
 .action-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: 10px;
 }
@@ -2173,6 +2205,7 @@ a.file-name:hover {
 }
 
 .action-note {
+  flex: 1 1 220px;
   font-size: 11.5px;
   color: var(--dim);
   line-height: 1.45;

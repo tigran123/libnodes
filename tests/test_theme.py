@@ -493,3 +493,42 @@ def test_the_favicon_is_well_formed_xml():
     doc = xml.dom.minidom.parse(str(icon))          # raises if not well formed
     assert doc.documentElement.tagName == "svg"
     assert len(doc.getElementsByTagName("rect")) == 5
+
+
+# ------------------------------------------------------------------- dialogs --
+
+
+def test_a_dialog_taller_than_the_screen_scrolls_and_keeps_its_close():
+    """sigmaai.au's Actions on a phone (shots/mobile-actions.jpg): .backdrop centres its
+    dialog in a fixed box that does not scroll, so a dialog taller than the screen spilled
+    past both edges and took its head and its Close with it. The dialog is capped at the
+    viewport -- divided by --scale, because zoom does not scale viewport units -- and the
+    body scrolls, so the foot is always on screen."""
+    css = _css()
+    dialog = _rule(css, ".dialog")
+    assert "max-height: calc(100vh / var(--scale) - 40px)" in dialog
+    assert "flex-direction: column" in dialog
+    body = _rule(css, ".dialog-body")
+    assert "overflow-y: auto" in body and "min-height: 0" in body
+    assert "flex-shrink: 0" in _rule(css, ".dialog-head,\n.dialog-foot")
+    # A child with its own scroller would otherwise be squeezed before the body scrolls.
+    assert "flex-shrink: 0" in _rule(css, ".dialog-body > *")
+
+
+def test_an_action_note_drops_under_its_button_on_a_narrow_dialog():
+    """Unwrapped, the 150px button left the note ~120px of a phone's dialog and the Pull
+    note stood one word to a line."""
+    css = _css()
+    assert "flex-wrap: wrap" in _rule(css, ".action-head")
+    assert "flex: 1 1 220px" in _rule(css, ".action-note")
+
+
+def test_a_dialog_can_be_left_without_its_close_button():
+    """Close in the foot was the only way out; a tap on the backdrop or Escape now removes
+    the dialog, which is all Close does."""
+    from pathlib import Path
+
+    js = (Path(__file__).resolve().parent.parent
+          / "libnodes" / "static" / "app.js").read_text()
+    assert 'contains("backdrop")' in js
+    assert 'e.key !== "Escape"' in js
