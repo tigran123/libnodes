@@ -108,7 +108,12 @@ def test_forget_clears_a_device(settings, index):
 
 
 def test_paths_with_sql_wildcards_do_not_leak(settings, index, tmp_path):
-    """A directory named `100%` must not match every sibling via LIKE."""
+    """A directory named `100%` must stay a literal, whatever the predicate is.
+
+    This caught a missing ESCAPE back when the query was a LIKE. The range form that
+    replaced it has no wildcards to escape at all, which is the cheaper way to be right,
+    so this now stands as the guard that nobody reintroduces one.
+    """
     manifests = Manifests(settings.manifests_db)
     manifests.record("kobo", [("Other/file.pdf", None, 1, 0)], source="push")
 
@@ -128,3 +133,157 @@ def test_paths_with_sql_wildcards_do_not_leak(settings, index, tmp_path):
         author=None,
     )
     assert manifests.presence([tricky], ["kobo"])["100%"] == []
+
+
+def _presence_vm_steps(manifests, entries, device_ids) -> int:
+    """SQLite VM instructions executed by one real `presence()` call.
+
+    `presence` opens its own connection, so the progress handler is installed by wrapping
+    `_connect`. That is what makes this a measurement of the query the app actually runs,
+    rather than of a re-typed copy that could drift away from it.
+    """
+    steps = [0]
+    real = manifests._connect
+
+    def bump() -> int:
+        steps[0] += 1
+        return 0  # anything non-zero would abort the query mid-flight
+
+    def counted():
+        conn = real()
+        conn.set_progress_handler(bump, 1)
+        return conn
+
+    manifests._connect = counted
+    try:
+        manifests.presence(entries, device_ids)
+    finally:
+        del manifests._connect
+    return steps[0]
+
+
+def _dir_entry(path: str, files: int):
+    from libnodes.library import Entry
+
+    parent, _, name = path.rpartition("/")
+    return Entry(
+        path=path,
+        parent=parent,
+        name=name or path,
+        is_dir=True,
+        fmt=None,
+        size=0,
+        mtime=0,
+        files=files,
+        blob=None,
+        title=None,
+        author=None,
+    )
+
+
+def test_a_directory_count_costs_the_subtree_not_the_whole_device(settings):
+    """`PRESENT ON` for a directory must be an index range, not a LIKE prefix.
+
+    SQLite cannot serve `path LIKE 'dir/%'` from an index here -- the ESCAPE clause
+    disables the LIKE optimisation, and so does case_sensitive_like=OFF against a BINARY
+    column -- so each of these queries scanned that device's whole slice of the manifest.
+    The cost was priced by what the device holds rather than by the subtree asked about.
+    On the live database that was 304 directories x 15 devices = 4,560 queries over
+    268,692 rows: 18.10 s, against 30 ms for `path >= ? AND path < ?` on the primary key.
+
+    The assertion is the *shape* of the cost and not a step count, because the absolute
+    numbers are facts about one SQLite build: counting three files must not get dearer
+    because the device holds ten times as many files somewhere else. Under the LIKE form
+    it did -- 3.1k VM steps became 30.1k, measured. Not an EXPLAIN QUERY PLAN string
+    either: SQLite has reworded that output before (`SEARCH TABLE x USING...` became
+    `SEARCH x USING...` in 3.36), which would fail while the code was right.
+    """
+    manifests = Manifests(settings.manifests_db)
+    target = _dir_entry("Target", files=3)
+
+    manifests.record(
+        "kobo", [(f"Target/{n}.epub", None, 1, 0) for n in range(3)], source="push"
+    )
+    manifests.record(
+        "kobo", [(f"Other/{n:05d}.epub", None, 1, 0) for n in range(500)], source="push"
+    )
+    small = _presence_vm_steps(manifests, [target], ["kobo"])
+
+    manifests.record(
+        "kobo",
+        [(f"Other/{n:05d}.epub", None, 1, 0) for n in range(500, 5_000)],
+        source="push",
+    )
+    large = _presence_vm_steps(manifests, [target], ["kobo"])
+
+    assert manifests.presence([target], ["kobo"])["Target"][0].detail == "3/3"
+    # The range plan is flat, so the honest delta is ~0; the slack is for the noise a
+    # larger b-tree adds to the seek itself. A LIKE regression overshoots it ~100x.
+    assert large <= small + 200
+
+
+def test_a_directory_does_not_borrow_files_from_a_case_variant_sibling(settings):
+    """LIKE was case-insensitive; the index range is exact, and that is the point.
+
+    `Fiction/Abramov` used to count the files under `Fiction/abramov/` as its own, so a
+    directory the device had never been sent could read as fully present. Two directories
+    that differ only in case are two directories -- and this fleet's devices are vfat, so
+    a scan really can bring a differently-cased path back.
+    """
+    manifests = Manifests(settings.manifests_db)
+    manifests.record("kobo", [("Fiction/abramov/b.epub", None, 1, 0)], source="push")
+
+    upper = _dir_entry("Fiction/Abramov", files=1)
+    assert manifests.presence([upper], ["kobo"])["Fiction/Abramov"] == []
+
+    lower = _dir_entry("Fiction/abramov", files=1)
+    assert manifests.presence([lower], ["kobo"])["Fiction/abramov"][0].presence == "ok"
+
+
+def test_the_unread_secondary_indexes_are_dropped_and_stay_dropped(settings):
+    """Neither secondary index was ever read, and SCHEMA alone could not retire them.
+
+    `PRIMARY KEY (device_id, path)` answers every `device_id = ?` lookup in the module,
+    and better -- it carries `path`, so it needs no table lookup per row. It answers the
+    one statement that does not lead with `device_id` as well: `presence`'s batched
+    `path IN (...) AND device_id IN (...)` planned identically with and without
+    ix_manifest_path on a copy of the live database, 3.65 ms against 3.46 ms. What they
+    cost was writes -- 20,000 recorded scan rows, 66 ms against 47 ms -- and 39 MiB.
+
+    Every statement in SCHEMA is IF NOT EXISTS, so it could only stop creating them on a
+    fresh database and would have left the live 117 MiB one carrying both for ever. The
+    DROPs in `_ensure` are what actually remove them, and SCHEMA must not put them back on
+    the next open.
+    """
+    import sqlite3
+
+    db = settings.manifests_db
+    Manifests(db)  # create the schema
+
+    def indexes() -> set[str]:
+        conn = sqlite3.connect(db)
+        try:
+            return {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index' "
+                    "AND tbl_name = 'manifest' AND name NOT LIKE 'sqlite_%'"
+                )
+            }
+        finally:
+            conn.close()
+
+    legacy = {"ix_manifest_device": "device_id", "ix_manifest_path": "path"}
+    conn = sqlite3.connect(db)
+    try:
+        for name, column in legacy.items():
+            conn.execute(f"CREATE INDEX {name} ON manifest({column})")
+        conn.commit()
+    finally:
+        conn.close()
+    assert indexes() == set(legacy)
+
+    Manifests(db)
+    assert indexes() == set()
+    Manifests(db)
+    assert indexes() == set()

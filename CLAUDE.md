@@ -15,9 +15,12 @@ edit, restart, look.
 
 ```bash
 uv pip sync requirements-dev.txt                    # uv, not pip. ~/.local/bin/uv is the one PATH picks
-uv run pytest                                       # 514 tests, ~20s on pi5, no network
+uv run pytest                                       # 655 tests, ~24s on pi5, no network
 uv run pytest tests/test_jobs.py::test_name -x
 sudo systemctl restart libnodes                     # ~1s, no password: /etc/sudoers.d/libnodes
+                                                    # (stop/start are in that rule too, since a
+                                                    #  VACUUM needs the db unheld -- but a stop
+                                                    #  leaves the fleet UI down: ask first)
 curl -s localhost:8090/healthz                      # and http://pi5:8090/ from the LAN
 journalctl -u libnodes -f
 uv run tools/shot.py /devices shots/devices.png     # see the UI: there is no display here
@@ -388,6 +391,46 @@ are listed.
   publishes by atomic rename. A full walk is 1.0 s on pi5 for 24,621 entries, and was
   ~29 s on the Pi 3 it replaced — the invariant survives the speedup, because a request
   must not depend on the walk being fast on *any* host.
+- **A subtree count is an index range on `(device_id, path)`, never a `LIKE` prefix.**
+  `Manifests.presence` asks "how many of this directory's files does the device hold" once
+  per directory per device, and SQLite will not answer `path LIKE 'dir/%'` from an index:
+  the `ESCAPE` clause disables the LIKE optimisation, and the default
+  `case_sensitive_like=OFF` disables it again against a BINARY column. Each query therefore
+  planned as `SEARCH manifest USING INDEX ix_manifest_device (device_id=?)` — a full scan of
+  that device's slice, priced by what the *device* holds and not by the subtree being asked
+  about, so three files cost the same as three thousand. One page of `/Books/Fiction` is 304
+  directories × 15 devices = 4,560 of them against a 268,692-row manifest (dragon alone
+  91,032): **18.10 s measured**, for a listing that renders in milliseconds either way —
+  and the root was 1.12 s, so *every* Library visit paid it. The half-open range
+  `path >= 'dir/' AND path < 'dir0'` is **30 ms** on the same data, on the primary key, with
+  no schema change and no new index ("0" is 0x30 and "/" is 0x2F, so that bound is the exact
+  successor of the prefix under BINARY collation and is safe for every path — unlike the
+  `￿` sentinel the idiom is usually written with, which drops any name starting with a
+  non-BMP character). Equivalence checked over the whole live index, 23,064 directory ×
+  device comparisons, zero mismatches, with one deliberate difference: `LIKE` was
+  case-insensitive, so `Fiction/Abramov` had been counting the files under
+  `Fiction/abramov/` as its own. The docstring claimed "two queries total regardless of row
+  count" the entire time, which is why nobody counted them. Pinned by
+  `tests/test_manifests.py::test_a_directory_count_costs_the_subtree_not_the_whole_device`,
+  which counts SQLite VM steps through `set_progress_handler` (3.1k → 30.1k under the LIKE)
+  rather than asserting on an `EXPLAIN QUERY PLAN` string whose wording changes between
+  releases, and by `::test_a_directory_does_not_borrow_files_from_a_case_variant_sibling`.
+  `LibraryIndex.max_file_size` had the same shape over `entries` and now uses the same range.
+  `manifest` carries **no secondary index at all** as a result, and that is the finding rather
+  than an oversight: nine of the ten statements in `manifests.py` lead with `device_id`, which
+  the primary key answers better than `ix_manifest_device` did (it carries `path`, so no table
+  lookup per row), and the tenth — `presence`'s batched `path IN (…) AND device_id IN (…)` —
+  plans on the primary key too, measured at 3.65 ms with `ix_manifest_path` and 3.46 ms
+  without on a copy of the live database. Both were pure write cost: 20,000 recorded scan rows
+  went 66 ms to 47 ms, and 39 MiB of a 117 MiB file came back. Adding one back needs a query
+  that reads it, not a hunch. Pinned by
+  `::test_the_unread_secondary_indexes_are_dropped_and_stay_dropped`, which also pins that the
+  `DROP`s live in `_ensure` — every statement in `SCHEMA` is `IF NOT EXISTS`, so removing them
+  there alone would have left the live database carrying both for ever.
+  Two things made this hurt more than a slow page: `/lib/list` is the filter box's keystroke
+  handler, so every keypress inside `Fiction` re-ran all 18 s of it; and the handlers are
+  `async def` over blocking `sqlite3`, so those seconds blocked the event loop and the dock's
+  SSE stream with it. A threadpool would have hidden this rather than fixed it.
 - **Requests never probe a device.** A background task writes reachability into a dict
   (`libnodes/probe.py`); handlers read it. Otherwise six sleeping e-readers become a
   six-second page load. `devices_context` calls `probe.note_interest()`, which is a

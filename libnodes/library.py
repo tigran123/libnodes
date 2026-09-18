@@ -341,8 +341,17 @@ class LibraryIndex:
                 clauses = []
                 params = []
                 break
-            clauses.append("(path = ? OR path LIKE ? ESCAPE '\\')")
-            params += [path, f"{_escape_like(path)}/%"]
+            # A half-open range, not `path LIKE 'p/%'`, for the reason written out in
+            # `Manifests.presence`: the ESCAPE clause and case_sensitive_like=OFF each
+            # disable the LIKE optimisation on their own, so SQLite cannot answer it from
+            # the `path` primary key and scans all 24,633 rows per clause. 6.72 ms for
+            # one top-level path, 0.16 ms with the range; the plan becomes MULTI-INDEX OR
+            # over sqlite_autoindex_entries_1. Milliseconds here rather than the 18 s the
+            # same defect cost the Library listing, because this runs once per push and
+            # not once per row -- but it is the same defect, and the range is also exact
+            # where LIKE was case-insensitive.
+            clauses.append("(path = ? OR (path >= ? AND path < ?))")
+            params += [path, f"{path}/", f"{path}0"]
 
         sql = "SELECT COALESCE(MAX(size), 0) FROM entries WHERE is_dir = 0"
         if clauses:

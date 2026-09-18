@@ -30,7 +30,11 @@ sudo systemctl restart libnodes && curl -s localhost:8090/healthz
 ```
 
 About a second, and no password: `/etc/sudoers.d/libnodes` carries
-`tigran ALL=(root) NOPASSWD: /usr/bin/systemctl restart libnodes` — that one command only.
+`tigran ALL=(root) NOPASSWD: /usr/bin/systemctl restart libnodes`, and `stop` and `start`
+beside it — those three verbs on this one unit, and nothing else. `stop`/`start` are there
+for the case `restart` cannot serve: a `VACUUM` of `var/manifests.db` needs nothing holding
+the file, which a restart never provides. Reach for `restart`; a `stop` leaves the fleet UI
+down until something starts it again.
 Restarting is cheap partly because `var/probe.json` is written at shutdown and read at
 start, so the fleet's dots survive it; a restart used to blank every node that happened to
 be asleep, and on this fleet the Kobo can be asleep for days.

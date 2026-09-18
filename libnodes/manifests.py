@@ -37,8 +37,6 @@ CREATE TABLE IF NOT EXISTS manifest (
   is_dir     INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (device_id, path)
 );
-CREATE INDEX IF NOT EXISTS ix_manifest_path ON manifest(path);
-CREATE INDEX IF NOT EXISTS ix_manifest_device ON manifest(device_id);
 CREATE TABLE IF NOT EXISTS scans (
   device_id  TEXT PRIMARY KEY,
   scanned_at REAL,
@@ -134,6 +132,30 @@ class Manifests:
                     conn.execute(
                         "ALTER TABLE manifest ADD COLUMN is_dir INTEGER NOT NULL DEFAULT 0"
                     )
+            # Both of the old secondary indexes are gone, and neither was ever read.
+            #
+            # ix_manifest_device was wholly redundant: PRIMARY KEY (device_id, path) is
+            # itself an index whose first column is device_id, so it answers every
+            # `device_id = ?` lookup here -- nine of the ten statements in this module --
+            # and answers them better, because it carries `path` and so needs no table
+            # lookup per row (`browse` becomes a COVERING INDEX scan).
+            #
+            # ix_manifest_path was read by nothing at all. The tenth statement is the only
+            # one that does not lead with `device_id`, `presence`'s batched
+            # `path IN (...) AND device_id IN (...)`, and SQLite answers that from the
+            # primary key too: measured on a copy of the live database, 300 paths x 15
+            # devices planned identically and ran in 3.65 ms with the index and 3.46 ms
+            # without it. What it did cost was every write -- 20,000 recorded scan rows
+            # went 66 ms to 47 ms with it gone -- and 39 MiB of a 117 MiB file.
+            #
+            # Dropped here rather than simply removed from SCHEMA, because every statement
+            # there is IF NOT EXISTS and would leave the live ones in place for ever. The
+            # pages are freed for reuse but the file does not shrink without a VACUUM,
+            # which is deliberately not done here: it rewrites the whole database under an
+            # exclusive lock while the fleet is being served.
+            with conn:
+                conn.execute("DROP INDEX IF EXISTS ix_manifest_device")
+                conn.execute("DROP INDEX IF EXISTS ix_manifest_path")
         finally:
             conn.close()
 
@@ -271,8 +293,15 @@ class Manifests:
     ) -> dict[str, list[DeviceState]]:
         """Per-row `PRESENT ON` state for a page of the file table.
 
-        Two queries total regardless of row count: one exact match for files, one
-        prefix aggregate for directories.
+        One batched query for every file on the page, and then one per directory per
+        device: a directory wants a COUNT over its own subtree, and those do not batch
+        into the exact-match form. What each must never be is priced by the size of the
+        *device's* manifest, so it is a half-open index range on the primary key
+        `(device_id, path)` -- never a LIKE prefix, for the reason beside the query.
+
+        This said "two queries total regardless of row count" for a year, which is
+        exactly how a 4,560-query nested loop came to sit under it unremarked. Count
+        them before believing a sentence like that one.
         """
         if not entries or not device_ids:
             return {}
@@ -311,14 +340,38 @@ class Manifests:
                         )
 
             for entry in dirs:
-                prefix = f"{entry.path}/"
+                # A half-open range on the primary key, *not* `path LIKE 'dir/%'`.
+                # SQLite will not serve that LIKE from an index, for two independent
+                # reasons: the ESCAPE clause disables the LIKE optimisation outright, and
+                # so does the default case_sensitive_like=OFF against a BINARY-collated
+                # column. Every one of these therefore planned as `SEARCH manifest USING
+                # INDEX ix_manifest_device (device_id=?)` -- a full scan of that device's
+                # slice, priced by what the *device* holds rather than by the subtree
+                # being asked about, so three files cost the same as three thousand.
+                # One page of /Books/Fiction is 304 directories x 15 devices = 4,560 of
+                # them against a 268,692-row manifest (dragon alone 91,032): 18.10 s
+                # measured, against 30 ms for the range below. The root was 1.12 s. No
+                # schema change bought it -- (device_id, path) was already the key.
+                #
+                # The upper bound is the prefix with its trailing "/" (0x2F) bumped to
+                # "0" (0x30), the exact successor of the prefix under BINARY collation
+                # and safe for every path -- unlike the U+FFFF sentinel this idiom is
+                # usually written with, which silently drops any name starting with a
+                # non-BMP character (F0... sorts above EF BF BF).
+                #
+                # Verified equivalent over the whole live index: 23,064 directory x
+                # device comparisons, zero mismatches. The one deliberate difference is
+                # that LIKE was case-INSENSITIVE, so `Fiction/Abramov` had been counting
+                # the files under `Fiction/abramov/` as its own. The range is exact.
+                lo = f"{entry.path}/"
+                hi = f"{entry.path}0"
                 total = entry.files or 0
                 for device_id in device_ids:
                     row = conn.execute(
                         "SELECT COUNT(*), MAX(shipped_at), MAX(source) FROM manifest "
-                        "WHERE device_id = ? AND path LIKE ? ESCAPE '\\' "
+                        "WHERE device_id = ? AND path >= ? AND path < ? "
                         "  AND is_dir = 0",
-                        (device_id, _escape_like(prefix) + "%"),
+                        (device_id, lo, hi),
                     ).fetchone()
                     have = row[0] if row else 0
                     seen_at = row[1] if row else None
@@ -513,10 +566,6 @@ def _compare(entry: Entry, row: sqlite3.Row) -> Presence:
     if row["size"] is not None and row["size"] != entry.size:
         return "stale"
     return "ok"
-
-
-def _escape_like(value: str) -> str:
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 __all__ = ["DeviceState", "Extras", "ManifestRow", "Manifests", "Presence"]
