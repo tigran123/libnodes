@@ -545,10 +545,13 @@ def _preview(build) -> str:
 def _pull_plan(app: AppState, device: Device) -> list[str]:
     """Every command a Pull runs, in order — not just the transfer.
 
-    Showing only the rsync would hide the steps that carry the risk. The transfer is the
-    safe part: no --delete, no -L, and it writes nothing to the upstream. What deserves
-    reading before you press it is `systemctl stop` and an overwritten catalog database.
-    "The command is the documentation" (device_menu.html) cuts that way.
+    Showing only the rsync would hide the steps that carry the risk, and since the pull
+    learned to prune there are two of them rather than one: the transfer now carries
+    `--delete`, which removes local files, and phase 3 is a `systemctl stop` with an
+    overwritten catalog database behind it. Neither is readable from the button.
+    "The command is the documentation" (device_menu.html) cuts that way — and the cap
+    beside the flag is half of what makes the first one safe to read, so it is shown with
+    it rather than hidden in a setting.
 
     Built from the same functions the runner calls, so the strip cannot drift from what
     runs — the lesson `_test_argv` already carries.
@@ -563,7 +566,7 @@ def _pull_plan(app: AppState, device: Device) -> list[str]:
             steps.append(f"{n}. {what}\n   unavailable — {exc}")
 
     unit = app.settings.local_service
-    step(1, "the library, both services still running",
+    step(1, "the library — and prune what this node no longer has, both services still running",
          lambda: build_pull_argv(device, config, app.settings))
     step(2, "snapshot the upstream's catalog, without stopping it",
          lambda: snapshot_argv(device, config, app.settings))

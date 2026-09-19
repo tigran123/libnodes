@@ -5,7 +5,11 @@
 <div class="dock-line">
   <span class="grow">{{ job.dest }}</span>
   <span class="r">
-    {{ job.files_sent|commafy }} files sent · {{ job.bytes_done|hsize }}
+    {# "received" on a pull: the bytes are coming *here*, which `job.dest` already says,
+       and a dock reading "files sent" over an inbound transfer is the arrow drawn the
+       wrong way round in words. The prune rides on the same line whichever direction it
+       ran in — outward on a mirror, inward on a pull. #}
+    {{ job.files_sent|commafy }} files {{ 'received' if job.kind == 'pull' else 'sent' }}{% if job.files_deleted %} · {{ job.files_deleted|commafy }} deleted{% endif %} · {{ job.bytes_done|hsize }}
   </span>
 </div>
 

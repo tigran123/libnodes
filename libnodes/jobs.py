@@ -66,6 +66,9 @@ CREATE TABLE IF NOT EXISTS jobs (
   -- directories included. Keeping them apart is the whole point: see _apply_progress.
   files_sent    INTEGER DEFAULT 0,
   files_total   INTEGER DEFAULT 0,
+  -- What the transfer removed at the far end (a mirror) or at this one (a pull). Files
+  -- only, never directories, for the reason in _stream.
+  files_deleted INTEGER DEFAULT 0,
   entries_done  INTEGER DEFAULT 0,
   entries_total INTEGER DEFAULT 0,
   bytes_done  INTEGER DEFAULT 0,
@@ -144,6 +147,17 @@ _SIZE_TOKEN_RE = re.compile(r"^([\d,]+(?:\.\d+)?)([KMGTP]?)$")
 OUT_FORMAT = "@%l|%n"
 FILE_RE = re.compile(r"^@(?P<size>\d*)\|(?P<name>.*)$")
 
+# A deletion carries no `--out-format`, so it is the one event we have to recognise by
+# rsync's own wording: `deleting <path>`, with a trailing slash when it is a directory.
+#
+# It reaches us at all only because `--out-format` is set: rsync gates the message on
+# INFO_DEL, which `-v` raises and which naming an out-format raises too. Verified against
+# sigmaai.au with exactly the flags this program sends -- INFO_FLAGS names no `del`, and
+# the three `deleting` lines came out regardless. The `*deleting` spelling in the manpage
+# is the `-i` form, which we deliberately do not pass (see OUT_FORMAT), so the marker is
+# absent here and the regex must not expect it.
+DELETE_RE = re.compile(r"^deleting (?P<name>.+)$")
+
 # Suppress what we do not parse. flist0 drops "sending incremental file list", misc0 the
 # housekeeping chatter; stats1 keeps the closing summary, which is worth having in the
 # log. These come after the user's own flags, so they win over -v.
@@ -205,6 +219,11 @@ BASE_FLAGS = ["-a", "-O", "--partial", "-L", "-R"]
 #: only attempts chown as super-user, and the group it would set is one we are already in
 #: (/Books is tigran:tigran on both ends). This is the one place in the program where the
 #: ownership flags are harmless, and it is because the destination is local.
+#:
+#: --delete is *not* here, and its absence from this list is not the absence it used to be:
+#: `build_pull_argv` adds it, with `--max-delete` beside it. It is kept out of the constant
+#: because this list means "always right for this direction" and a destructive flag should
+#: be read at the call site, next to the cap that bounds it.
 PULL_FLAGS = ["-a", "-O", "--partial-dir=.rsync-partial"]
 
 #: How often a `--info=progress2` line is kept in the *log file*. The dock still gets
@@ -270,6 +289,11 @@ class Job:
     #: so the denominator means the same thing in the dock, the file table and the
     #: manifest.
     files_total: int = 0
+    #: Files this job removed -- from the device on a mirror push, from *this host's*
+    #: library on a pull. Counted from rsync's own `deleting <path>` lines, files only:
+    #: a directory row would put a number that is not a file count under a FILES heading.
+    #: Persisted, because history has to be able to say that a job deleted something.
+    files_deleted: int = 0
     #: File-list entries rsync has walked past, directories included. `to-chk` counts
     #: `Audio/` and its 9 subdirectories alongside its 234 files, which is why this is
     #: 244 where files_total is 234 — and why the two must never share a widget.
@@ -386,6 +410,7 @@ class JobStore:
                                 ("files_sent", "INTEGER DEFAULT 0"),
                                 ("entries_done", "INTEGER DEFAULT 0"),
                                 ("entries_total", "INTEGER DEFAULT 0"),
+                                ("files_deleted", "INTEGER DEFAULT 0"),
                                 ("bytes_wire", "INTEGER DEFAULT 0")):
                 if column not in existing:
                     with conn:
@@ -438,7 +463,8 @@ class JobStore:
             with conn:
                 conn.execute(
                     "UPDATE jobs SET state=?, started_at=?, finished_at=?, "
-                    "files_sent=?, files_total=?, entries_done=?, entries_total=?, "
+                    "files_sent=?, files_deleted=?, files_total=?, entries_done=?, "
+                    "entries_total=?, "
                     "bytes_done=?, bytes_total=?, bytes_wire=?, pct=?, "
                     "exit_code=?, error=?, argv=?, attempt=?, dest=?, hold=? "
                     "WHERE id=?",
@@ -447,6 +473,7 @@ class JobStore:
                         job.started_at,
                         job.finished_at,
                         job.files_sent,
+                        job.files_deleted,
                         job.files_total,
                         job.entries_done,
                         job.entries_total,
@@ -531,6 +558,7 @@ def _job_from_row(row: sqlite3.Row) -> Job:
         started_at=row["started_at"],
         finished_at=row["finished_at"],
         files_sent=row["files_sent"] or 0,
+        files_deleted=row["files_deleted"] or 0,
         files_total=row["files_total"] or 0,
         entries_done=row["entries_done"] or 0,
         entries_total=row["entries_total"] or 0,
@@ -951,8 +979,30 @@ def build_pull_argv(
     `fs: vfat` and `stores_times: false` and asserting none appear, which proves absence by
     construction rather than by luck.
 
-    **`--delete` is not here and has no branch that could add it.** The only one the
-    program emits stays the mirror's.
+    **`--delete` is here, and it is the only flag in the program that removes files from
+    *this* host.** It was absent for a year, deliberately, and that was wrong in a way that
+    only showed up slowly: an upstream is the library's source of truth, so a book it
+    deletes is a book that should go -- and without the flag /Books here only ever grew,
+    holding the stale symlink, its blob and its cover for ever while the Library view
+    showed a book production had retired. Measured against sigmaai.au on 2026-09-19, after
+    four months of pulls: three objects, `Number of created files: 0`.
+
+    Three things bound it, and none of them is a branch that could be got wrong:
+
+    * **The excludes protect themselves.** rsync does not delete what an `--exclude`
+      matched, so /Unsorted/ (55 GB), /urantia-library/ (this host's own secrets.env),
+      /.data/staging/ and the catalog files survive a prune without anything here saying
+      so twice. Confirmed by the same dry run, which left all of them alone.
+    * **`--max-delete`**, from `Settings.pull_max_delete`. The failure this exists for is
+      an upstream that is only half there: an unmounted /Books presents an almost empty
+      file list, and the honest reading of that is "delete everything". See the setting for
+      why the cap is 1000 and why a negative value, not zero, is what removes it.
+    * **The dry run is the preview**, exactly as it is for a mirror -- and `--max-delete`
+      applies under `-n` too, so a prune too large to allow is refused *before* it is run.
+
+    The mirror's `--delete` still points outward and this one points inward; neither is a
+    key a devices.yaml can invent, and `build_catalog_argv` has no `--del` of any kind
+    because it names one file on both sides.
     """
     if not device.is_upstream:
         # The reverse of build_argv's refusal, and the pair is the point: one function can
@@ -984,6 +1034,13 @@ def build_pull_argv(
         for side in CATALOG_SIDECARS:
             argv.append(f"--exclude=/{rel}{side}")
         argv.append(f"--exclude=/{rel}{SNAPSHOT_SUFFIX}")
+
+    # After every --exclude, so the two are read together: the excludes are what keeps
+    # this from being a whole-library prune, and rsync protects a path it was told to skip
+    # rather than needing --filter=P rules of its own.
+    argv.append("--delete")
+    if settings.pull_max_delete >= 0:
+        argv.append(f"--max-delete={settings.pull_max_delete}")
 
     bandwidth = device.bandwidth_with(defaults)
     if bandwidth:
@@ -1222,6 +1279,11 @@ class JobRunner:
         #: say which files it delivered. Bounded by SENT_CAP; `None` marks a job that
         #: overflowed and whose list is therefore no longer a complete prefix.
         self._sent: dict[int, list[str] | None] = {}
+        #: The same, for rsync's `deleting <path>` lines, so `_debit_pull` can retract the
+        #: manifest rows that claimed the upstream still held them. Separate from `_sent`
+        #: because the two are answers to opposite questions and a single list would have
+        #: to carry a sign.
+        self._deleted: dict[int, list[str] | None] = {}
         self._queue: asyncio.Queue[int] = asyncio.Queue()
         self._workers: list[asyncio.Task] = []
         self._subs: set[asyncio.Queue] = set()
@@ -1457,6 +1519,7 @@ class JobRunner:
         self._live.pop(job_id, None)
         self._terms.pop(job_id, None)
         self._sent.pop(job_id, None)
+        self._deleted.pop(job_id, None)
         self._emit(JobEvent("dock"))
 
     def start_now(self, job_id: int) -> Job | None:
@@ -1490,6 +1553,7 @@ class JobRunner:
             self._live.pop(job_id, None)
             self._terms.pop(job_id, None)
             self._sent.pop(job_id, None)
+            self._deleted.pop(job_id, None)
 
         removed = self.store.delete(job_id)
         log = self.settings.logs_dir / f"{job_id}.log"
@@ -1539,7 +1603,9 @@ class JobRunner:
         return self.settings.state_dir / "service-hold.json"
 
     async def _service(self, job: Job, verb: str, log) -> int | None:
-        return await self._stream(job, service_argv(verb, self.settings), log)
+        return await self._stream(
+            job, service_argv(verb, self.settings), log, track=False
+        )
 
     def _phase(self, job: Job, text: str, log=None) -> None:
         job.phase = text
@@ -1605,7 +1671,7 @@ class JobRunner:
             self._append_line(job, f"catalog snapshot · {size:,} bytes", "prog")
 
             if await self._stream(
-                job, remote_sidecar_argv(device, config, self.settings), log
+                job, remote_sidecar_argv(device, config, self.settings), log, track=False
             ) != 0:
                 job.catalog_warning = (
                     "catalog not replicated — could not clear the stale write-ahead log "
@@ -1614,7 +1680,8 @@ class JobRunner:
                 self._append_line(job, job.catalog_warning, "warn")
                 return
             if await self._stream(
-                job, replicate_catalog_argv(device, config, self.settings), log
+                job, replicate_catalog_argv(device, config, self.settings), log,
+                track=False,
             ) != 0:
                 job.catalog_warning = "catalog not replicated — the transfer failed"
                 self._append_line(job, job.catalog_warning, "warn")
@@ -1695,7 +1762,9 @@ class JobRunner:
             return code
 
         self._phase(job, "2/6 · snapshot", log)
-        snap = await self._stream(job, snapshot_argv(device, config, self.settings), log)
+        snap = await self._stream(
+            job, snapshot_argv(device, config, self.settings), log, track=False
+        )
         if snap != 0:
             job.catalog_warning = "catalog not refreshed — the upstream snapshot failed"
             self._append_line(job, job.catalog_warning, "warn")
@@ -1733,7 +1802,7 @@ class JobRunner:
             for side in CATALOG_SIDECARS:
                 Path(str(self.settings.catalog_db) + side).unlink(missing_ok=True)
             cat = await self._stream(
-                job, build_catalog_argv(device, config, self.settings), log
+                job, build_catalog_argv(device, config, self.settings), log, track=False
             )
             if cat != 0:
                 job.catalog_warning = "catalog not refreshed — the swap failed"
@@ -1762,16 +1831,32 @@ class JobRunner:
         """
         self._phase(job, "6/6 · cleanup", log)
         try:
-            await self._stream(job, cleanup_argv(device, config, self.settings), log)
+            await self._stream(
+                job, cleanup_argv(device, config, self.settings), log, track=False
+            )
         except Exception as exc:  # noqa: BLE001 - tidying must not fail a landed pull
             self._append_line(job, f"could not remove the remote snapshot: {exc}", "warn")
 
-    async def _stream(self, job: Job, argv: list[str], log) -> int | None:
+    async def _stream(
+        self, job: Job, argv: list[str], log, *, track: bool = True
+    ) -> int | None:
         """Run one subprocess to completion, pumping its output into log, dock and ring.
 
         Extracted from `_run` so a job can own several subprocesses *in sequence* — which
         is what a pull is: transfer, snapshot, stop, catalog, start, cleanup. For a push
         it is a pure extraction and nothing about it changed.
+
+        `track=False` is what keeps those later phases from *redefining* the job's numbers.
+        Every counter here is an assignment, not an accumulation, so the last rsync to run
+        used to win: job #31 was a pull whose library phase moved 15,263,475 bytes over the
+        wire across 63,518 entries, and it was recorded as `bytes_wire=445,181`,
+        `entries=1/1`, `bytes_done=29,663,232` — the 29.7 MB catalog swap four phases
+        later, described as though it were the transfer. A mirror Replicate had the same
+        shape through `_replicate_catalog`. Untracked output still reaches the log and the
+        terminal ring in full, because a phase that says nothing is worse than one that
+        says something that is not the headline; only the job's own figures are protected.
+        `_note_sent` is deliberately *not* gated: it is already filtered by SKIP_TOPLEVEL,
+        which is what keeps the catalog snapshot from ever becoming a library row.
 
         The load-bearing property is that `self._procs[job.id]` holds **at most one**
         process at any instant, and is cleared before the next phase starts. `abort`,
@@ -1825,23 +1910,38 @@ class JobRunner:
             now = time.time()
             match = PROGRESS_RE.match(chunk)
             if match:
+                # rsync does not always terminate a progress line before writing its next
+                # message, and `_iter_lines` can only split on the separators that are
+                # there. Measured against sigmaai.au: two of the three deletions in a real
+                # pull arrived as
+                #   `0 0% 0.00kB/s 0:00:00 (xfr#0, ir-chk=18084/38898)deleting .data/…`
+                # -- no \r, no \n, just concatenated. PROGRESS_RE is unanchored at its
+                # end, so the whole thing matched as progress and the deletion was never
+                # seen by anything. So the progress prefix is peeled off and whatever
+                # follows it is handled as the line it is.
+                head, tail = chunk[: match.end()], chunk[match.end():].strip()
+
                 # Throttled into the log, unthrottled into the job. The two are different
                 # audiences: the dock is watched live and wants every update, the file is
                 # read afterwards and wants a record. See LOG_PROGRESS_INTERVAL.
                 if now - last_log >= LOG_PROGRESS_INTERVAL:
                     last_log = now
                     pending = ""
-                    log.write(chunk.strip() + "\n")
+                    log.write(head.strip() + "\n")
                 else:
-                    pending = chunk.strip()
-                _apply_progress(job, match)
+                    pending = head.strip()
+                if track:
+                    _apply_progress(job, match)
                 if now - last_push >= 0.5:  # ~2 Hz, per the SSE contract
                     last_push = now
                     self._emit(JobEvent("progress", job.id))
                 if now - last_term >= 1.0:
                     last_term = now
-                    self._append_line(job, chunk.strip(), "prog")
-            elif chunk.strip():
+                    self._append_line(job, head.strip(), "prog")
+                if not tail:
+                    continue
+                chunk = tail
+            if chunk.strip():
                 text = chunk.rstrip()
                 event = FILE_RE.match(text)
                 # Everything that is not a progress tick: the @-lines, rsync's own
@@ -1869,12 +1969,24 @@ class JobRunner:
                     if size.isdigit() and not name.endswith("/"):
                         pretty = f"{name}  {int(size):,}"
                     self._append_line(job, pretty, "")
+                elif deleted := DELETE_RE.match(text):
+                    # A prune: outward on a mirror, inward on a pull. Directories are not
+                    # counted -- rsync removes a directory once its contents have gone, and
+                    # a FILES column that counted those would be the `to-chk` mistake
+                    # again, a number that is not a file count under a heading that says
+                    # files. The path is kept so the manifest can retract its claim.
+                    name = deleted.group("name")
+                    if not name.endswith("/"):
+                        job.files_deleted += 1
+                        self._note_deleted(job, name)
+                    self._append_line(job, text, "warn")
                 elif summary := SUMMARY_RE.match(text):
                     # rsync's closing tally, and the only figure here that is bytes
                     # on the wire rather than bytes of file.
-                    job.bytes_wire = sum(
-                        int(g.replace(",", "")) for g in summary.groups()
-                    )
+                    if track:
+                        job.bytes_wire = sum(
+                            int(g.replace(",", "")) for g in summary.groups()
+                        )
                     self._append_line(job, text, "info")
                 else:
                     lowered = text.lower()
@@ -1921,7 +2033,9 @@ class JobRunner:
         # delivered names start over with it. --partial means the retry is cheap, not
         # that the previous attempt's tally still applies.
         job.files_sent = 0
+        job.files_deleted = 0
         self._sent[job.id] = []
+        self._deleted[job.id] = []
         self.store.save(job)
         self._emit(JobEvent("dock"))
 
@@ -2023,7 +2137,19 @@ class JobRunner:
             if job.kind != "pull":
                 self._record_partial(job)
             retries = self._retries_for(job)
-            if job.kind == "pull" and not job.phase.startswith("1/"):
+            if code == 25:
+                # The prune hit --max-delete and rsync stopped deleting. Three more full
+                # traversals of a 63,518-entry file list would find the same divergence and
+                # refuse it the same way; what this needs is a person reading the dry run.
+                self._append_line(
+                    job,
+                    "not retried: the cap refused the prune, and a retry would meet the "
+                    "same one — read the dry run, then raise LIBNODES_PULL_MAX_DELETE if "
+                    "the removals are real",
+                    "warn",
+                )
+                retries = 0
+            elif job.kind == "pull" and not job.phase.startswith("1/"):
                 # A pull retries itself only while it is still in the long transfer, where
                 # --partial-dir makes a retry cheap and nothing has been taken down. Past
                 # that, `retries: 2` would mean three stop/start cycles of the local
@@ -2054,6 +2180,7 @@ class JobRunner:
             # holds them. It reads the filesystem rather than the index, so it does not
             # care that the reindex has not run yet.
             self._credit_pull(job)
+            self._debit_pull(job)
 
         if job.kind == "pull" and not job.dry_run and self._on_library_changed:
             # Every terminal outcome, failure and abort included: an interrupted pull has
@@ -2100,6 +2227,22 @@ class JobRunner:
             self._sent[job.id] = None
             return
         sent.append(name)
+
+    def _note_deleted(self, job: Job, name: str) -> None:
+        """Remember a name off a `deleting` line, for `_debit_pull`.
+
+        No SKIP_TOPLEVEL filter, unlike `_note_sent`: those names were never manifest rows,
+        so retracting them is a no-op and testing for it would cost more than the DELETE.
+        The SENT_CAP discipline is the same and for the same reason -- a truncated list of
+        retractions leaves the manifest claiming files the node has just lost.
+        """
+        gone = self._deleted.get(job.id)
+        if gone is None:
+            return
+        if len(gone) >= SENT_CAP:
+            self._deleted[job.id] = None
+            return
+        gone.append(name)
 
     def _record_partial(self, job: Job) -> None:
         """Credit an interrupted push with the files it did deliver.
@@ -2204,6 +2347,40 @@ class JobRunner:
             job,
             f"✓ {job.device_id} credited with {len(recorded):,} files it sent · "
             "a scan still answers for the rest",
+            "prog",
+        )
+
+    def _debit_pull(self, job: Job) -> None:
+        """Retract what the prune just removed. The other half of `_credit_pull`.
+
+        A pull's `--delete` fires because the upstream no longer has the file, so the
+        manifest row saying it does is wrong from that moment — and unlike a credit this
+        needs no filesystem check, because the evidence *is* the deletion: rsync prints
+        `deleting` after the unlink, not before it.
+
+        Runs after the credit, on every terminal outcome and never on a dry run, on the
+        same reasoning: an interrupted prune still pruned what it got to. Left undone, the
+        stale rows inflate the directory fractions `presence` computes — see
+        `Manifests.retract`.
+        """
+        if job.dry_run:
+            return
+        names = self._deleted.get(job.id)
+        if names is None:
+            self._append_line(
+                job,
+                f"too many deletions to track ({SENT_CAP:,}+) · "
+                "manifest not retracted, run a scan to resync PRESENT ON",
+                "warn",
+            )
+            return
+        if not names:
+            return
+        dropped = self.manifests.retract(job.device_id, names)
+        self._append_line(
+            job,
+            f"✓ pruned {job.files_deleted:,} files the upstream no longer has"
+            + (f" · {dropped:,} manifest rows retracted" if dropped else ""),
             "prog",
         )
 
@@ -2368,6 +2545,13 @@ _HINTS: list[tuple[str, str]] = [
         "device",
     ),
     ("no space left on device", "the device is full"),
+    (
+        "deletions stopped due to --max-delete",
+        "the upstream wanted to remove more than LIBNODES_PULL_MAX_DELETE allows, so "
+        "nothing further was deleted — an upstream that is only half mounted looks "
+        "exactly like this. Run the Pull dry run and read the `deleting` lines before "
+        "raising the cap",
+    ),
     (
         "broken pipe",
         "the device dropped mid-transfer — --partial kept what arrived, "

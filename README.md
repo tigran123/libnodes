@@ -75,7 +75,7 @@ itself because it depends on the exact behaviour of the flags:
 | `--no-perms` | **only** where the target filesystem cannot store them |
 | `--modify-window=1` | **only** on FAT, whose seconds field counts in twos |
 | `--size-only --no-times` | **only** where the target cannot store an mtime at all |
-| `--delete` | **only** on a mirror, where a stale leftover is a divergence — and never in a pull, which has no branch that could add it |
+| `--delete` | **only** on a mirror, where a stale leftover is a divergence — and on a pull, where it points the other way: see below |
 
 A **pull** — `sync_mode: upstream` — is built by a separate function, because in that
 direction most of this table means something else. `-L` goes, for the mirror's reason
@@ -88,6 +88,20 @@ pull the destination is this host, so none of them is emitted at all. And `--par
 becomes `--partial-dir=.rsync-partial`: plain `--partial` renames an interrupted file to
 its **final** name, which inside a content-addressed vault means a blob that does not hash
 to the name it is filed under.
+
+`--delete` is the row that changed direction rather than going away, and it took a year to
+get right. An upstream is the library's *source of truth*, so a book it drops is a book
+that should go — and without the flag `/Books` here only ever grew: the stale symlink, its
+blob and its cover stayed for ever, and the Library view went on offering a retired book to
+every device in the fleet. It is bounded by three things rather than by a branch. The
+excludes protect themselves, because rsync does not delete what an `--exclude` matched, so
+`/Unsorted/`, `/urantia-library/` and the staging area are outside the prune without a
+second rule saying so. `--max-delete` (`LIBNODES_PULL_MAX_DELETE`, 1000) refuses a runaway,
+which is what an upstream that is only half mounted looks like — an almost empty file list
+whose honest reading is "delete everything". And the Dry run lists every deletion, under
+the same `--max-delete`, so a prune too large to allow is refused before it is run.
+Measured against sigmaai.au on 2026-09-19, after four months of pulls: three objects —
+a symlink, its blob, its cover — and `Number of created files: 0`.
 
 Those last four are why devices declare facts — `fs:` (vfat, exfat, ext4, …),
 `stores_times:` and `sync_mode:` — rather than a flag list: the filesystem, the mount and

@@ -29,20 +29,34 @@ what is left, with pointers into the code. Keep the two from contradicting each 
       "test key" that runs the existing `ssh_argv` (`libnodes/probe.py:448`) and reports
       the exit status — the machinery is already there, only the view is missing.
 
-- [ ] **Orphan blobs after a pull.** A pull never emits `--delete`, deliberately, so
-      `/Books` only ever grows: a blob deleted upstream stays here for ever, unreferenced
-      by the catalog and unbrowsable, which means nothing in the UI will ever mention it
-      and 931 GB is the only thing that eventually will. The set is computable — the
-      catalog is authoritative about which blobs are still reachable — so the wanted
-      feature is a read-only report, not a prune. Deliberately not `--delete`: that flag
-      stays the mirror's alone, and a pull that could remove local files is a different
-      and much more dangerous thing than the one that exists.
+- [x] **Orphan blobs after a pull.** *(Done 2026-09-19.)* This asked for a read-only
+      report on the grounds that "a pull that could remove local files is a different and
+      much more dangerous thing than the one that exists" — and the answer turned out to
+      be that the dangerous thing was the right one. A pull now carries `--delete`, bounded
+      by the excludes (which rsync protects from deletion for free), by
+      `LIBNODES_PULL_MAX_DELETE` and by the Dry run. The orphan blob goes with the symlink
+      that stopped referencing it, in the same pass, so there is nothing left to report on.
+      What prompted it: a book replaced upstream on 2026-09-19 left both editions here.
 
-- [ ] **Top-level non-CAS files are overwritten by a pull without notice.**
-      `/Books/CLAUDE.md` and its siblings are ordinary files, not links, so the upstream's
-      copies replace this host's. Harmless today — they are the same files — and surprising
-      later. Either add them to `config.PULL_EXCLUDES` or say so in that docstring; do not
-      leave it undecided.
+- [x] **Top-level non-CAS files are overwritten by a pull without notice.**
+      *(Decided 2026-09-19.)* `/Books/CLAUDE.md` and its siblings are ordinary files, not
+      links, so the upstream's copies replace this host's — and now that a pull prunes, a
+      top-level file the upstream does *not* have is removed rather than merely overwritten.
+      That is correct and stays: pi5 is strictly downstream, nothing but a pull writes
+      `/Books` here, so a local-only file there is stale by the same definition every
+      pruned symlink is. Not added to `config.PULL_EXCLUDES` — an exclude would make them
+      the one part of the tree that silently stops replicating.
+
+- [ ] **A mirror's prune does not retract its manifest rows.** `_debit_pull` does this for
+      a pull — `Manifests.retract`, from rsync's own `deleting` lines — and a mirror push
+      carries the only other `--delete` in the program, outward instead of inward. Its
+      stale rows survive: `_update_manifest` re-records the index for each source, and a
+      path the replica no longer has is not in the index to be re-recorded, so it keeps
+      claiming the replica holds a file `--delete` removed. The count is already collected
+      (`self._deleted`, every kind) and the retraction is source-agnostic, so this is a
+      call site and a name that no longer says "pull". Surfaced by giving the FILES column
+      a deleted count, which now shows a Replicate's prune beside a PRESENT ON fraction
+      that has not heard about it.
 
 ## Engineering hygiene
 

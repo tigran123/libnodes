@@ -246,6 +246,39 @@ class Manifests:
             conn.close()
         return written
 
+    def retract(self, device_id: str, paths: Iterable[str]) -> int:
+        """Drop this device's rows for paths it no longer has. Returns how many went.
+
+        The narrow counterpart to `replace_scan`'s wholesale retraction, for the one case
+        that knows without looking: a transfer that just deleted the file. A pull prunes
+        what the upstream removed, and the row saying that upstream still holds it is
+        wrong the instant rsync prints `deleting`.
+
+        Leaving it is not merely untidy. `presence` counts a directory's files as a
+        half-open range over `(device_id, path)`, so a stale row is a file added to the
+        numerator of a fraction whose denominator has just lost one -- `14 of 13` in
+        PRESENT ON -- and `summary` carries the same row into the node's file and byte
+        totals.
+
+        Not restricted by source, although only `_debit_pull` calls it today: the evidence
+        is the deletion, and a row's source does not change what that deletion proves. A
+        mirror's outward `--delete` is the same argument pointed the other way and is not
+        wired up yet — see TODO.md. Batched in one transaction, because a prune arrives as
+        a list.
+        """
+        rows = [(device_id, path) for path in paths]
+        if not rows:
+            return 0
+        conn = self._connect()
+        try:
+            with conn:
+                cur = conn.executemany(
+                    "DELETE FROM manifest WHERE device_id = ? AND path = ?", rows
+                )
+                return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+        finally:
+            conn.close()
+
     def forget(self, device_id: str) -> None:
         conn = self._connect()
         try:

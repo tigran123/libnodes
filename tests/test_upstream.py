@@ -150,19 +150,97 @@ def test_a_pull_does_not_relativise_its_remote_source(app, settings):
     assert "-R" in push
 
 
-def test_a_pull_can_never_delete(app, settings, library):
-    """Not conditional, not a setting: absent, in every leg and both modes.
+def test_a_pull_prunes_what_the_upstream_no_longer_has(app, settings):
+    """--delete, in both modes, because a replica that only grows is not a replica.
+
+    This asserted the opposite for a year, and the invariant it pinned was wrong rather
+    than merely cautious: an upstream is the library's source of truth, so a book it
+    deletes is a book that should go. Without the flag /Books here kept the stale symlink,
+    its blob and its cover for ever, and the Library view offered a retired book to every
+    device in the fleet. Measured against sigmaai.au on 2026-09-19, after four months of
+    pulls: three objects, `Number of created files: 0`.
+
+    Under -n as well, deliberately: a mirror's dry run is the only preview of its prune
+    (CLAUDE.md) and a pull's is now the only preview of this one.
+    """
+    for argv in (_pull(app, settings), _pull(app, settings, dry_run=True)):
+        assert "--delete" in argv, argv
+
+
+def test_the_catalog_leg_still_cannot_delete(app, settings, library):
+    """One file named on both sides has nothing a --delete could mean.
 
     `--del`, `--delete-during` and `--delete-excluded` all begin the same way, so the
-    assertion is on the prefix rather than the exact flag.
+    assertion is on the prefix rather than the exact flag — and it stays on the prefix now
+    that its sibling leg carries the real thing.
     """
     settings.catalog_db = library / ".data" / "db" / "lib.db"
-    for argv in (
-        _pull(app, settings),
-        _pull(app, settings, dry_run=True),
-        build_catalog_argv(_device(app, "source"), app.state.lib.devices.config, settings),
-    ):
-        assert not any(a.startswith("--del") for a in argv), argv
+    argv = build_catalog_argv(
+        _device(app, "source"), app.state.lib.devices.config, settings
+    )
+    assert not any(a.startswith("--del") for a in argv), argv
+
+
+def test_the_prune_is_capped_and_the_cap_is_a_setting(app, settings):
+    """--max-delete, from Settings.pull_max_delete, and a negative value removes it.
+
+    The failure this exists for is an upstream that is only half there: an unmounted
+    /Books presents an almost empty file list, and the honest reading of that is "delete
+    everything" — 63,518 entries of a correct library in one pass. Hitting the cap is
+    rsync exit 25, which stops the deletions and keeps the files it received.
+
+    Zero cannot mean "uncapped" because zero is rsync's own useful setting: delete
+    nothing, but exit 25 if anything would have been. So the opt-out is negative.
+    """
+    assert "--max-delete=1000" in _pull(app, settings)
+
+    settings.pull_max_delete = 7
+    assert "--max-delete=7" in _pull(app, settings)
+
+    settings.pull_max_delete = 0
+    assert "--max-delete=0" in _pull(app, settings)
+
+    settings.pull_max_delete = -1
+    argv = _pull(app, settings)
+    assert not any(a.startswith("--max-delete") for a in argv), argv
+    assert "--delete" in argv
+
+
+def test_the_excluded_trees_are_not_pruned(app, settings, library):
+    """The excludes are what keep --delete from being a whole-library prune.
+
+    rsync does not delete what an --exclude matched, so the three boundaries PULL_EXCLUDES
+    draws hold in the delete direction too without a second rule saying so: this host's own
+    urantia-library/ (its secrets.env is per-host), the staging area (a torn blob would not
+    hash to its own name) and Unsorted/. Confirmed by the dry run that produced the three
+    deletions above — /Unsorted/ is 55 GB and was not among them.
+
+    Asserted as coexistence rather than as behaviour, because the behaviour belongs to
+    rsync: what this file can pin is that we still send both.
+    """
+    settings.catalog_db = library / ".data" / "db" / "lib.db"
+    argv = _pull(app, settings)
+    assert "--delete" in argv
+    for pattern in PULL_EXCLUDES:
+        assert f"--exclude={pattern}" in argv, argv
+    # And the catalog, which a prune must not reach either: it is swapped in by its own
+    # phase, under a stopped reader.
+    assert any(a.startswith("--exclude=/") and a.endswith("lib.db") for a in argv), argv
+
+
+def test_the_cap_names_itself_when_it_fires(app):
+    """Exit 25 is a refusal, and the hint has to say which knob refused.
+
+    rsync's own wording is the key, because the number alone says nothing: 25 is
+    "--max-delete limit stopped deletions" and the first question is always whether the
+    removals were real or the upstream was half mounted.
+    """
+    from libnodes.jobs import hints_for_text
+
+    hints = hints_for_text(
+        "rsync warning: Deletions stopped due to --max-delete limit (1 skipped)\n", 25
+    )
+    assert any("LIBNODES_PULL_MAX_DELETE" in h for h in hints), hints
 
 
 def test_a_pull_resumes_without_ever_naming_a_partial_blob(app, settings):
@@ -593,7 +671,9 @@ def pull_rig(monkeypatch, app, settings, library, tmp_path, trace):
     settings.local_service = "fake.service"
 
     codes = {"pull": 0, "snapshot": 0, "stop": 0, "catalog": 0, "start": 0, "cleanup": 0}
-    #: @-lines the transfer phase prints, i.e. what the upstream sent us.
+    #: Lines a phase prints. `pull` is the @-lines, i.e. what the upstream sent us; any
+    #: other phase can be given its own, which is how the later ones are shown *not* to
+    #: redefine the transfer's numbers.
     emits: dict[str, list[str]] = {"pull": []}
 
     def install():
@@ -603,10 +683,12 @@ def pull_rig(monkeypatch, app, settings, library, tmp_path, trace):
                 tmp_path, trace, "pull", codes["pull"], emits["pull"]))
         monkeypatch.setattr(
             J, "snapshot_argv",
-            lambda *a, **k: _recorder(tmp_path, trace, "snapshot", codes["snapshot"]))
+            lambda *a, **k: _recorder(tmp_path, trace, "snapshot", codes["snapshot"],
+                                      emits.get("snapshot", ())))
         monkeypatch.setattr(
             J, "build_catalog_argv",
-            lambda *a, **k: _recorder(tmp_path, trace, "catalog", codes["catalog"]))
+            lambda *a, **k: _recorder(tmp_path, trace, "catalog", codes["catalog"],
+                                      emits.get("catalog", ())))
         monkeypatch.setattr(
             J, "cleanup_argv",
             lambda *a, **k: _recorder(tmp_path, trace, "cleanup", codes["cleanup"]))
@@ -771,6 +853,120 @@ async def test_a_previewed_pull_credits_nothing(pull_rig, app, settings):
     pull_rig.emits["pull"] = ["@140|Science/Physics/Feynman.djvu"]
     await pull_rig.run(dry_run=True)
     assert lib.manifests.rows_for("source") == []
+
+
+async def test_a_pull_counts_and_retracts_what_it_pruned(pull_rig, app, settings):
+    """The prune is evidence in its own right, and the manifest has to hear it.
+
+    A `deleting` line fires *after* the unlink, so unlike a credit this needs no
+    filesystem check: the upstream no longer has the file, and the row saying it does is
+    wrong from that moment. Left standing it is not merely untidy — `presence` counts a
+    directory's files as a range over `(device_id, path)`, so a stale row adds to the
+    numerator of a fraction whose denominator has just lost one.
+
+    The directory row is in the fixture on purpose. rsync removes a directory once its
+    contents have gone and announces that the same way, and counting it under a heading
+    that says FILES is the `to-chk` mistake again.
+    """
+    lib = app.state.lib
+    lib.manifests.record(
+        "source",
+        [
+            ("Science/Klassiki-Nauki/Clifford/Common-Sense-1946.pdf", "cd61", 9, 1, 0),
+            ("Science/Physics/Feynman.djvu", "abc", 12, 1, 0),
+        ],
+        source="pull",
+    )
+    pull_rig.emits["pull"] = [
+        "@140|Science/Physics/Feynman.djvu",
+        "deleting Science/Klassiki-Nauki/Clifford/Common-Sense-1946.pdf",
+        "deleting .data/cd61ce843004fc53c9432f0dfc42ffc491366e3c4584447c6c3fa9d5229ab59b",
+        "deleting Science/Klassiki-Nauki/Clifford/",
+    ]
+    job = await pull_rig.run()
+
+    assert job.files_deleted == 2, (
+        "two files and one directory: the directory is announced the same way and is not "
+        "a file"
+    )
+    assert lib.jobs.store.get(job.id).files_deleted == 2, (
+        "through the store, not just the live object: history has to be able to say that "
+        "a job deleted something"
+    )
+    assert lib.manifests.paths_for("source") == {"Science/Physics/Feynman.djvu"}
+
+
+async def test_a_deletion_glued_to_a_progress_line_is_still_seen(
+    pull_rig, app, settings
+):
+    """rsync does not always terminate a progress line before its next message.
+
+    Measured against sigmaai.au: of the three deletions in a real pull, only the first
+    arrived on a line of its own. The other two came out as
+
+        0   0%    0.00kB/s    0:00:00 (xfr#0, ir-chk=18084/38898)deleting .data/…
+
+    with no CR and no LF between them — so `_iter_lines` had nothing to split on, and
+    PROGRESS_RE is unanchored at its end, so the whole string matched as progress and the
+    deletion was invisible to everything downstream. The first test written for this
+    feature emitted tidy one-per-line output and passed over the bug.
+
+    The `printf` here carries no newline before `deleting`, on purpose: that is the shape
+    being pinned, and a fixture that tidies it up tests nothing.
+    """
+    lib = app.state.lib
+    lib.manifests.record(
+        "source", [("Science/Physics/Feynman.djvu", "abc", 12, 1, 0)], source="pull"
+    )
+    pull_rig.emits["pull"] = [
+        "0   0%    0.00kB/s    0:00:00 (xfr#0, ir-chk=18084/38898)"
+        "deleting Science/Physics/Feynman.djvu",
+    ]
+    job = await pull_rig.run()
+
+    assert job.files_deleted == 1
+    assert lib.manifests.paths_for("source") == set()
+
+
+async def test_a_previewed_pull_retracts_nothing(pull_rig, app, settings):
+    """`-n` prints every `deleting` line it would have run, which is the whole point of
+    the preview — and not one of them has happened."""
+    lib = app.state.lib
+    lib.manifests.record(
+        "source", [("Science/Physics/Feynman.djvu", "abc", 12, 1, 0)], source="pull"
+    )
+    pull_rig.emits["pull"] = ["deleting Science/Physics/Feynman.djvu"]
+    await pull_rig.run(dry_run=True)
+    assert lib.manifests.paths_for("source") == {"Science/Physics/Feynman.djvu"}
+
+
+async def test_the_catalog_phase_does_not_redefine_the_transfers_numbers(
+    pull_rig, app, settings
+):
+    """Six phases, one set of counters, and every one of them an assignment.
+
+    Job #31 was a pull whose library phase moved 15,263,475 bytes over the wire across
+    63,518 file-list entries. It was recorded as `bytes_wire=445,181`,
+    `bytes_done=29,663,232`, `entries=1/1` — the 29.7 MB catalog swap four phases later,
+    described as though it were the transfer, in the Jobs table's BYTES column. `track`
+    is what confines the figures to the phase that is actually moving the library.
+    """
+    pull_rig.emits["pull"] = [
+        "@140|Science/Physics/Feynman.djvu",
+        "5,589,865   0%    7.20MB/s    0:00:00 (xfr#2, to-chk=0/63518)",
+        "sent 4,784 bytes  received 15,263,475 bytes  10,178,839.33 bytes/sec",
+    ]
+    pull_rig.emits["catalog"] = [
+        "29,663,232 100%  456.28MB/s    0:00:00 (xfr#1, to-chk=0/1)",
+        "sent 32,765 bytes  received 412,416 bytes  890,362.00 bytes/sec",
+    ]
+    job = await pull_rig.run()
+
+    assert job.state == "done"
+    assert job.bytes_wire == 4_784 + 15_263_475
+    assert job.bytes_done == 5_589_865
+    assert job.entries_total == 63_518
+    assert job.files_sent == 2
 
 
 async def test_a_scan_retracts_what_a_pull_claimed(app, settings):

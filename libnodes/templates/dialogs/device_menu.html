@@ -41,19 +41,24 @@
         {% set act = {
           'label': 'Pull',
           'note': 'copy ' ~ device.name ~ "'s library into " ~ library_root ~ ' — remote
-                   to local, whole root, adds and updates only. No --delete: nothing here
-                   is removed, including books the upstream has dropped. No -L: the CAS
-                   symlinks arrive as symlinks and the .data vault comes with them.
-                   urantia-library/ is held back so its configuration does not overwrite
-                   this host\'s own. Six steps; the catalog is snapshotted while
-                   ' ~ device.name ~ ' keeps serving, so only the reader HERE goes down,
-                   for seconds.',
+                   to local, whole root, and a replica rather than an accumulation:
+                   --delete removes books THIS host still has and ' ~ device.name ~ '
+                   has dropped, with their vault blobs. The excluded trees are never
+                   pruned — urantia-library/ (this host\'s own configuration), Unsorted/
+                   and the staging area — and --max-delete refuses a runaway prune, which
+                   is what an upstream that is only half mounted looks like. Read the Dry
+                   run first; it lists every deletion. No -L: the CAS symlinks arrive as
+                   symlinks and the .data vault comes with them. Six steps; the catalog is
+                   snapshotted while ' ~ device.name ~ ' keeps serving, so only the reader
+                   HERE goes down, for seconds.',
           'cmds': pull_plan,
           'method': 'post', 'url': '/device/' ~ device.id ~ '/pull',
           'target': '#notices', 'swap': 'beforeend', 'close': true,
-          'confirm': 'Pull ' ~ device.name ~ ' into ' ~ library_root ~ '? Steps 3-5 stop
-                      this host\'s reader for a few seconds and overwrite its catalog.
-                      Nothing is deleted, and nothing is sent to ' ~ device.name ~ '.',
+          'confirm': 'Pull ' ~ device.name ~ ' into ' ~ library_root ~ '? This DELETES
+                      anything here that ' ~ device.name ~ ' no longer has — the Dry run
+                      lists exactly what. Steps 3-5 also stop this host\'s reader for a
+                      few seconds and overwrite its catalog. Nothing is sent to
+                      ' ~ device.name ~ '.',
         } %}
         {% include "fragments/device_action.html" %}
       {% endif %}

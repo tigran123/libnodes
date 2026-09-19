@@ -173,6 +173,21 @@ class Settings(BaseSettings):
     # --- limits ---------------------------------------------------------------
     term_ring: int = 500
     log_retention: int = 200
+    #: The ceiling on what one Pull may prune from *this host's* library. A pull replicates
+    #: an upstream inward, so `--delete` there is the only flag in the program that removes
+    #: local files, and the failure it has to survive is the upstream being half there: an
+    #: unmounted /Books presents an almost empty file list, and an uncapped prune would
+    #: answer that by deleting all 63,518 entries of a correct library in one pass.
+    #:
+    #: 1000 clears any ordinary cleanup -- the divergence measured against sigmaai.au on
+    #: 2026-09-19, after four months, was three objects -- and stops that. Hitting it is
+    #: rsync exit 25: nothing further is deleted, the files it received still landed, and
+    #: `hints_for_text` says to read the dry run before raising this.
+    #:
+    #: Negative omits the flag entirely (uncapped). Zero cannot mean that, because zero is
+    #: rsync's own and genuinely useful setting: delete nothing, but exit 25 if anything
+    #: would have been -- a pull that reports divergence instead of acting on it.
+    pull_max_delete: int = 1000
 
     # --- serving --------------------------------------------------------------
     host: str = "0.0.0.0"

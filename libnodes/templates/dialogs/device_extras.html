@@ -106,8 +106,10 @@
               under a mangled filename — this host already has it under the decoded name,
               so a Pull would bring a second copy across under the mangled one.
             {% endif %}
-            A Pull copies these here. It writes nothing to {{ device.name }} and removes
-            nothing from {{ library_root }}.
+            A Pull copies these here. It writes nothing to {{ device.name }} — but it is
+            a replica in both directions now: what {{ library_root }} holds and
+            {{ device.name }} does not is <em>deleted</em> here, which this list does not
+            show. The Dry run does.
           </div>
 
           {# `after`, not `close`: the `close` slot in device_action.html hard-codes
@@ -120,9 +122,11 @@
             'method': 'post', 'url': '/device/' ~ device.id ~ '/pull',
             'target': '#notices', 'swap': 'beforeend',
             'after': "document.getElementById('device-extras')?.remove()",
-            'confirm': 'Pull ' ~ device.name ~ ' into ' ~ library_root ~ '? Steps 3-5 stop
-                        this host\'s reader for a few seconds and overwrite its catalog.
-                        Nothing is deleted, and nothing is sent to ' ~ device.name ~ '.',
+            'confirm': 'Pull ' ~ device.name ~ ' into ' ~ library_root ~ '? This DELETES
+                        anything here that ' ~ device.name ~ ' no longer has — the Dry run
+                        lists exactly what. Steps 3-5 also stop this host\'s reader for a
+                        few seconds and overwrite its catalog. Nothing is sent to
+                        ' ~ device.name ~ '.',
           } %}
           {% include "fragments/device_action.html" %}
         {% else %}

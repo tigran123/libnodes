@@ -66,14 +66,25 @@ are listed.
   records them; collapse `job.sources` to `./` as well and a replicate updates no manifest,
   leaving `PRESENT ON` blank for ever. Two lists, deliberately: what rsync is told, and
   what the app reasons about.
-- **A mirror deletes; nothing else does.** `--delete` is the only genuinely destructive flag
-  the program emits. `build_argv` therefore *refuses* to compose a mirror push with an empty
-  source list or a target that normalises to `/` — both would be data loss rather than a
-  wrong transfer — and Adopt never gets it. Kept under `-n`, deliberately: a mirror's dry
-  run is the only preview of the prune. Full Sync must never route a mirror node, because
-  its own note promises it never deletes. `retry` re-derives the whole root instead of
-  replaying stored sources through `_resolve`, which would strip `.data/` while `--delete`
-  stayed, and it now preserves `dry_run` so a preview cannot be retried into a prune.
+- **A mirror deletes outward; a pull deletes inward; nothing else deletes at all.**
+  `--delete` is the only genuinely destructive flag the program emits, and it is emitted in
+  exactly two places, pointing opposite ways. Outward (`build_argv`, a `sync_mode: mirror`
+  node) it prunes the replica, so that function *refuses* to compose a mirror push with an
+  empty source list or a target that normalises to `/` — both would be data loss rather
+  than a wrong transfer — and Adopt never gets it. Inward (`build_pull_argv`, a
+  `sync_mode: upstream` node) it prunes **this host's own library**, and the guard is a
+  different shape because the danger is: the excludes protect themselves (rsync never
+  deletes what an `--exclude` matched, so `/Unsorted/`, `/urantia-library/` and
+  `/.data/staging/` are outside the prune with no second rule) and `--max-delete=
+  settings.pull_max_delete` refuses a runaway, which is precisely what a half-mounted
+  upstream looks like — an almost empty file list whose honest reading is "delete
+  everything". Both are kept under `-n`, deliberately: a dry run is the only preview of a
+  prune, and `--max-delete` applies under `-n` too, so one too large to allow is refused
+  before it is run. Full Sync must never route a mirror node, because its own note promises
+  it never deletes. `retry` re-derives the whole root instead of replaying stored sources
+  through `_resolve`, which would strip `.data/` while `--delete` stayed, and it now
+  preserves `dry_run` so a preview cannot be retried into a prune. rsync exit 25 is the cap
+  firing; it is never retried, because three more traversals meet the same cap.
 - **An `upstream` node is a pull source, and the refusal is in `build_argv`.**
   `sync_mode: upstream` (`Device.sync_mode`) means the library's *source* — the production
   host other admins upload to, so it is ahead of us and a push is a regression. sigmaai.au
@@ -113,8 +124,13 @@ are listed.
   device that is an accepted cost; in `/Books/.data/` it is a blob whose contents do not
   hash to the blake2b name it is sitting under, and every symlink pointing at it serves a
   truncated book until something notices. This is the one deliberate deviation from
-  `BASE_FLAGS`. `--delete` is not conditional in a pull — it is absent, with no branch that
-  could add it.
+  `BASE_FLAGS`. `--delete` *is* in a pull, and was wrongly absent for a year: an upstream
+  is the library's source of truth, so a book it drops should go here too, and without the
+  flag `/Books` only ever grew — the stale symlink, its blob and its cover kept for ever
+  while the Library view offered a retired book to the whole fleet. Measured against
+  sigmaai.au on 2026-09-19, after four months of pulls: three objects, `Number of created
+  files: 0`. It lives in `build_pull_argv` rather than `PULL_FLAGS` so the cap is read
+  beside it. See the mirror/pull entry above for what bounds it.
 - **A pull writes the manifest from what rsync received, never from the index, and is the
   only job that reindexes.** `_update_manifest` records "what this device has" by walking
   the *local* index, which after a pull is inverted in direction — and it would run before
@@ -139,9 +155,15 @@ are listed.
   *and* unpushable), and never on a dry run, and always *after* the catalog phase —
   `LibraryIndex` reads `catalog_db` for title/author, so reindexing first bakes the old
   catalog in. The credit runs *before* that reindex, and can, because it reads the
-  filesystem rather than the index. Pinned by `tests/test_upstream.py`
+  filesystem rather than the index. `_debit_pull` is the other half and runs straight
+  after it: a `deleting` line is printed *after* the unlink, so unlike a credit it needs no
+  filesystem check, and `Manifests.retract` drops those rows. Leaving them is not untidy
+  but wrong — `presence` counts a directory's files as a range over `(device_id, path)`,
+  so a stale row adds to the numerator of a fraction whose denominator has just lost one.
+  Pinned by `tests/test_upstream.py`
   `::test_a_pull_credits_the_upstream_with_what_it_received`,
-  `::test_a_pull_credits_only_what_actually_landed` and
+  `::test_a_pull_credits_only_what_actually_landed`,
+  `::test_a_pull_counts_and_retracts_what_it_pruned` and
   `::test_a_scan_retracts_what_a_pull_claimed`.
 - **A pull that stopped `urantia-library` and did not start it must never be green — and
   the `finally` is not enough.** Abort is safe as it stands: it terminates the subprocess
@@ -193,6 +215,35 @@ are listed.
   backlog dialog is a picture of the far end and the pull declines part of it, rows the
   excludes hold back are **marked** rather than hidden — the dialog says "a Pull brings 1
   of these across; 13 are held back" instead of "exactly this".
+- **Only the phase that moves the library may write the job's numbers.** Every counter in
+  `_apply_progress` and the `SUMMARY_RE` branch of `_stream` is an assignment, not an
+  accumulation, so in a multi-phase job the *last* rsync to run silently redefined all of
+  them. Job #31 was a pull whose library phase moved 15,263,475 bytes over the wire across
+  63,518 file-list entries, recorded as `bytes_wire=445,181`, `bytes_done=29,663,232`,
+  `entries=1/1` — the 29.7 MB catalog swap four phases later, printed in the Jobs table's
+  BYTES column as though it were the transfer. A mirror Replicate had the same shape
+  through `_replicate_catalog`. `_stream(..., track=False)` is the fix and every leg that
+  is not the transfer passes it: pull phases 2–6 and both of `_replicate_catalog`'s. The
+  output still reaches the log and the terminal ring in full — a phase that says nothing is
+  worse than one that says something that is not the headline — and `_note_sent` is
+  deliberately *not* gated, being already filtered by `SKIP_TOPLEVEL`. The bar therefore
+  sits at phase 1's 100% while the phase line says what is running, which is what
+  `dock_meta.html` already documents as the intent. Pinned by
+  `tests/test_upstream.py::test_the_catalog_phase_does_not_redefine_the_transfers_numbers`.
+
+- **A deletion is counted from rsync's own wording, and directories are not files.** There
+  is no `--out-format` for a deletion, so `DELETE_RE` matches `deleting <path>` — which
+  reaches us only because naming an out-format raises `INFO_DEL`, verified against
+  sigmaai.au with exactly the flags this program sends and no `-v`. The `*deleting`
+  spelling in the manpage is the `-i` form, which `OUT_FORMAT` deliberately does not use,
+  so the marker is absent and a regex expecting it silently counts nothing. A trailing
+  slash is a directory and is skipped: rsync removes one once its contents have gone, and
+  counting it under a FILES heading is the `to-chk` mistake again. `job.files_deleted` is
+  persisted, because history has to be able to say that a job deleted something, and it is
+  shown for *any* kind — a mirror Replicate's prune had never appeared anywhere. Pinned by
+  `tests/test_upstream.py::test_a_pull_counts_and_retracts_what_it_pruned` and
+  `tests/test_routes.py::test_the_files_cell_says_what_a_pull_received_and_what_it_pruned`.
+
 - **A pull holds the queue.** `LIBNODES_CONCURRENCY=3`, so without the gate in `_run` a
   push to a reader could be dereferencing symlinks into a vault a pull is still filling:
   exit 24 "file has vanished", or a blob still in `.rsync-partial`. The CAS makes a
@@ -321,7 +372,7 @@ are listed.
   `_record_partial` truncates to `files_sent` for exactly that reason.
 - **One directory, one file count, in every view.** The `DIR n` badge in the file table
   (`entries.files`, `file_rows.html`), the `PRESENT ON` fraction (`manifests.py`,
-  `is_dir = 0`) and the dock all count files only.
+  `is_dir = 0`), the dock and `files_deleted` all count files only.
   rsync does not — `Audio/` is 234 files to the index and 244 entries to rsync, being its
   9 subdirectories and itself — so nothing derived from `to-chk` may be labelled "files".
   Pinned by `tests/test_manifests.py::test_every_view_counts_files_the_same_way`.

@@ -176,8 +176,8 @@ withdrawn the same evening. The reason is worth keeping, because the setup looke
   public IP — and the whole reason this box runs DDNS is that the IP changes. When it does,
   the lockout is the harmless half; the other half is that whoever the ISP hands the address
   to next inherits the allow rule. A guard that silently transfers to a stranger is worse
-  than no public door, in front of a panel that starts transfers, deletes job history and
-  drives `rsync --delete` at the mirror node.
+  than no public door, in front of a panel that starts transfers, deletes job history,
+  drives `rsync --delete` at the mirror node and prunes this host's own library on a Pull.
 - **The name was found in 17 minutes.** A scanner fetched `/.git/config` from
   `proxyai.ddns.net` by name at 23:02, seventeen minutes after the vhost went live. 63
   distinct hostile source IPs were blocked across this host's vhosts that day.
@@ -249,6 +249,7 @@ sets four of them (`LIBRARY_ROOT`, `STATE_DIR`, `CATALOG_DB`, `CONCURRENCY=3`) a
 | `LIBNODES_PROBE_BACKOFF_WATCHED` | `30` | the same ceiling while a Devices page is polling |
 | `LIBNODES_WATCH_WINDOW` | `150` | how long after the last Devices request the fleet still counts as watched — above 60s on purpose, since a backgrounded tab polls only once a minute |
 | `LIBNODES_REINDEX_INTERVAL` | `1800` | seconds; `0` disables the periodic rebuild |
+| `LIBNODES_PULL_MAX_DELETE` | `1000` | ceiling on what one Pull may prune from **this host's** library. Hitting it is rsync exit 25: nothing further is deleted and the job says to read the dry run. Negative removes the cap; `0` is rsync's own "delete nothing, but exit 25 if anything would have been" |
 | `LIBNODES_LOG_RETENTION` | `200` | job logs kept on disk |
 | `LIBNODES_PASSWORD` | *(empty)* | the shared login password; **empty means no login at all** |
 | `LIBNODES_SESSION_DAYS` | `30` | how long "stay signed in" lasts |
@@ -302,7 +303,12 @@ itself, so a code path nobody remembered cannot compose one.
 
 A Pull runs in six phases, and only the middle ones need anything special:
 
-1. the library — `rsync` from the upstream into `/Books`, both services still running;
+1. the library — `rsync` from the upstream into `/Books`, both services still running.
+   This phase **deletes**: an upstream is the source of truth, so a book it has dropped is
+   pruned here, blob and cover with it. The excludes are outside the prune (rsync never
+   deletes what an `--exclude` matched), `--max-delete=$LIBNODES_PULL_MAX_DELETE` refuses a
+   runaway — which is what a half-mounted upstream looks like — and the **Dry run lists
+   every deletion** under the same cap;
 2. snapshot the upstream's catalog **while it keeps serving**, via
    `python3 -c 'sqlite3 … .backup …'` over ssh. `Connection.backup` reads a live WAL
    database without blocking its writer, which is why **production is never stopped**

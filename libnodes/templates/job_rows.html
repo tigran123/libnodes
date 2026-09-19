@@ -20,10 +20,21 @@
 
     {# Files sent out of files selected. Both are files-only counts from the index, so
        this agrees with the Library's DIR count and the PRESENT ON fraction; rsync's own total
-       would count directories and disagree with all three. #}
+       would count directories and disagree with all three.
+
+       A pull has no denominator and never will: `_estimate` prices the local index, which
+       cannot know what the far end holds. So it shows the numerator alone rather than the
+       dash it used to — job #31 received 2 files and reported "—", which reads as "nothing
+       is known" about the one number that was.
+
+       The prune is appended to either form, and is deliberately not conditioned on the
+       job's kind: a mirror Replicate deletes too, and that has never shown anywhere. #}
     <div class="cell-r mono" data-label="Files"
-         title="{% if job.entries_total %}{{ job.entries_done }}/{{ job.entries_total }} file-list entries checked, directories included{% endif %}">
-      {% if job.files_total %}{{ job.files_sent }}/{{ job.files_total }}{% else %}—{% endif %}
+         title="{{ job.files_sent|commafy }} files {{ 'received' if job.kind == 'pull' else 'sent' }}{% if job.files_total %} of {{ job.files_total|commafy }} selected{% endif %}{% if job.files_deleted %}, {{ job.files_deleted|commafy }} deleted{% endif %}{% if job.entries_total %} · {{ job.entries_done }}/{{ job.entries_total }} file-list entries checked, directories included{% endif %}">
+      {%- if job.files_total %}{{ job.files_sent }}/{{ job.files_total }}
+      {%- elif job.kind == 'pull' %}{{ job.files_sent|commafy }}
+      {%- else %}—{% endif %}
+      {%- if job.files_deleted %} <span class="t-err">−{{ job.files_deleted|commafy }}</span>{% endif %}
     </div>
 
     {# Finished jobs report what the link carried, which delta-matching makes far smaller

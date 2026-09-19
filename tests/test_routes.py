@@ -698,3 +698,46 @@ async def test_the_fleet_chip_counts_green_dots_in_plain_words(client):
     assert re.search(r"\d+/\d+ online", status)
     assert "sshd" not in status and "reachable" not in status
     assert 'class="chip chip-checked"' in status
+
+
+def _files_cell(html: str, job_id: int) -> str:
+    """One job's FILES cell, so an assertion cannot match a neighbour's row -- or the
+    em-dashes the Started and DONE cells draw in the same row for unrelated reasons."""
+    start = html.index(f'id="job-row-{job_id}"')
+    nxt = html.find('id="job-row-', start + 1)
+    row = html[start : nxt if nxt != -1 else len(html)]
+    cell = row.index('data-label="Files"')
+    return row[cell : row.index("</div>", cell)]
+
+
+async def test_the_files_cell_says_what_a_pull_received_and_what_it_pruned(app, client):
+    """A pull has no denominator and never will — `_estimate` prices the local index,
+    which cannot know what the far end holds — so the cell used to print "—" over a job
+    that had received two files. Saying nothing about the one number that *is* known is
+    not the same restraint as declining to invent the one that is not.
+
+    The prune is appended to either form and is deliberately not conditioned on the kind:
+    a mirror Replicate deletes too, and that has never shown anywhere.
+    """
+    from libnodes.jobs import Job
+
+    store = app.state.lib.jobs.store
+    push = store.create(Job(id=0, device_id="kobo", sources=["Fiction"], label="Fiction",
+                            state="done", files_total=5))
+    push.files_sent = 5
+    store.save(push)
+
+    pull = store.create(Job(id=0, device_id="kobo", sources=["/Books/"], label="(pull)",
+                            state="done", kind="pull"))
+    pull.files_sent = 2
+    pull.files_deleted = 1
+    store.save(pull)
+
+    html = (await client.get("/jobs")).text
+
+    assert "5/5" in _files_cell(html, push.id)
+
+    cell = _files_cell(html, pull.id)
+    assert "—" not in cell, "the dash was the bug: two files were received"
+    assert "2" in cell and "−1" in cell
+    assert "2 files received, 1 deleted" in cell, "the title spells out both halves"
