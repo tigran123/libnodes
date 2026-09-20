@@ -670,18 +670,31 @@ async def device_menu(request: Request, device_id: str):
             "scan": app.scanner.result(device_id),
             "scanning": app.scanner.is_running(device_id),
             "commands": {
-                # `full_sync` and `replicate` are the same argv; they are two keys because
-                # they are two different promises, and the dialog prints the promise beside
-                # the command. Full Sync never deletes; Replicate is defined by --delete.
+                # `full_sync` and `replicate` are nearly the same argv; they are two keys
+                # because they are two different promises, and the dialog prints the
+                # promise beside the command. Replicate is defined by --delete. Full Sync
+                # carries one only where the node asked for it with `prune: true`, which
+                # is why `whole_library=True` is passed here and not on `replicate`: a
+                # mirror's --delete comes from its mode, a reader's from those two facts
+                # together. The dialog reads the flag it prints — see device_menu.html,
+                # where the note changes with `device.prune` rather than describing a
+                # command it is not showing.
                 "full_sync": _preview(
-                    lambda: build_argv(device, config, sources, app.settings)
+                    lambda: build_argv(
+                        device, config, sources, app.settings, whole_library=True
+                    )
                 ),
                 "replicate": _preview(
                     lambda: build_argv(device, config, sources, app.settings)
                 ),
                 "dry_run": _preview(
                     lambda: build_argv(
-                        device, config, sources, app.settings, dry_run=True
+                        device,
+                        config,
+                        sources,
+                        app.settings,
+                        dry_run=True,
+                        whole_library=True,
                     )
                 ),
                 "adopt": _preview(
@@ -1035,6 +1048,11 @@ async def device_dry_run(request: Request, device_id: str):
         _whole_root_sources(app, device),
         label=label,
         dry_run=True,
+        # The sources *are* the library, so this preview carries whatever the real run
+        # would — including a `prune: true` node's --delete. A dry run is the only way to
+        # read a prune before it happens, so the one thing it must not do is quietly
+        # preview a different command. `-n` is what makes that safe; build_argv adds it.
+        whole_library=True,
     )
     ctx = base_context(request, "devices")
     ctx["job"] = job
@@ -1055,9 +1073,25 @@ async def device_full_sync(request: Request, device_id: str):
         return HTMLResponse("", status_code=404)
     sources = full_sync_sources(app.settings)
     reachable = app.probe.status(device_id).online
-    job = app.jobs.submit(
-        device, sources, label="(full library)", deferred=not reachable
-    )
+    try:
+        job = app.jobs.submit(
+            device,
+            sources,
+            label="(full library)",
+            deferred=not reachable,
+            # The whole library, which is the precondition `Device.prune` needs before
+            # build_argv will add --delete. Nothing else in the program passes this.
+            whole_library=True,
+        )
+    except ValueError as exc:
+        # build_argv refused a prune: no sources, or a target at the root. Only reachable
+        # for a `prune: true` node, and only because that run deletes — say so rather than
+        # queueing it. The same shape as /replicate's.
+        ctx = base_context(request, "devices")
+        ctx["message"] = str(exc)
+        return templates.TemplateResponse(
+            request, "fragments/error_toast.html", ctx, status_code=409
+        )
     ctx = base_context(request, "devices")
     ctx["job"] = job
     ctx["node"] = _one(request, device_id)

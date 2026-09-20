@@ -141,7 +141,13 @@ def _submit(
     )
 
 
-def _queue(app: AppState, device_id: str, paths: list[str], dry_run: bool = False):
+def _queue(
+    app: AppState,
+    device_id: str,
+    paths: list[str],
+    dry_run: bool = False,
+    full_library: bool = False,
+):
     device = app.devices.config.by_id.get(device_id)
     if device is None:
         return None, "unknown device"
@@ -171,6 +177,29 @@ def _queue(app: AppState, device_id: str, paths: list[str], dry_run: bool = Fals
                     ),
                     deferred=not app.probe.status(device.id).online and not dry_run,
                     dry_run=dry_run,
+                ),
+                None,
+            )
+        except ValueError as exc:
+            return None, str(exc)
+    if full_library and device.full_sync:
+        # A stored Full Sync, re-derived rather than replayed — the same reasoning as the
+        # mirror branch above, one step milder. `_resolve` would hand back whatever of the
+        # old source list the index still vouches for, so a top-level directory added
+        # since would be missing from the retry while `--delete` (on a `prune: true` node)
+        # stayed: everything under a category this run never mentioned is outside the
+        # transfer and safe, but a category that has since been *emptied* out of the
+        # library would go unpruned, and the retry would quietly be a different job from
+        # the one the row names. Re-deriving keeps "full library" meaning what it says.
+        try:
+            return (
+                app.jobs.submit(
+                    device,
+                    full_sync_sources(app.settings),
+                    label="(dry run · full library)" if dry_run else "(full library)",
+                    deferred=not app.probe.status(device.id).online and not dry_run,
+                    dry_run=dry_run,
+                    whole_library=True,
                 ),
                 None,
             )
@@ -415,7 +444,15 @@ async def retry(request: Request, job_id: int):
         )
         ctx["job"] = job
         return templates.TemplateResponse(request, "fragments/queued.html", ctx)
-    job, error = _queue(app, old.device_id, old.sources, dry_run=old.dry_run)
+    job, error = _queue(
+        app,
+        old.device_id,
+        old.sources,
+        dry_run=old.dry_run,
+        # Carried, for the same reason `dry_run` is: a retry that silently dropped the
+        # prune would run a different command under the row's own label.
+        full_library=getattr(old, "full_library", False),
+    )
     if job is None:
         ctx["message"] = error
         return templates.TemplateResponse(request, "fragments/error_toast.html", ctx)

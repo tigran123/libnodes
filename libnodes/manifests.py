@@ -260,7 +260,7 @@ class Manifests:
         PRESENT ON -- and `summary` carries the same row into the node's file and byte
         totals.
 
-        Not restricted by source, although only `_debit_pull` calls it today: the evidence
+        Not restricted by source, although only `jobs._debit` calls it today: the evidence
         is the deletion, and a row's source does not change what that deletion proves. A
         mirror's outward `--delete` is the same argument pointed the other way and is not
         wired up yet — see TODO.md. Batched in one transaction, because a prune arrives as

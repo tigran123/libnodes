@@ -75,7 +75,7 @@ itself because it depends on the exact behaviour of the flags:
 | `--no-perms` | **only** where the target filesystem cannot store them |
 | `--modify-window=1` | **only** on FAT, whose seconds field counts in twos |
 | `--size-only --no-times` | **only** where the target cannot store an mtime at all |
-| `--delete` | **only** on a mirror, where a stale leftover is a divergence — and on a pull, where it points the other way: see below |
+| `--delete` | **only** on a mirror, where a stale leftover is a divergence; on a reader that declared `prune: true`, and then only on a Full Sync; and on a pull, where it points the other way: see below |
 
 A **pull** — `sync_mode: upstream` — is built by a separate function, because in that
 direction most of this table means something else. `-L` goes, for the mirror's reason
@@ -143,7 +143,7 @@ else does — not `type:`, because a Linux host is entitled to either.
 | `.data/` | never named; `-L` reads *through* it | **sent**, or every link dangles |
 | `urantia-library/` | never sent | sent, credentials and all |
 | `Recommended/` | never sent — `-L` would duplicate every book in it | sent; as links it is nearly free |
-| deletes | never | `--delete`, always |
+| deletes | only with `prune: true`, and only on a Full Sync | `--delete`, always |
 | granularity | any subtree, any book | the whole root, or nothing |
 
 The two rows in the middle are the interesting ones, because each inverts a rationale that
@@ -173,6 +173,30 @@ does not share a name with a source survives every replicate for ever. Measured 
 pair: the enumerated form left a stray `Leftover.pdf` and a whole orphaned `OldCat/`
 untouched; `./` removed both. So a mirror sends `./` and `-R` makes the transfer root the
 destination root, which is what "replica" has to mean.
+
+### Why a reader is not
+
+`prune: true` gives a `books` node the same flag and deliberately *not* the same source, so
+the paragraph above reads as the reason rather than the bug. A Full Sync names the
+library's top-level categories, so rsync never scans the destination root: anything the
+device keeps beside the library — a `Websites/` nobody here has, KOReader's own directories
+on a device whose target is not a dedicated tree — is outside the transfer and survives.
+Only divergence *inside* the library's own shape is pruned. That is what makes the flag
+affordable on a device that is not only a library.
+
+Inside those categories, `excludes` are what survives, because rsync does not delete what
+an `--exclude` matched. This is not a detail: KOReader writes a `<book>.sdr` directory —
+reading position, bookmarks, highlights — beside each book it has opened, inside the tree
+being pruned. Measured against one phone with exactly the flags LibNodes composes: **20**
+deletions without `*.sdr/` in `defaults.excludes`, **1** with. The one was a book retired
+from the library months earlier that every Full Sync had been reporting as "0 files" and
+leaving in place. So the two halves ship together, and the **Dry run** — which carries the
+`--delete` under `-n` — is the only way to read a prune before running it.
+
+It is off by default, per node, and only Full Sync carries it. A subtree push never does:
+`--delete` prunes the directories in the transfer, so pushing `Science/` would quietly mean
+"and remove everything under Science/ that is not in the library", under a button that
+promises nothing of the kind.
 
 The job still *records* the enumerated top-level names as its sources, because that is what
 the estimate prices and the manifest records — collapse those to `./` too and a replicate

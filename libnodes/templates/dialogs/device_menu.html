@@ -79,6 +79,9 @@
             'list what a Replicate would transfer AND what it would delete — changes
              nothing. Read this first: it is the only preview of the prune.'
             if device.is_mirror else
+            'list what a Full Sync would transfer AND what it would delete — changes
+             nothing. Read this first: it is the only preview of the prune.'
+            if device.prune else
             'list what a Full Sync would transfer — changes nothing. Streams into
              the dock; takes ~15s because rsync still compares the whole library.'
           ),
@@ -119,14 +122,33 @@
          nothing about, so the moment sigmaai.au stopped being a mirror, Full Sync — a push
          to production — would have appeared here. #}
       {% elif device.full_sync and not device.is_upstream %}
+        {# Two notes, because `prune: true` makes this a different promise and the note is
+           the only place the difference is stated in words. The command above it already
+           shows the --delete; a note still reading "never deletes anything" beside it
+           would be the more believable of the two. The prune is scoped to the categories
+           in the transfer, so the note says so: a top-level name the library does not
+           have is never scanned, and `excludes` protect what must survive inside one. #}
         {% set act = {
           'label': 'Full Sync',
-          'note': 'push the whole library — ' ~ library_root ~ ' in full. Adds and
-                   updates only; never deletes anything on the device.',
+          'note': (
+            'push the whole library — ' ~ library_root ~ ' in full — and remove what
+             this device holds inside those categories that the library no longer has.
+             Anything an exclude matches is left alone, as is any top-level directory
+             the library does not have at all. Read the Dry run first.'
+            if device.prune else
+            'push the whole library — ' ~ library_root ~ ' in full. Adds and
+             updates only; never deletes anything on the device.'
+          ),
           'cmd': commands.full_sync,
           'method': 'post', 'url': '/device/' ~ device.id ~ '/full-sync',
           'target': '#notices', 'swap': 'beforeend', 'close': true,
-          'confirm': 'Push the entire library to ' ~ device.name ~ '?',
+          'confirm': (
+            'Push the entire library to ' ~ device.name ~ '? This also DELETES anything
+             there, inside the library\'s own directories, that is no longer here — the
+             Dry run lists exactly what.'
+            if device.prune else
+            'Push the entire library to ' ~ device.name ~ '?'
+          ),
         } %}
         {% include "fragments/device_action.html" %}
       {% endif %}

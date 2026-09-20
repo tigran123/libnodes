@@ -154,6 +154,26 @@ class Device(BaseModel):
     #: appears in.
     target_ui: str | None = None
     full_sync: Bool = False
+    #: May a Full Sync *remove* what this node holds and the library no longer does?
+    #:
+    #: Off by default, and that default is the promise Full Sync has always made: adds
+    #: and updates only. The flag is what buys `--delete`, and it is per node because the
+    #: cost of getting it wrong is per node — a reader that is also somebody's scratch
+    #: directory, or a KOReader device whose `.sdr` sidecars live *inside* the library
+    #: tree, is not a thing to prune on a hunch. Say so here, and say in `excludes` what
+    #: must survive: rsync never deletes what an `--exclude` matched.
+    #:
+    #: Only a `books` node with `full_sync: true` can use it, and only on the whole-library
+    #: push. A subtree push is deliberately left alone — `--delete` prunes the directories
+    #: in the transfer, so a Push of `Science/` would silently mean "and remove everything
+    #: under Science/ that is not in the library", which is not what that button says.
+    #: The scope is the same reason a mirror hands rsync `./`: what is transferred is what
+    #: is pruned, so a top-level name the library does not have at all (s4l's `Websites/`)
+    #: survives a Full Sync untouched.
+    #:
+    #: Coerced off for `mirror` and `upstream` below: a mirror's --delete is its mode, not
+    #: this key, and an upstream is never written to at all.
+    prune: Bool = False
     capacity: str | None = None
     keep_free: str | None = None
     wol_mac: str | None = None
@@ -347,6 +367,20 @@ class Device(BaseModel):
         """
         if self.sync_mode == "upstream":
             object.__setattr__(self, "full_sync", False)
+        return self
+
+    @model_validator(mode="after")
+    def _only_a_reader_prunes(self) -> "Device":
+        """`prune` is a fact about Full Sync, so it means nothing off a `books` node.
+
+        A mirror already deletes — that is what `sync_mode: mirror` *is*, and reading a
+        second key as though it turned that on or off would be a way to talk someone into
+        believing `prune: false` made a Replicate safe. An upstream is never written to.
+        Coerced rather than raised for the reason above: a hand-edited, hot-reloaded file
+        must not take the fleet down over a stale key.
+        """
+        if self.sync_mode != "books":
+            object.__setattr__(self, "prune", False)
         return self
 
     @field_validator("fs", mode="before")

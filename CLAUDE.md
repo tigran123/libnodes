@@ -15,7 +15,7 @@ edit, restart, look.
 
 ```bash
 uv pip sync requirements-dev.txt                    # uv, not pip. ~/.local/bin/uv is the one PATH picks
-uv run pytest                                       # 655 tests, ~24s on pi5, no network
+uv run pytest                                       # 690 tests, ~22s on pi5, no network
 uv run pytest tests/test_jobs.py::test_name -x
 sudo systemctl restart libnodes                     # ~1s, no password: /etc/sudoers.d/libnodes
                                                     # (stop/start are in that rule too, since a
@@ -66,9 +66,10 @@ are listed.
   records them; collapse `job.sources` to `./` as well and a replicate updates no manifest,
   leaving `PRESENT ON` blank for ever. Two lists, deliberately: what rsync is told, and
   what the app reasons about.
-- **A mirror deletes outward; a pull deletes inward; nothing else deletes at all.**
+- **A mirror deletes outward, a pull deletes inward, and a `prune: true` reader deletes
+  outward within the library's own shape. Nothing else deletes at all.**
   `--delete` is the only genuinely destructive flag the program emits, and it is emitted in
-  exactly two places, pointing opposite ways. Outward (`build_argv`, a `sync_mode: mirror`
+  exactly three places. Outward (`build_argv`, a `sync_mode: mirror`
   node) it prunes the replica, so that function *refuses* to compose a mirror push with an
   empty source list or a target that normalises to `/` — both would be data loss rather
   than a wrong transfer — and Adopt never gets it. Inward (`build_pull_argv`, a
@@ -80,11 +81,54 @@ are listed.
   upstream looks like — an almost empty file list whose honest reading is "delete
   everything". Both are kept under `-n`, deliberately: a dry run is the only preview of a
   prune, and `--max-delete` applies under `-n` too, so one too large to allow is refused
-  before it is run. Full Sync must never route a mirror node, because its own note promises
-  it never deletes. `retry` re-derives the whole root instead of replaying stored sources
+  before it is run. Full Sync must never route a mirror node: the two are different
+  promises (see the `prune` entry below), and a mirror's `./` source puts the destination
+  *root* in the transfer, which is not what a reader's Full Sync shows.
+  `retry` re-derives the whole root instead of replaying stored sources
   through `_resolve`, which would strip `.data/` while `--delete` stayed, and it now
   preserves `dry_run` so a preview cannot be retried into a prune. rsync exit 25 is the cap
   firing; it is never retried, because three more traversals meet the same cap.
+- **A reader's `--delete` needs four facts at once, and `excludes` are half the feature.**
+  `Device.prune` (`devices.yaml`) is the third and last place `--delete` is emitted, and
+  `build_argv` will add it only when `device.prune and device.full_sync and whole_library
+  and not adopt` — where `whole_library` is the one thing a caller must *say*, because it
+  is not a fact about the device. Each term rules out a different way of arriving with the
+  wrong scope: a node that never opted in keeps Full Sync's old adds-and-updates-only
+  promise; a subtree Push must never prune, since `--delete` prunes the directories in the
+  transfer and a push of `Science/` would silently mean "and remove everything under
+  Science/ that is not in the library" under a button showing no such promise; and Adopt is
+  `--size-only`, so "change nothing" paired with "delete whatever does not match" is a trap
+  in either mode. The parameter defaults to False, so a forgetful caller falls on the side
+  that deletes nothing — the opposite of why the pull is a separate function.
+  Scope is the mirror's lesson read backwards: rsync prunes only inside the directories it
+  transfers, and a reader's sources are the *named* top-level categories, so the
+  destination root is never scanned and a name the device holds that the library has never
+  had (`Websites/` on s4l) survives. That is why this one is **not** `./`.
+  Inside those categories `excludes` are what survives, because rsync never deletes what an
+  `--exclude` matched — and KOReader writes a `<book>.sdr` directory of reading positions,
+  bookmarks and highlights *beside each book*, inside the library tree. Measured against
+  s4l on 2026-09-20 with exactly the flags `build_argv` composes: 20 `deleting` lines
+  without `*.sdr/` in `defaults.excludes`, **1** with — and that one was a book retired from
+  the library months earlier, which a Full Sync had been reporting as "0 files" and leaving
+  in place for ever. `--delete-excluded` must never appear. No `--max-delete`, unlike the
+  pull: the cap there exists because a pull prunes the *original*, and here — as on a
+  mirror — the thing at risk is a replica of a library this host still holds in full.
+  `Job.full_library` is persisted so `retry` re-derives a Full Sync rather than replaying
+  it through `_resolve`, and the route refuses a prune build_argv rejected. `prune` is
+  coerced off for any non-`books` node: a mirror's `--delete` is its *mode*, and a second
+  key that looked like it governed that would be a way to believe `prune: false` made a
+  Replicate safe. The menu note and the confirm both change with `device.prune` — the
+  command above them already shows the flag, and a note still reading "never deletes
+  anything" beside it would be the more believable of the two. Pinned by
+  `tests/test_prune.py`.
+- **A prune retracts the manifest rows it removed, at either end.** `_debit` (formerly
+  `_debit_pull`) runs for *every* non-dry-run job, not just a pull: a mirror Replicate and a
+  pruning Full Sync delete at the far end, and a row still claiming the device holds the
+  book is wrong from the instant the `deleting` line is printed — which is after the unlink,
+  so unlike `_credit_pull` it needs no filesystem check. Leaving them is not untidy but
+  wrong, for the `presence` reason written down under the pull entry. A job that deleted
+  nothing finds an empty list and does nothing, which is every push the program made before
+  this. Pinned by `tests/test_prune.py::test_a_push_retracts_the_rows_it_pruned`.
 - **An `upstream` node is a pull source, and the refusal is in `build_argv`.**
   `sync_mode: upstream` (`Device.sync_mode`) means the library's *source* — the production
   host other admins upload to, so it is ahead of us and a push is a regression. sigmaai.au
@@ -99,8 +143,9 @@ are listed.
   and `::test_no_writing_route_is_a_way_into_an_upstream_node`.
 - **`full_sync` is mutually exclusive with `mirror`, and with nothing else.** That is by an
   explicit `device.is_mirror` term in `device_full_sync` and an `elif` in
-  `device_menu.html`, because Full Sync's note promises it never deletes and a mirror's
-  transfer is defined by `--delete`. `upstream` is a value neither knew about, so the
+  `device_menu.html`, because the two are different transfers: a mirror's source is `./`
+  and its `--delete` is unconditional, while a reader's Full Sync names the categories and
+  deletes only if that node declared `prune`. `upstream` is a value neither knew about, so the
   instant a node stops being a mirror the `elif` fires and **Full Sync — a push to
   production — reappears in its menu**, route guard satisfied. Three guards answer it: the
   model coerces `full_sync` off for an upstream, the route adds `or device.is_upstream`,

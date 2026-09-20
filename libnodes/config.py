@@ -328,7 +328,14 @@ defaults:
   timeout: 20
   retries: 2
   # bandwidth: 2M        # --bwlimit, per device or here for all
-  # excludes: ["*.tmp"]  # extra --exclude patterns
+  # excludes: ["*.tmp"]  # extra --exclude patterns, on top of each node's own
+  #
+  # An exclude is also a *protection*: rsync never deletes what one matched, so on a
+  # `prune: true` node this is what survives a Full Sync. KOReader writes a `<book>.sdr`
+  # directory beside each book it has opened, holding the reading position, bookmarks and
+  # highlights — inside the library tree, so a prune removes them unless they are named
+  # here. Measured against one device: 20 deletions without it, 1 with.
+  # excludes: ["*.sdr/"]
 
 devices:
   - id: reader
@@ -343,6 +350,14 @@ devices:
     target_ui: /onboard/.Books
     fs: vfat
     full_sync: true
+    # Make the device *match* the library rather than only accumulate from it: a Full Sync
+    # then carries --delete and removes what this node holds and the library no longer
+    # does. Off by default, because Full Sync's standing promise is adds-and-updates-only
+    # and a node that has not said this keeps it. Only the whole-library push prunes — a
+    # Push of one directory never does — and only inside the categories it transfers, so a
+    # top-level directory the library does not have is untouched. Pair it with `excludes`:
+    # what they match is what survives.
+    prune: true
     capacity: 29G
 
   - id: phone

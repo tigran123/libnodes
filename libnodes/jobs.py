@@ -81,7 +81,11 @@ CREATE TABLE IF NOT EXISTS jobs (
   attempt     INTEGER DEFAULT 0,
   dry_run     INTEGER DEFAULT 0,
   hold        INTEGER DEFAULT 0,
-  adopt       INTEGER DEFAULT 0
+  adopt       INTEGER DEFAULT 0,
+  -- Was this push the whole library rather than a selection? Persisted because it is
+  -- half of what decides --delete (the device's `prune` is the other half), and `retry`
+  -- re-derives from a stored row long after the route that set it ran.
+  full_library INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ix_jobs_state ON jobs(state);
 """
@@ -326,6 +330,11 @@ class Job:
     #: Replicate and nothing else: a reader has no catalog, and an Adopt exists to repair
     #: metadata rather than to move a database.
     catalog: bool = False
+    #: This push was the whole library, not a selection out of it — Full Sync, or its
+    #: Dry run. It is what lets `Device.prune` mean `--delete`, and it is persisted for
+    #: the reason `dry_run` is: `retry` replays a stored row, and a retry that quietly
+    #: dropped the prune would report a different transfer under the same label.
+    full_library: bool = False
     #: Which direction this job moves bytes. "push" is every job this program had until
     #: `sync_mode: upstream`; "pull" reads from the device and writes into library_root,
     #: in six phases rather than one rsync. Persisted because history has to say what a
@@ -411,7 +420,8 @@ class JobStore:
                                 ("entries_done", "INTEGER DEFAULT 0"),
                                 ("entries_total", "INTEGER DEFAULT 0"),
                                 ("files_deleted", "INTEGER DEFAULT 0"),
-                                ("bytes_wire", "INTEGER DEFAULT 0")):
+                                ("bytes_wire", "INTEGER DEFAULT 0"),
+                                ("full_library", "INTEGER DEFAULT 0")):
                 if column not in existing:
                     with conn:
                         conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {ddl}")
@@ -432,8 +442,8 @@ class JobStore:
                 cur = conn.execute(
                     "INSERT INTO jobs (device_id, sources, label, dest, state, "
                     "created_at, files_total, bytes_total, argv, attempt, dry_run, "
-                    "hold, adopt, kind, catalog) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "hold, adopt, kind, catalog, full_library) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         job.device_id,
                         json.dumps(job.sources),
@@ -450,6 +460,7 @@ class JobStore:
                         int(job.adopt),
                         job.kind,
                         int(job.catalog),
+                        int(job.full_library),
                     ),
                 )
                 job.id = int(cur.lastrowid)
@@ -575,6 +586,9 @@ def _job_from_row(row: sqlite3.Row) -> Job:
         adopt=bool(row["adopt"] if "adopt" in row.keys() else 0),
         kind=(row["kind"] if "kind" in row.keys() else None) or "push",
         catalog=bool(row["catalog"] if "catalog" in row.keys() else 0),
+        full_library=bool(
+            row["full_library"] if "full_library" in row.keys() else 0
+        ),
     )
 
 
@@ -621,6 +635,7 @@ def build_argv(
     settings: Settings,
     dry_run: bool = False,
     adopt: bool = False,
+    whole_library: bool = False,
 ) -> list[str]:
     """Compose the rsync command as an argv list — never a shell string.
 
@@ -630,6 +645,12 @@ def build_argv(
 
     The mode is read off the device rather than passed in, so every caller — including the
     three preview renders in `routes/devices.py` — gets it without opting in.
+
+    `whole_library` is the one thing a caller must say, because it is not a fact about the
+    device: it means "these sources are the entire library", which is what a reader's
+    `prune` needs before it may add `--delete`. It defaults to False, so the direction a
+    forgetful caller falls in is the one that deletes nothing — the opposite of the reason
+    the pull is a separate function.
     """
     defaults = config.defaults
 
@@ -703,6 +724,59 @@ def build_argv(
     # Not on an adopt. That run exists to repair timestamps on files already in place --
     # pairing "change nothing" with "delete whatever does not match" would be a trap.
     if mirror and not adopt:
+        argv.append("--delete")
+
+    # The third place in this program that emits --delete, and the only one aimed at a
+    # reader. Four things have to be true at once, and each rules out a different way of
+    # arriving here with the wrong scope:
+    #
+    #   device.prune       the node said so in devices.yaml. Off by default, because the
+    #                      promise Full Sync has made until now is "adds and updates only"
+    #                      and a node that has not opted in keeps it.
+    #   device.full_sync   the node takes the whole library at all. Checked again here
+    #                      rather than trusted from the route, for `retry`'s sake.
+    #   whole_library      *these sources* are the library, not a selection out of it. A
+    #                      subtree Push must never carry this: --delete prunes the
+    #                      directories in the transfer, so a push of `Science/` would mean
+    #                      "and remove everything under Science/ that is not in the
+    #                      library" under a button that says Push.
+    #   not adopt          an Adopt is --size-only: "change nothing" paired with "delete
+    #                      whatever does not match" is a trap, exactly as for a mirror.
+    #
+    # Scope, and it is the mirror's lesson read the other way round: rsync prunes only
+    # inside the directories it is transferring, and a reader's sources are the *named*
+    # top-level categories, so the destination root is never scanned. That is why this one
+    # is not `./`. A name the device holds and the library has never had -- `Websites/` on
+    # s4l, koreader's own directories on a device whose target is not a dedicated Books
+    # tree -- survives untouched, and only divergence *inside* the library's own shape is
+    # pruned. Measured against s4l 2026-09-20: 20 `deleting` lines, 19 of them the `.sdr`
+    # sidecars KOReader writes beside each book, 1 a book genuinely retired from the
+    # library. That ratio is why `excludes` is half the feature: rsync never deletes what
+    # an --exclude matched, so `*.sdr/` in devices.yaml takes the same run to exactly 1.
+    #
+    # No --max-delete, unlike the pull. The cap there exists because a pull prunes *this
+    # host's library* -- the original -- and a half-mounted upstream reads as "delete
+    # everything". Here, as on a mirror, the thing at risk is a replica of a
+    # content-addressed library that this host still holds in full, and the honest preview
+    # is the Dry run, which carries the flag for exactly that reason.
+    prune = (
+        whole_library and device.prune and device.full_sync and not mirror and not adopt
+    )
+    if prune:
+        # The same two refusals as a mirror's, and for the same reason: with --delete on,
+        # a wrong source list or a target that normalises to the root is data loss rather
+        # than a wrong transfer. An empty `sources` is what `full_sync_sources` returns
+        # when it cannot read the library root at all.
+        if not sources:
+            raise ValueError(
+                f"{device.id}: refusing a pruning full sync with no sources — "
+                "--delete would empty the target"
+            )
+        if not device.target.strip("/"):
+            raise ValueError(
+                f"{device.id}: refusing to prune {device.target!r} — "
+                "--delete needs a target below the root"
+            )
         argv.append("--delete")
 
     # The target filesystem decides, not the device type: an ext4 Linux node keeps full
@@ -1279,7 +1353,7 @@ class JobRunner:
         #: say which files it delivered. Bounded by SENT_CAP; `None` marks a job that
         #: overflowed and whose list is therefore no longer a complete prefix.
         self._sent: dict[int, list[str] | None] = {}
-        #: The same, for rsync's `deleting <path>` lines, so `_debit_pull` can retract the
+        #: The same, for rsync's `deleting <path>` lines, so `_debit` can retract the
         #: manifest rows that claimed the upstream still held them. Separate from `_sent`
         #: because the two are answers to opposite questions and a single list would have
         #: to carry a sign.
@@ -1373,10 +1447,17 @@ class JobRunner:
         dry_run: bool = False,
         hold: bool = False,
         adopt: bool = False,
+        whole_library: bool = False,
     ) -> Job:
         config = self.devices.config
         argv = build_argv(
-            device, config, sources, self.settings, dry_run=dry_run, adopt=adopt
+            device,
+            config,
+            sources,
+            self.settings,
+            dry_run=dry_run,
+            adopt=adopt,
+            whole_library=whole_library,
         )
         files_total, bytes_total = self._estimate(sources, mirror=device.is_mirror)
 
@@ -1394,6 +1475,7 @@ class JobRunner:
             dry_run=dry_run,
             hold=hold and deferred,
             adopt=adopt,
+            full_library=whole_library,
             # A Replicate, and only a Replicate. An Adopt sends the same root but exists to
             # repair timestamps, so handing it a database swap would be a trap; a reader
             # has no catalog to swap at all.
@@ -2180,7 +2262,15 @@ class JobRunner:
             # holds them. It reads the filesystem rather than the index, so it does not
             # care that the reindex has not run yet.
             self._credit_pull(job)
-            self._debit_pull(job)
+
+        if not job.dry_run:
+            # Both directions, because the manifest is wrong in the same way whichever end
+            # the prune happened at. A pull's --delete removes books from this host; a
+            # mirror Replicate's and a pruning Full Sync's remove them from the device, and
+            # a row still claiming the device holds one inflates the numerator of every
+            # PRESENT ON fraction over it. A job that deleted nothing finds an empty list
+            # and does nothing, which is every push the program made before now.
+            self._debit(job)
 
         if job.kind == "pull" and not job.dry_run and self._on_library_changed:
             # Every terminal outcome, failure and abort included: an interrupted pull has
@@ -2229,7 +2319,7 @@ class JobRunner:
         sent.append(name)
 
     def _note_deleted(self, job: Job, name: str) -> None:
-        """Remember a name off a `deleting` line, for `_debit_pull`.
+        """Remember a name off a `deleting` line, for `_debit`.
 
         No SKIP_TOPLEVEL filter, unlike `_note_sent`: those names were never manifest rows,
         so retracting them is a no-op and testing for it would cost more than the DELETE.
@@ -2350,13 +2440,18 @@ class JobRunner:
             "prog",
         )
 
-    def _debit_pull(self, job: Job) -> None:
+    def _debit(self, job: Job) -> None:
         """Retract what the prune just removed. The other half of `_credit_pull`.
 
-        A pull's `--delete` fires because the upstream no longer has the file, so the
-        manifest row saying it does is wrong from that moment — and unlike a credit this
-        needs no filesystem check, because the evidence *is* the deletion: rsync prints
-        `deleting` after the unlink, not before it.
+        `--delete` fires because the *other* end no longer has the file, so the manifest
+        row saying it does is wrong from that moment — and unlike a credit this needs no
+        filesystem check, because the evidence *is* the deletion: rsync prints `deleting`
+        after the unlink, not before it.
+
+        Which end differs and the retraction does not. A pull prunes this host's library
+        and the rows are the upstream's claim; a mirror Replicate and a `prune: true` Full
+        Sync prune the device, and the rows are that device's. Both are rows under the same
+        `device_id`, both stop being true at the same instant, so this is one function.
 
         Runs after the credit, on every terminal outcome and never on a dry run, on the
         same reasoning: an interrupted prune still pruned what it got to. Left undone, the
@@ -2377,9 +2472,10 @@ class JobRunner:
         if not names:
             return
         dropped = self.manifests.retract(job.device_id, names)
+        whose = "the upstream" if job.kind == "pull" else "the library"
         self._append_line(
             job,
-            f"✓ pruned {job.files_deleted:,} files the upstream no longer has"
+            f"✓ pruned {job.files_deleted:,} files {whose} no longer has"
             + (f" · {dropped:,} manifest rows retracted" if dropped else ""),
             "prog",
         )
