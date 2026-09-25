@@ -476,12 +476,18 @@ async def test_a_selection_post_to_an_upstream_node_is_refused(client):
 
 
 async def test_an_upstream_node_is_not_a_selection_target(client):
-    """Absent from the picker, and from the Library view's row buttons."""
+    """Absent from the picker, which is now the only way a push starts in the Library.
+
+    It is *present* in every row's presence map, which is not a contradiction: the map
+    says who holds a book, and what the library's own source holds is the most worth
+    knowing of all. The map offers no action, so naming a node there is not a way into
+    it -- both of a row's buttons open the picker, and the picker is where the filter is.
+    """
     picker = await client.get("/jobs/picker?path=Science")
     assert 'value="source"' not in picker.text
     assert 'value="kobo"' in picker.text
     lib = await client.get("/library")
-    assert "Test Upstream" not in lib.text
+    assert 'hx-post="/jobs"' not in lib.text
 
 
 async def test_the_menu_offers_pull_to_an_upstream_and_never_replicate(client):

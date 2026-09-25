@@ -17,6 +17,7 @@ FRAGMENTS = [
     "/lib/pane",
     "/lib/list",
     "/lib/selection",
+    "/lib/presence",
     "/lib/index-status",
     "/jobs/rows",
     "/jobs/dock",
@@ -741,3 +742,52 @@ async def test_the_files_cell_says_what_a_pull_received_and_what_it_pruned(app, 
     assert "—" not in cell, "the dash was the bug: two files were received"
     assert "2" in cell and "−1" in cell
     assert "2 files received, 1 deleted" in cell, "the title spells out both halves"
+
+
+async def test_every_row_draws_the_whole_fleet(client, app):
+    """One slot per device on every row, including the devices holding nothing.
+
+    The map's only claim is positional -- the third slot is the same device on the row
+    above and the row below -- so a row that drew a slot only where there was evidence
+    would put `kobo`'s green under `phone`'s heading, and say so on a page that renders
+    perfectly. See presence_slots in manifests.py; this is the same guarantee asserted
+    from the other end, through the template that has to honour it.
+    """
+    fleet = app.state.lib.devices.config.devices
+    assert len(fleet) > 1, "a one-device fleet cannot catch a shift"
+
+    r = await client.get("/lib/list", params={"p": "Science"})
+    maps = re.findall(r'<button class="pmap".*?</button>', r.text, re.S)
+    assert maps, "no row drew a presence map"
+    for one in maps:
+        assert one.count("<i ") == len(fleet)
+
+    # And the row nothing has ever been pushed to still draws its whole fleet.
+    empty = [m for m in maps if m.count('class="p-none"') == len(fleet)]
+    assert empty, "the fixture has no untouched row, so this proves nothing"
+
+
+async def test_the_presence_map_opens_a_dialog_naming_every_device(client, app):
+    """The strip is a few pixels per device and all its provenance used to live in a
+    `title=`, which the fleet's own tablets do not have -- every one of them matches
+    `@media (hover: none)`. So the strip is a button, and the dialog it opens has to name
+    the devices holding nothing as well: those are the faint slots, and a list that
+    dropped them would not explain the picture it was opened from."""
+    r = await client.get("/lib/presence", params={"p": "Science/Physics"})
+    for device in app.state.lib.devices.config.devices:
+        assert device.name in r.text, f"{device.id} is a slot the dialog never explains"
+    assert "nothing recorded" in r.text
+    # No hx verb on the way out -- see test_no_button_removes_itself_while_asking_for_something.
+    assert "hx-post" not in r.text
+
+
+async def test_a_row_offers_no_one_click_push(client):
+    """`→ ONE` and `→ LG` were the first two selectable devices in devices.yaml order,
+    chosen by nothing but file order, and each POSTed a real transfer on one click. Both
+    of a row's buttons open the picker now, which names every device and pre-checks
+    none."""
+    r = await client.get("/lib/list", params={"p": "Science"})
+    rows = r.text
+    assert 'hx-post="/jobs"' not in rows
+    assert "/jobs/picker?dry_run=true&amp;path=" in rows
+    assert "/jobs/picker?path=" in rows

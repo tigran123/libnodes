@@ -1164,6 +1164,24 @@ ul {
   color: var(--ink-3);
 }
 
+/* The swatches sit on the text's own line, so they are the same 10px box the slots are
+   rather than a scaled-down drawing of one. */
+.legend {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.legend b {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.legend .pslot {
+  margin-top: 0;
+}
+
 /* --------------------------------------------------------------- devices -- */
 
 /* minmax, not bare px. A fixed track cannot compress, so the row simply grew wider than
@@ -1470,27 +1488,42 @@ ul {
   padding: 0 var(--gutter) var(--gutter);
 }
 
-/* Sticky, because this is now the only way *out* of a directory and Science/ lists 1,452
-   of them — without it you scroll back to the top to go up one level. .lib-body is the
-   scroller, so the offset is measured from there. The opaque background is mandatory, not
-   decoration: rows read straight through a transparent crumb as they pass under it.
-   The 14px above the crumb is its own padding and not the scroller's, and that is not
-   tidiness either: Chrome pins a sticky child at the scroller's *content* box, so while
-   .lib-body carried `padding-top: 14px` the crumb stuck 14px below the edge and the rows
-   scrolled on through that band above it -- 18.9 real px on a 412px phone at --scale 1.35,
-   measured with tools/shot.py, and 0 once the padding moved onto the opaque crumb. */
-.pathline {
+/* The crumb and the selection bar, pinned as one group.
+
+   Sticky, because the crumb is now the only way *out* of a directory and Science/ lists
+   1,452 of them -- without it you scroll back to the top to go up one level -- and
+   because the Push button is armed by ticking a row that may be 1,400 rows down, where
+   the bar that carries it had scrolled off the top long ago.
+
+   One group and not two sticky elements: the crumb's segments wrap, so its height is not
+   a number anyone can write into the bar's `top:`. .lib-body is the scroller, so the
+   offset is measured from there.
+
+   The opaque background is mandatory, not decoration: rows read straight through a
+   transparent crumb as they pass under it, and .selbar's own background is
+   rgba(154,140,230,.07). The 14px above the crumb is a child's padding and not the
+   scroller's, and that is not tidiness either: Chrome pins a sticky child at the
+   scroller's *content* box, so while .lib-body carried `padding-top: 14px` the crumb
+   stuck 14px below the edge and the rows scrolled on through that band above it -- 18.9
+   real px on a 412px phone at --scale 1.35, measured with tools/shot.py, and 0 once the
+   padding moved onto the opaque element. The 12px below is the group's, not .selbar's
+   margin, for the same reason from the other end: a margin is outside the background box,
+   so rows would scroll through a 12px transparent band under the bar. */
+.lib-sticky {
   position: sticky;
   top: 0;
   z-index: 3;
   background: var(--bg);
+  padding-bottom: 12px;
+}
+
+.pathline {
   padding-top: 14px;
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
   column-gap: 10px;
   row-gap: 6px;
-  padding-bottom: 12px;
 }
 
 /* The segments wrap; they do not elide and they do not scroll. Measured against the live
@@ -1556,7 +1589,8 @@ ul {
   background: rgba(154, 140, 230, 0.07);
   border-radius: 5px;
   padding: 9px 12px;
-  margin-bottom: 12px;
+  /* Top, not bottom: the 12px below the group belongs to .lib-sticky. */
+  margin-top: 12px;
 }
 
 .selbar-count {
@@ -1581,7 +1615,15 @@ ul {
    64/84 floors both fitted at their 84/108 maxima and neither fitted once the tracks were
    squeezed -- measured at 980 CSS px, the width Chrome's "Desktop site" gives a Nexus 10,
    where "136.1 MB" broke after the number. Every other column holds elements that can
-   shrink or elide; these two hold text that cannot. */
+   shrink or elide; these two hold text that cannot.
+   PRESENT ON went 100->110 and PUSH 140->96 together, and the pair is the point: the
+   floors sum to 610px against the 674px the 1090px band allows, where they summed to 644.
+   PUSH could give 44px up because it stopped carrying two device-named push buttons and
+   now holds two icons; PRESENT ON needed 10px of it so the presence map's slots cannot be
+   squeezed below the 2px floor .pmap declares. PRESENT ON's *maximum* is sized for its
+   header instead: 15 rotated labels at 10px of track plus 14 2px gaps plus 2x12px of
+   padding is 202px, so 210. The floor is untouched, so this costs nothing where it is
+   tight -- 1fr NAME simply stops absorbing 40px it had. */
 .file-grid {
   grid-template-columns:
     26px
@@ -1589,8 +1631,8 @@ ul {
     minmax(60px, 76px)
     minmax(82px, 84px)
     minmax(96px, 108px)
-    minmax(100px, 150px)
-    minmax(140px, 190px);
+    minmax(110px, 210px)
+    minmax(96px, 120px);
 }
 
 .file-grid > * {
@@ -1692,10 +1734,135 @@ a.file-name:hover {
   text-overflow: ellipsis;
 }
 
-.present {
+/* The presence map: one slot per fleet device, in fleet order, always all of them.
+
+   This replaced a row of text badges, one per device that held the row. They were
+   `flex-wrap: wrap` with nothing capping the count, so at 15 devices in devices.yaml and
+   ~10 of them holding a typical directory, every row wrapped to three lines: 87px where
+   var(--row) is 34px, 21 directories filling a 4K screen where 60 fit now.
+
+   There is deliberately no `flex-wrap` here. That single omission is the whole feature,
+   and it is what tests/test_battery.py::test_the_presence_map_cannot_wrap asserts.
+
+   The slots flex to share whatever the track gives them, so the map fits any width
+   rather than setting one -- but `min-width: 2px` means they cannot thin to nothing, and
+   the PRESENT ON floor is sized so that floor can never be hit: 110px of track less
+   2x12px of .file-grid padding is 86px, against 16 slots at 2px plus 15 gaps at 2px =
+   62px. 16 is the fleet this was sized for (15 declared today); past that the guarantee
+   is gone and the strip would overflow into .panel's `overflow: hidden`, which loses a
+   slot in silence and so shifts every slot after it. Pinned by
+   ::test_every_slot_fits_the_narrowest_track. */
+.pmap {
   display: flex;
-  gap: 4px;
-  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  appearance: none;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: none;
+  cursor: pointer;
+}
+
+/* The header is the map's legend: the same flex, the same 2px gap and the same cell
+   padding as .pmap, in the same grid track, so label N stands over slot N on every row
+   below. Get any of those three wrong and the labels still render -- one column out,
+   which is the shift-by-one failure again, arriving through the stylesheet this time.
+   Pinned by tests/test_battery.py::test_the_map_header_lines_up_with_the_slots. */
+.pmap-head {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.pmap-head-slot {
+  display: none;
+  flex: 1 1 0;
+  min-width: 2px;
+  /* Bottom-to-top. The abbreviations run to 10 characters ("SIGMAAI.AU"), which is 57px
+     of 9.5px JetBrains Mono -- no arrangement puts fifteen of those across a 210px track
+     lying down. The thead's 0.11em tracking is cancelled: it buys legibility across a
+     word and costs height down one. */
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  letter-spacing: 0;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* 1300px, and it is derived twice rather than chosen. Above it the fixed tracks are all
+   at their maxima -- (624 of maxima + NAME's 140 floor + 190 rail + 2x18 gutter) x 1.21
+   is 1198px of viewport -- so a slot is (210 - 24 - 28)/15 = 10.5px and a rotated label
+   has room. And it clears 1280, the touch band's ceiling, where --scale is 1.35 and the
+   same panel is 722px: the labels would be 7.5px apart and touching there, and a tablet
+   has the strip's dialog instead, which is the better answer on a screen with no hover.
+   Pinned by ::test_the_map_header_appears_only_where_it_fits. */
+@media (min-width: 1300px) {
+  .pmap-head-plain {
+    display: none;
+  }
+
+  .pmap-head-slot {
+    display: block;
+  }
+}
+
+.pmap:hover {
+  outline: 1px solid var(--border-hi);
+  outline-offset: 2px;
+}
+
+.pmap > i {
+  flex: 1 1 0;
+  min-width: 2px;
+  height: 10px;
+  border-radius: 1px;
+}
+
+/* Every state selector names its context, and that is not tidiness: `.pmap > i` is a
+   class *and* a type, so it outranks a bare `.p-ok` and painted all fifteen slots
+   --line whatever the device held -- a map that was uniformly grey on a fleet where
+   seven nodes hold most of the library. `.pslot` lost the same argument on a tie, being
+   one class against one class and further down the file. Neither is visible from a
+   stylesheet read as text, which is how it shipped. Pinned by
+   tests/test_theme.py::test_a_slot_is_painted_by_its_state_and_not_by_the_default. */
+.pmap > .p-none,
+.pslot.p-none {
+  background: var(--line);
+}
+
+.pmap > .p-ok,
+.pslot.p-ok {
+  background: var(--ok);
+}
+
+.pmap > .p-stale,
+.pslot.p-stale {
+  background: var(--warn-fill);
+}
+
+/* The same four states at reading size, in the dialog the map opens. Its own box rather
+   than a .pmap slot: there it is one of fifteen sharing a track, here it is one row's
+   own mark and the p-* classes are all the two have in common. */
+.pslot {
+  display: block;
+  width: 10px;
+  height: 10px;
+  margin-top: 3px;
+  flex-shrink: 0;
+  border-radius: 2px;
+}
+
+/* Half full, drawn as half full. `partial` and `absent` shared one badge class until
+   now, so "2 of 900 files" and "all 900" were the same picture and the difference lived
+   in a tooltip. A colour would not do it at 4px wide against --ok; a horizontal split
+   reads as a part-filled column at any width, in either theme. */
+.pmap > .p-part,
+.pslot.p-part {
+  background: linear-gradient(var(--line) 0 50%, var(--ok) 50% 100%);
 }
 
 /* Push targets stay quiet until the row is hovered or checked. */

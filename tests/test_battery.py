@@ -1559,3 +1559,137 @@ def test_the_card_offers_every_action_the_row_does():
     assert row, "device_row.html has no actions at all — the regex has stopped matching"
     assert row - card == set(), f"the card cannot reach {sorted(row - card)}"
     assert card - row == set(), f"the row cannot reach {sorted(card - row)}"
+
+
+def test_the_presence_map_cannot_wrap():
+    """The row height is the whole reason the map exists, so it is asserted here.
+
+    PRESENT ON used to be one text badge per device that held the row, in a `flex-wrap:
+    wrap` container with nothing capping the count. At 15 devices in devices.yaml and ~10
+    of them holding a typical directory, every row wrapped to three lines: 87px measured
+    against the 34px of var(--row), so 21 directories filled a 4K screen where 60 fit now.
+
+    A wrap can come back by one word. `.pmap` must stay a single-line flex, and the slots
+    must carry a fixed height rather than taking one from their content.
+    """
+    css = (ROOT / "libnodes" / "static" / "app.css").read_text()
+
+    strip = css.split("\n.pmap {")[1].split("}")[0]
+    assert "display: flex" in strip
+    assert "flex-wrap" not in strip, "the presence map is wrapping again"
+
+    slot = css.split("\n.pmap > i {")[1].split("}")[0]
+    assert re.search(r"height:\s*\d+px", slot), "a slot with no height takes the row's"
+
+
+def test_every_slot_fits_the_narrowest_track():
+    """A slot that will not fit is not a slot that shrinks -- it is one that overflows.
+
+    `.panel` is `overflow: hidden`, so a strip wider than its track loses its last slots
+    in silence, and the map then claims the fleet is shorter than it is while every
+    remaining slot keeps its own device. The floors are what stop it: the PRESENT ON
+    track less its cell padding must hold the whole fleet at the `min-width` the slots
+    declare, plus a gap between each pair.
+
+    16 is the fleet this was sized for -- 15 are declared today. Past that the guarantee
+    is gone and this test is where you find out, rather than a screenshot nobody took.
+    """
+    css = (ROOT / "libnodes" / "static" / "app.css").read_text()
+
+    block = css.split(".file-grid {")[1].split("}")[0]
+    floors = [int(n) for n in re.findall(r"minmax\((\d+)px", block)]
+    _, _, _, _, present_on, _ = floors
+
+    padding = css.split(".file-grid > * {")[1].split("}")[0]
+    side = int(re.search(r"padding:\s*\d+px\s+(\d+)px", padding).group(1))
+
+    strip = css.split("\n.pmap {")[1].split("}")[0]
+    gap = int(re.search(r"gap:\s*(\d+)px", strip).group(1))
+    slot = css.split("\n.pmap > i {")[1].split("}")[0]
+    minimum = int(re.search(r"min-width:\s*(\d+)px", slot).group(1))
+
+    fleet = 16
+    needed = fleet * minimum + (fleet - 1) * gap
+    have = present_on - 2 * side
+    assert have >= needed, (
+        f"a fleet of {fleet} needs {needed}px and the PRESENT ON track gives {have}px — "
+        f"the last slots will be clipped away by .panel's overflow: hidden"
+    )
+
+
+def test_the_map_header_lines_up_with_the_slots():
+    """The header labels are the map's legend, and a legend one column out is worse than
+    none: it names every device wrongly while looking entirely correct.
+
+    They line up for exactly three reasons and no others -- the same flex, the same gap
+    and the same cell padding, in the same grid track. Any one of them drifting still
+    renders, one column off.
+    """
+    css = (ROOT / "libnodes" / "static" / "app.css").read_text()
+
+    strip = css.split("\n.pmap {")[1].split("}")[0]
+    head = css.split("\n.pmap-head {")[1].split("}")[0]
+    assert "display: flex" in head
+    strip_gap = re.search(r"gap:\s*(\d+)px", strip).group(1)
+    head_gap = re.search(r"gap:\s*(\d+)px", head).group(1)
+    assert strip_gap == head_gap, "the header's gap no longer matches the slots'"
+
+    slot = css.split("\n.pmap > i {")[1].split("}")[0]
+    label = css.split("\n.pmap-head-slot {")[1].split("}")[0]
+    for prop in ("flex", "min-width"):
+        assert re.search(rf"{prop}:\s*([^;]+);", slot).group(1) == re.search(
+            rf"{prop}:\s*([^;]+);", label
+        ).group(1), f"{prop} differs between a slot and its label"
+
+    # The cells themselves: .thead > * and .file-grid > * must pad identically, or every
+    # label is offset from its column by the difference.
+    thead = css.split("\n.thead > * {")[1].split("}")[0]
+    row = css.split(".file-grid > * {")[1].split("}")[0]
+    assert re.search(r"padding:\s*([^;]+);", thead).group(1) == re.search(
+        r"padding:\s*([^;]+);", row
+    ).group(1)
+
+    pane = (ROOT / "libnodes" / "templates" / "lib_pane.html").read_text()
+    assert '<div class="pmap-head">' in pane, "the header cell is not the map's"
+
+
+def test_the_map_header_appears_only_where_it_fits():
+    """Fifteen rotated labels need the PRESENT ON track at its maximum, and below that
+    they touch. The breakpoint is derived rather than chosen, twice.
+
+    Above it every fixed track is at its maximum, so a slot is (210 - 24 - 28) / 15 =
+    10.5px and a 9.5px label has room. It must also clear the touch band's 1280px
+    ceiling: there --scale is 1.35, the same panel is 722px rather than 848, and the
+    labels would be 7.5px apart -- and a tablet has the strip's dialog instead, which is
+    the better answer on a screen with no hover anyway.
+    """
+    css = (ROOT / "libnodes" / "static" / "app.css").read_text()
+
+    block = css.split(".file-grid {")[1].split("}")[0]
+    fixed = int(re.search(r"^\s*(\d+)px", block, re.M).group(1))  # the checkbox track
+    maxima = [int(n) for n in re.findall(r"minmax\(\d+px,\s*(\d+)px\)", block)]
+    name_floor = int(re.search(r"minmax\((\d+)px,\s*1fr\)", block).group(1))
+
+    scale = float(re.search(r"--scale:\s*([\d.]+)", css).group(1))
+    rail = int(re.search(r"--rail:\s*(\d+)px", css).group(1))
+    gutter = int(re.search(r"--gutter:\s*(\d+)px", css).group(1))
+
+    breakpoint_ = int(
+        re.search(
+            r"@media \(min-width: (\d+)px\) \{\s*\.pmap-head-plain", css
+        ).group(1)
+    )
+
+    at_maxima = (fixed + sum(maxima) + name_floor + rail + 2 * gutter) * scale
+    assert breakpoint_ >= at_maxima, (
+        f"the labels appear at {breakpoint_}px but the tracks only reach their maxima at "
+        f"{at_maxima:.0f}px — they will be squeezed together"
+    )
+
+    touch_ceiling = int(
+        re.search(r"max-width:\s*(\d+)px\)[^{]*\(hover: none\)", css).group(1)
+    )
+    assert breakpoint_ > touch_ceiling, (
+        f"the labels appear at {breakpoint_}px, inside the touch band that ends at "
+        f"{touch_ceiling}px, where --scale is larger and the panel smaller"
+    )

@@ -1,5 +1,6 @@
 {# Choose devices for a push. Multi-select: one job per device.
-   Used both by the selection bar and by a row's `⋯`. #}
+   Used by the selection bar and by both of a row's buttons — it is now the only way to
+   start a push from the Library at all. #}
 <div class="backdrop" id="device-picker">
   <div class="dialog" style="width:460px">
 
@@ -23,7 +24,9 @@
           <label class="opt">
             {# Nothing pre-checked: the first device in the file may well be offline,
                and a dialog that arrives with a surprise already selected is worse than
-               one extra click. The row's inline → buttons remain the one-click path. #}
+               one extra click. There is no one-click path any more — the row's `→ ONE`
+               and `→ LG` were the first two selectable devices in devices.yaml order,
+               picked by nothing but file order, and each POSTed a real transfer. #}
             <input class="check" type="checkbox" name="device" value="{{ d.id }}">
             <span style="flex:1;min-width:0">
               {{ d.name }}
@@ -73,7 +76,7 @@
          request whose element has left the document (`getRootNode() === document`). No
          request, no console error: the dialog just vanished. Closing first is wrong for the
          reply too — .backdrop is z-index 60 over .notices' 50, so the toast would land
-         behind it. `closest` rather than the id: the row's ? and ⋯ can each put a
+         behind it. `closest` rather than the id: the row's ⌕ and → can each put a
          #device-picker in #notices, and an id lookup would close the wrong one. #}
       <button class="btn btn-primary" type="button"
               hx-post="{{ '/jobs/dry-run' if dry_run else '/jobs' }}"

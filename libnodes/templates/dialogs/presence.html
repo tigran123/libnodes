@@ -1,0 +1,61 @@
+{# Who holds this row, in words — what a row's presence map opens.
+
+   The map is fifteen slots a few pixels wide. Every name, count and age behind it lived
+   in a `title=` until now, and the fleet's own tablets have no hover: the Nexus 10 and
+   both Galaxy Tabs match `@media (hover: none)`, and they are what this UI is read from.
+   So the strip is a button and this is what it says.
+
+   Every fleet device is listed, including the ones holding nothing — those are the faint
+   slots, and a list that dropped them would not explain the picture it was opened from.
+   Mirrors and upstreams are here too, for the same reason they are in the map: what a
+   mirror holds is worth knowing, it is just not pushed to from here. #}
+<div class="backdrop" id="presence-detail">
+  <div class="dialog" style="width:460px">
+
+    <div class="dialog-head">
+      <span class="dot dot-accent"></span>
+      Present on {{ held }} of {{ slots|length }}
+    </div>
+
+    <div class="dialog-body">
+      <div class="mono t-dim nowrap" title="{{ entry.path }}">{{ entry.label }}</div>
+      <div class="mono t-dim">
+        {% if entry.is_dir %}{{ entry.files|commafy }} files · {% endif %}{{ entry.size|hsize }}
+      </div>
+
+      {% for dev, s in slots %}
+        <div class="opt" style="cursor:default">
+          <span class="pslot {{ s.map_class if s else 'p-none' }}"></span>
+          <span style="flex:1;min-width:0">
+            {{ dev.name }}
+            <span class="opt-note">
+              {% if s %}
+                {# `detail` is the have/total of a directory; a file has none, so the
+                   state word is all there is to say and saying it twice would be noise. #}
+                {{ s.detail or s.presence }}{% if s.detail %} files · {{ s.presence }}{% endif %}
+                · {{ s.verb }} {{ s.at|reltime }}
+              {% else %}
+                nothing recorded — never pushed here, never seen in a scan
+              {% endif %}
+            </span>
+          </span>
+        </div>
+      {% else %}
+        <div class="meta">No devices configured.</div>
+      {% endfor %}
+
+      <div class="meta">
+        A cached view: what we last pushed, pulled or saw in a scan, not a live look at
+        the device.
+      </div>
+    </div>
+
+    <div class="dialog-foot">
+      {# closest, not the id: two rows can each leave a #presence-detail in #notices,
+         and an id lookup closes whichever the parser reached first. #}
+      <button class="btn" type="button"
+              onclick="this.closest('.backdrop').remove()">Close</button>
+    </div>
+
+  </div>
+</div>

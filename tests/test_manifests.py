@@ -287,3 +287,54 @@ def test_the_unread_secondary_indexes_are_dropped_and_stay_dropped(settings):
     assert indexes() == set()
     Manifests(db)
     assert indexes() == set()
+
+
+def test_the_presence_map_has_one_slot_per_device_in_fleet_order(settings, index):
+    """The alignment the Library's presence map is entirely built on.
+
+    `presence` appends a state only where there is evidence -- it never constructs
+    `absent` -- so its list is dense and its length varies from row to row. That is right
+    for a list of chips, each carrying its own name, and exactly wrong for a strip of
+    anonymous slots whose only claim is that the third one is the same device on every
+    row. Render the dense list and every slot after a device with nothing recorded shifts
+    left, so the map says a book is on `phone` when it is on `kobo`.
+
+    Nothing about that failure is visible: the page renders, the colours are plausible,
+    and no request errors. This test is the only thing between it and the screen.
+    """
+    from libnodes.manifests import presence_slots
+
+    manifests = Manifests(settings.manifests_db)
+    entry = index.entry("Fiction/Joyce/Ulysses.pdf")
+    manifests.record_entries("kobo", [entry])
+
+    fleet = ["phone", "kobo", "tablet"]
+    slots = presence_slots(manifests.presence([entry], fleet), fleet)[entry.path]
+
+    assert len(slots) == len(fleet)
+    assert slots[0] is None
+    assert slots[1] is not None and slots[1].device_id == "kobo"
+    assert slots[2] is None
+
+    # And the order is the caller's, not the database's.
+    reversed_fleet = list(reversed(fleet))
+    other = presence_slots(manifests.presence([entry], reversed_fleet), reversed_fleet)
+    assert [s.device_id if s else None for s in other[entry.path]] == [
+        None,
+        "kobo",
+        None,
+    ]
+
+
+def test_a_partial_directory_is_not_drawn_like_a_full_one(settings, index):
+    """`partial` and `absent` shared the plain `.badge` class, so "2 of 900 files" and
+    "all 900" were the same picture and the difference lived in a tooltip. A slot 4px
+    wide has no tooltip to fall back on."""
+    manifests = Manifests(settings.manifests_db)
+    directory = index.entry("Science/Physics")
+    one = index.entry("Science/Physics/Landau.pdf")
+    manifests.record_entries("kobo", [one])
+
+    state = manifests.presence([directory], ["kobo"])[directory.path][0]
+    assert state.presence == "partial"
+    assert len({state.map_class, "p-ok", "p-none", "p-stale"}) == 4

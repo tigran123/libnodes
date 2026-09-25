@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse
 from ..deps import base_context, state
 from ..libpos import library_href, remember
 from ..library import SORTS, Entry, normalise
+from ..manifests import presence_slots
 from ..templating import templates
 
 router = APIRouter()
@@ -30,9 +31,9 @@ def library_context(
     rows = app.index.children(path, q=q or None, sort=sort)
     total_files, total_bytes = app.index.child_count(path)
 
-    device_ids = [d.id for d in app.devices.config.devices]
+    fleet = app.devices.config.devices
+    device_ids = [d.id for d in fleet]
     presence = app.manifests.presence(rows, device_ids)
-    selectable = [d for d in app.devices.config.devices if d.is_selectable]
 
     elapsed_ms = (time.perf_counter() - started) * 1000
     meta = app.index.meta()
@@ -50,7 +51,11 @@ def library_context(
             "q": q,
             "sort": sort,
             "rows": rows,
-            "presence": presence,
+            # The map is drawn from `slots`, never from `presence` directly: one slot per
+            # fleet device in fleet order, `None` where nothing is known. See
+            # `presence_slots` for what renders the dense list instead costs.
+            "fleet": fleet,
+            "slots": presence_slots(presence, device_ids),
             "total_files": total_files,
             "total_bytes": total_bytes,
             "match_count": len(rows),
@@ -59,13 +64,6 @@ def library_context(
             "index_meta": meta,
             "ancestors": app.index.ancestors(path),
             "by_id": app.devices.config.by_id,
-            # Mirror nodes are not selection targets. `_resolve` cannot offer them .data/,
-            # so a subtree of preserved symlinks would land pointing at a vault that is not
-            # there — the dangling-link failure, from the other direction. They replicate
-            # the whole root or nothing. They stay in `presence` above: what a mirror holds
-            # is worth showing, it just is not pushed to from here.
-            "push_devices": selectable[:2],
-            "more_devices": selectable[2:],
         }
     )
     return ctx
@@ -155,6 +153,38 @@ async def lib_selection(
         }
     )
     return templates.TemplateResponse(request, "selection_bar.html", ctx)
+
+
+@router.get("/lib/presence", response_class=HTMLResponse)
+async def presence_dialog(request: Request, p: str = ""):
+    """Who holds this row, in words.
+
+    The map is 15 slots a few pixels wide, and every name, count and age behind it used
+    to live in a `title=` -- which the fleet's own tablets do not have. So the strip is a
+    button and this is what it opens.
+
+    It goes through `presence`/`presence_slots` exactly as the row does, so the dialog and
+    the strip it was opened from cannot disagree about a device; and through
+    `index.require`, so the index stays the only whitelist for a path.
+    """
+    app = state(request)
+    entry = app.index.require(p)
+    fleet = app.devices.config.devices
+    device_ids = [d.id for d in fleet]
+    presence = app.manifests.presence([entry], device_ids)
+    slots = presence_slots(presence, device_ids).get(entry.path, [None] * len(fleet))
+
+    ctx = base_context(request, "library")
+    ctx.update(
+        {
+            "entry": entry,
+            # Zipped here rather than in the template: a device and its slot are one fact
+            # and pairing them by index twice is one place too many.
+            "slots": list(zip(fleet, slots)),
+            "held": sum(1 for s in slots if s is not None),
+        }
+    )
+    return templates.TemplateResponse(request, "dialogs/presence.html", ctx)
 
 
 @router.get("/lib/index-status", response_class=HTMLResponse)

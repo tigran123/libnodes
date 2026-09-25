@@ -421,6 +421,82 @@ are listed.
   rsync does not — `Audio/` is 234 files to the index and 244 entries to rsync, being its
   9 subdirectories and itself — so nothing derived from `to-chk` may be labelled "files".
   Pinned by `tests/test_manifests.py::test_every_view_counts_files_the_same_way`.
+- **The presence map draws one slot per fleet device, in fleet order, and never omits
+  an absent one.** `Manifests.presence` appends a `DeviceState` only where there is
+  evidence — it never constructs `absent` — so the list it returns is *dense* and its
+  length varies row to row. That was the right shape for the text badges PRESENT ON used
+  to hold, each carrying its own name, and it is exactly the wrong one for a strip of
+  anonymous slots whose entire claim is that the fourth slot is `one` on every row:
+  render the dense list and every slot after a device with nothing recorded shifts left,
+  so the map says a book is on `lg` when it is on `one`. Nothing about that is visible —
+  the page renders, the colours are plausible, no request errors. `presence_slots`
+  (`manifests.py`) is the one place that alignment happens, and the row and the dialog
+  `/lib/presence` both go through it so the two cannot disagree. Pinned by
+  `tests/test_manifests.py::test_the_presence_map_has_one_slot_per_device_in_fleet_order`
+  and `tests/test_routes.py::test_every_row_draws_the_whole_fleet`.
+  The badges wrapped: `flex-wrap: wrap` with nothing capping the count, 15 devices in
+  `devices.yaml` and ~10 holding a typical directory, so every row was three lines — 87px
+  against `var(--row)`'s 34px, 21 directories filling a 4K screen where 60 fit now. So
+  `.pmap` carries **no `flex-wrap`**, and that single omission is the feature
+  (`::test_the_presence_map_cannot_wrap`). The slots flex to share the track, which is
+  what lets the map fit any width instead of setting one, but `min-width: 2px` means they
+  cannot thin to nothing and the PRESENT ON floor is sized so that floor is never
+  reached: 110px of track less 2×12px of padding is 86px, against 16 slots at 2px plus 15
+  gaps at 2px = 62px. 16 is the fleet it was sized for; past that the strip overflows
+  `.panel`'s `overflow: hidden`, which loses the last slots *in silence* and is the
+  shift-by-one again from the other end (`::test_every_slot_fits_the_narrowest_track`).
+  PUSH gave up the 10px it needed — floors went 644 → 610 against the 674 the 1090px band
+  allows — because the row stopped carrying `→ ONE` and `→ LG`. Those were
+  `selectable[:2]`, the first two `books` nodes in `devices.yaml` order, picked by nothing
+  but file order, and each POSTed a real transfer on one click; both of a row's buttons
+  open the picker now, which names every device and pre-checks none. A node named in the
+  map is therefore not a way into it — the map offers no action at all, which is why an
+  upstream and a mirror both appear there and neither is in the picker
+  (`tests/test_upstream.py::test_an_upstream_node_is_not_a_selection_target`).
+  The four states get four classes (`DeviceState.map_class`), unlike `badge_class` where
+  `partial` and `absent` share the plain `.badge`: a slot 4px wide has no tooltip to fall
+  back on, so a directory a device holds 2 of 900 files of must not be the same picture as
+  one it holds in full. **Every state rule names its context** — `.pmap > .p-ok`, not
+  `.p-ok` — because `.pmap > i` is a class *and* a type and outranks a bare class, and
+  `.pslot` ties with one and sits later in the file. The first version lost both arguments
+  and painted all fifteen slots `--line` on a fleet where seven nodes hold most of the
+  library: a map that was uniformly grey, with the whole suite green, because a stylesheet
+  read as text cannot see a cascade. Same lesson as `display: flex` outranking `[hidden]`
+  in §Conventions. `tests/test_theme.py::test_a_slot_is_painted_by_its_state_and_not_by_the_default`
+  does what the cascade does — collects every rule that could paint a slot and compares
+  specificity — but it is a stand-in: `tools/shot.py --eval` on a slot's computed
+  background is the real check.
+  **A map needs a legend, and it takes two, because neither can say the other's half.**
+  Identity is the `.thead` cell (`.pmap-head`, `lib_pane.html`): one rotated label per
+  slot, in the same flex with the same gap and the same cell padding, in the same grid
+  track, so label N stands over slot N. Those three are why it lines up, and any of them
+  drifting still renders — one column out, naming every device wrongly while looking
+  right (`tests/test_battery.py::test_the_map_header_lines_up_with_the_slots`). It is
+  dropped below **1300px**, derived twice: above that every fixed track is at its maximum
+  so a slot is 10.5px, and it clears the touch band's 1280 ceiling where `--scale` is 1.35
+  and the same panel is 722px rather than 848 (`::test_the_map_header_appears_only_where_it_fits`).
+  State is the `.statusline` legend, which is always there and carries real swatches in
+  the same `.p-*` classes the slots use, so it cannot drift from what it explains. Below
+  1089px there is no `.thead` at all and the strip's dialog is the whole legend. All the provenance behind a slot — the name, the `have/total`, the
+  age — lived in a `title=` the fleet's own tablets have never had, every one of them
+  matching `@media (hover: none)`, so the strip is a `<button>` that opens
+  `/lib/presence`. A `<button>` and not a div because `app.js`'s row-click handler already
+  returns early on `a, button, select, textarea`, so opening the names does not also tick
+  the row.
+- **The crumb and the selection bar are pinned as one group, not two.** `.lib-sticky`
+  (`app.css`), wrapping `.pathline` and `#selbar` in `lib_pane.html`. `.lib-body` is the
+  scroller; the Push button is armed by ticking a row that may be 1,400 rows down
+  `Science/`, and the bar carrying it had scrolled off the top long before. It cannot be
+  a second sticky element beside the crumb, because the crumb's segments wrap — its height
+  is not a number anyone can write into the bar's `top:`. The opaque `var(--bg)` is
+  mandatory rather than decoration (`.selbar`'s own background is
+  `rgba(154,140,230,.07)`, and rows read straight through it), the 14px above the crumb
+  stays a *child's* padding because Chrome pins a sticky child at the scroller's content
+  box, and the 12px below is the group's padding rather than `.selbar`'s margin for that
+  same reason reached from the other end: a margin falls outside the background box, so
+  rows would scroll through a transparent band under the bar. Pinned by
+  `tests/test_theme.py::test_the_selection_bar_stays_on_screen` and
+  `::test_the_pinned_crumb_owns_the_padding_above_it`.
 - **The file table is the only navigator, and both halves of that are load-bearing.**
   A directory row's name is an `<a>` (`file_rows.html`) and `.pathline` is a real
   breadcrumb built from `index.ancestors()` (`lib_pane.html`) — down and up. There is no

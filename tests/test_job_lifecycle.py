@@ -238,16 +238,25 @@ async def test_library_row_offers_a_dry_run(client):
 
 
 def test_a_row_push_survives_a_quote_in_the_book_name(app):
-    """`hx-vals` is JSON inside a single-quoted attribute, so `|e` is the wrong escape:
-    it writes `&#34;`, the parser hands htmx back a bare `"`, and the object no longer
-    parses — that row's push buttons go dead. Rendered here rather than through the
-    fixture library, whose file counts several other tests assert on.
+    """A quote in a book name must reach the job intact, however the row sends it.
+
+    It used to ride in `hx-vals` — JSON inside a single-quoted attribute, where `|e` is
+    the wrong escape: it writes `&#34;`, the parser hands htmx back a bare `"`, and the
+    object no longer parses, so that row's push buttons went dead. The row now opens the
+    picker instead and the path travels twice: percent-encoded through the query string,
+    then back out into the picker's hidden input. Both halves are asserted, because
+    either one alone lets the other lie. Rendered rather than driven through the fixture
+    library, whose file counts several other tests assert on.
     """
+    import html as html_mod
+    from urllib.parse import parse_qs, urlsplit
+
     from libnodes.library import Entry
     from libnodes.templating import templates
 
+    path = 'Fiction/He said "hi".epub'
     row = Entry(
-        path='Fiction/He said "hi".epub',
+        path=path,
         parent="Fiction",
         name='He said "hi".epub',
         is_dir=False,
@@ -260,20 +269,34 @@ def test_a_row_push_survives_a_quote_in_the_book_name(app):
         author=None,
     )
     device = app.state.lib.devices.config.devices[0]
-    html = templates.env.get_template("file_rows.html").render(
+    markup = templates.env.get_template("file_rows.html").render(
         rows=[row],
-        presence={},
+        slots={},
+        fleet=[device],
         by_id={},
         devices=[device],
-        push_devices=[device],
         q="",
         path="",
         oob=False,
     )
 
-    vals = re.findall(r"hx-vals='([^']*)'", html)
-    assert vals, "the row rendered no push button at all"
-    assert json.loads(vals[0])["path"] == 'Fiction/He said "hi".epub'
+    urls = re.findall(r'hx-get="(/jobs/picker[^"]*)"', markup)
+    assert len(urls) == 2, "the row should offer a dry run and a push"
+    for url in urls:
+        query = parse_qs(urlsplit(html_mod.unescape(url)).query)
+        assert query["path"] == [path]
+
+    picker = templates.env.get_template("dialogs/picker.html").render(
+        paths=[path],
+        total_bytes=1024,
+        devices=[],
+        dry_run=False,
+        biggest=0,
+        hidden_mirrors=0,
+        hidden_upstreams=0,
+    )
+    carried = re.findall(r'<input type="hidden" name="path" value="([^"]*)">', picker)
+    assert [html_mod.unescape(v) for v in carried] == [path]
 
 
 async def test_the_selection_bar_asks_the_picker_for_a_dry_run(client):

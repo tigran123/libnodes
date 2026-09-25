@@ -33,8 +33,10 @@ background probe, so an unreachable e-reader costs the page nothing.
 filtering 20,000 entries stays interactive on a Pi. The file table is the navigator: a
 directory's name opens it, the rest of the row ticks it for a push, and the breadcrumb
 goes back up — which is what makes the view usable on a tablet, where a separate tree pane
-had nowhere to go. `PRESENT ON` shows which devices already hold each item, and hovering a
-chip says when we last had evidence for it. Both a dark and a light theme are built in.
+had nowhere to go. `PRESENT ON` is one slot per device, always the whole fleet and always
+in the same order, so the column reads as a matrix down the page; opening a row's strip
+names each device, says how much of the row it holds and when we last had evidence. Both a
+dark and a light theme are built in.
 
 ![The Library view](docs/library.png)
 

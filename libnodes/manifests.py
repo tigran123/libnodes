@@ -67,6 +67,22 @@ class DeviceState:
         }[self.presence]
 
     @property
+    def map_class(self) -> str:
+        """The presence map's slot class, which is not badge_class with a prefix.
+
+        `partial` and `absent` share the plain `.badge` above, so a directory the device
+        holds 2 of 900 files of has always looked exactly like one it holds in full --
+        the difference lived only in the tooltip. A slot 4px wide has no tooltip to fall
+        back on, so the four states get four classes here.
+        """
+        return {
+            "ok": "p-ok",
+            "stale": "p-stale",
+            "partial": "p-part",
+            "absent": "p-none",
+        }[self.presence]
+
+    @property
     def verb(self) -> str:
         return {"push": "pushed", "pull": "pulled"}.get(self.source, "seen in scan")
 
@@ -107,6 +123,28 @@ class Extras:
     @classmethod
     def unknown(cls) -> "Extras":
         return cls(rows=[], total=0, duplicates=0, listed_bytes=0, scanned_at=None)
+
+
+def presence_slots(
+    presence: dict[str, list[DeviceState]], device_ids: Sequence[str]
+) -> dict[str, list[DeviceState | None]]:
+    """One slot per device, in the order given, `None` where nothing is known.
+
+    `Manifests.presence` never constructs an `absent` state -- it appends only where
+    there is evidence -- so the list it returns is *dense* and its length varies from row
+    to row. That is the right shape for a list of chips, each carrying its own name, and
+    exactly the wrong one for the presence map, whose whole claim is that slot 4 is the
+    same device on every row: render the dense list and every slot after a device with
+    nothing recorded shifts left, so the map says a book is on `lg` when it is on `one`.
+    It fails green in the worst way -- the page looks right, the colours are plausible,
+    and nothing anywhere throws.
+
+    Both the row and its detail dialog go through here, so the two cannot disagree.
+    """
+    return {
+        path: [{s.device_id: s for s in states}.get(device_id) for device_id in device_ids]
+        for path, states in presence.items()
+    }
 
 
 class Manifests:

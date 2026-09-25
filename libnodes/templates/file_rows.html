@@ -9,7 +9,6 @@
 {% endif %}
 
 {% for row in rows %}
-  {% set states = presence.get(row.path, []) %}
   <div class="trow file-grid" id="row-{{ loop.index }}">
 
     <div class="cell-check">
@@ -60,50 +59,58 @@
     <div class="mono t-dim" data-label="Modified">{{ row.mtime|isodate }}</div>
 
     <div data-label="Present on">
-      {% if states %}
-        <span class="present">
-        {% for s in states %}
-          {% set dev = by_id.get(s.device_id) %}
-          {# Provenance per chip: which device, what state, and when we last had any
-             evidence for it. This is a cached view, so the age is the point. #}
-          <span class="badge {{ s.badge_class }}"
-                title="{{ dev.name if dev else s.device_id }} · {{ s.detail or s.presence }} · {{ s.verb }} {{ s.at|reltime }}">{{ dev.display_abbr if dev else s.device_id }}{% if s.presence == 'stale' %} stale{% endif %}</span>
+      {# One slot per fleet device, in fleet order, drawn whether that device holds this
+         row or not — because the map's whole claim is that the fourth slot is the same
+         device on every row. `slots` is what guarantees that; see `presence_slots`. A
+         row nothing holds is fifteen faint slots rather than an em dash, for the same
+         reason: the column has to stay readable *down* the page.
+         A <button> and not a div, so app.js's row-click handler lets it through — it
+         returns early on `a, button, select, textarea` — and tapping the strip opens the
+         names instead of ticking the row. The titles below are the desktop's shortcut to
+         the same thing; on a tablet there is no hover and the dialog is all there is. #}
+      {% if fleet %}
+      {% set row_slots = slots.get(row.path) or [] %}
+      {% set held = row_slots|select|list|length %}
+      <button class="pmap" type="button"
+              hx-get="/lib/presence?p={{ row.path|urlencode }}"
+              hx-target="#notices"
+              hx-swap="beforeend"
+              title="on {{ held }} of {{ fleet|length }} devices — open for names and ages"
+              aria-label="Present on {{ held }} of {{ fleet|length }} devices">
+        {% for dev in fleet %}
+          {% set s = row_slots[loop.index0] if loop.index0 < row_slots|length else None %}
+          <i class="{{ s.map_class if s else 'p-none' }}"
+             title="{{ dev.name }} · {% if s %}{{ s.detail or s.presence }} · {{ s.verb }} {{ s.at|reltime }}{% else %}nothing recorded{% endif %}"></i>
         {% endfor %}
-        </span>
-      {% elif row.is_dir %}
-        <span class="t-faint">—</span>
+      </button>
       {% else %}
         <span class="t-faint">—</span>
       {% endif %}
     </div>
 
     <div class="push-cell" data-label="Push">
-      {% for dev in push_devices %}
-        <button class="btn btn-push" type="button"
-                hx-post="/jobs"
-                {# tojson, not |e: |e writes &#34; for a quote, the parser decodes it back
-                   to " inside this single-quoted attribute, and the JSON is broken for
-                   any book whose name contains one. tojson supplies its own quotes. #}
-                hx-vals='{"device": {{ dev.id|tojson }}, "path": {{ row.path|tojson }}}'
-                hx-target="#notices"
-                hx-swap="beforeend"
-                hx-disabled-elt="this"
-                title="Push to {{ dev.name }}">→ {{ dev.display_abbr }}</button>
-      {% endfor %}
+      {# Two buttons, and both of them ask first. The row used to carry `→ ONE` and
+         `→ LG` as well — the first two selectable devices in devices.yaml order, chosen
+         by nothing but file order — and each of those POSTed a real transfer on one
+         click. A one-click push to a target picked by file order is a control whose
+         name does not say what it does; the picker names every device and pre-checks
+         none.
+         PRESENT ON is a cached count and answers "what is there", not "what would move".
+         A push that repairs files already present looks identical to one that sends
+         everything, so the dry run stays reachable from the row itself. #}
       {% if devices %}
-        {# PRESENT ON is a cached count and answers "what is there", not "what would
-           move". A push that repairs files already present looks identical to one that
-           sends everything, so the dry run has to be reachable from the row itself. #}
         <button class="btn btn-push btn-icon" type="button"
                 hx-get="/jobs/picker?dry_run=true&amp;path={{ row.path|urlencode }}"
                 hx-target="#notices"
                 hx-swap="beforeend"
-                title="Dry run — list exactly what a push would send">?</button>
+                aria-label="Dry run"
+                title="Dry run — list exactly what a push would send">⌕</button>
         <button class="btn btn-push btn-icon" type="button"
                 hx-get="/jobs/picker?path={{ row.path|urlencode }}"
                 hx-target="#notices"
                 hx-swap="beforeend"
-                title="Choose devices">⋯</button>
+                aria-label="Push"
+                title="Push — choose devices">→</button>
       {% endif %}
     </div>
 

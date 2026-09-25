@@ -37,6 +37,12 @@
 
   <div class="lib-body">
 
+    {# The crumb and the selection bar stick together, as one group. Separately they
+       cannot: .lib-body is the scroller, the crumb is already pinned at its top, and the
+       crumb's height is not a constant — the segments wrap. So a sticky #selbar would
+       need a `top:` nobody can write down. See .lib-sticky in app.css. #}
+    <div class="lib-sticky">
+
     {# The only way back up now that the tree is gone. Each ancestor carries the same htmx
        quartet the tree links did, and the `href` alone is a working navigation with no
        JS at all. Only `p` is carried: entering or leaving a directory is a fresh
@@ -71,7 +77,11 @@
       </span>
     </nav>
 
+    {# Empty until something is ticked, and it stays this element through every swap:
+       /lib/selection replaces its innerHTML, not the div. #}
     <div id="selbar"></div>
+
+    </div>
 
     {# hx-disinherit, and it is load-bearing rather than tidiness. hx-include is an
        inherited attribute, so every element inside this form was silently adding
@@ -106,7 +116,19 @@
           <div>Format</div>
           <div class="cell-r">Size</div>
           <div>Modified</div>
-          <div>Present on</div>
+          {# The map's legend, and the only thing that makes it readable without a
+             tooltip: one label per slot, in the same flex with the same gap and the
+             same cell padding, so label N sits over slot N on every row below. Rotated
+             because fifteen abbreviations do not fit across a 210px track any other
+             way, and dropped for the plain heading below 1300px, where the track is
+             squeezed too narrow to hold them side by side. Below 1089px there is no
+             .thead at all -- the row stacks and the strip's dialog is the legend. #}
+          <div class="pmap-head">
+            <span class="pmap-head-plain">Present on</span>
+            {% for dev in fleet %}
+              <span class="pmap-head-slot" title="{{ dev.name }}">{{ dev.display_abbr }}</span>
+            {% endfor %}
+          </div>
           <div class="cell-r">Push</div>
         </div>
         <div id="file-rows">
@@ -118,7 +140,20 @@
     <div class="statusline">
       <span>a directory's name opens it · the rest of the row ticks it</span>
       <span>|</span>
-      <span>PRESENT ON is a cached view — what we last pushed or scanned, not a live look</span>
+      {# What the colours mean, which is the one thing the header above cannot say: it
+         carries identity, this carries state, and neither duplicates the other. Real
+         swatches rather than words for them -- a legend that describes a colour in prose
+         is a legend you have to translate, and these are the same .p-* classes the slots
+         themselves use, so the legend cannot drift from what it explains. #}
+      <span class="legend">
+        PRESENT ON:
+        <b><span class="pslot p-ok"></span> has it</b>
+        <b><span class="pslot p-part"></span> some of it</b>
+        <b><span class="pslot p-stale"></span> out of date</b>
+        <b><span class="pslot p-none"></span> nothing recorded</b>
+      </span>
+      <span>|</span>
+      <span>one slot per device, in the Devices page's order — open a row's strip for names and ages. A cached view, not a live look</span>
     </div>
 
   </div>

@@ -255,19 +255,63 @@ def test_log_out_is_an_icon_sized_like_the_toggle():
     assert css.index("\n.logout,\n.rescan {") > css.index("\n.btn {")
 
 
+def _block(css: str, selector: str) -> str:
+    start = css.index("\n" + selector + " {")
+    return css[start : css.index("}", start)]
+
+
 def test_the_pinned_crumb_owns_the_padding_above_it():
     """Chrome pins a sticky child at its scroller's content box, so a `padding-top` on
     .lib-body is a band the rows scroll through above the crumb -- 18.9 real px on a
-    phone, measured. The 14px has to be the opaque crumb's own."""
+    phone, measured. The 14px has to be inside the opaque sticky box."""
     import re
 
     css = _css()
-    body = css[css.index("\n.lib-body {") : css.index("}", css.index("\n.lib-body {"))]
+    body = _block(css, ".lib-body")
     pad = re.search(r"padding: (\S+)", body).group(1)
     assert pad in ("0", "0px"), f".lib-body has a top padding again: {pad}"
-    crumb = css[css.index("\n.pathline {") : css.index("}", css.index("\n.pathline {"))]
-    assert "position: sticky" in crumb
+    group = _block(css, ".lib-sticky")
+    assert "position: sticky" in group
+    crumb = _block(css, ".pathline")
     assert re.search(r"padding-top: [1-9]", crumb)
+
+
+def test_the_selection_bar_stays_on_screen():
+    """The Push button is armed by ticking a row that may be 1,400 rows down `Science/`,
+    and the bar carrying it used to be back at the top of a scroller by then.
+
+    It is pinned as one group with the crumb, and that is not a preference: the crumb's
+    segments wrap, so its height is not a number anyone could write into a `top:` of the
+    bar's own. So the assertions are that the group is the sticky one, that .pathline no
+    longer declares a position of its own (two sticky boxes at top: 0 fight), and that
+    the group is opaque -- .selbar's own background is rgba(154,140,230,.07) and rows read
+    straight through it. The 12px under the bar has to be the group's padding rather than
+    .selbar's margin, for the reason the crumb's padding is a child's: a margin falls
+    outside the background box, so rows would scroll through a transparent band there.
+    """
+    css = _css()
+    group = _block(css, ".lib-sticky")
+    assert "position: sticky" in group
+    assert "top: 0" in group
+    assert "background: var(--bg)" in group
+    assert "padding-bottom: 12px" in group
+
+    crumb = _block(css, ".pathline")
+    assert "position:" not in crumb, "two sticky boxes at top: 0 would fight"
+
+    bar = _block(css, ".selbar")
+    assert "margin-bottom" not in bar
+
+    from pathlib import Path
+
+    pane = (
+        Path(__file__).resolve().parent.parent
+        / "libnodes"
+        / "templates"
+        / "lib_pane.html"
+    ).read_text()
+    sticky = pane[pane.index('class="lib-sticky"') :]
+    assert sticky.index('id="selbar"') < sticky.index("</div>\n\n    {# hx-disinherit")
 
 
 async def test_both_theme_icons_are_always_in_the_dom(client):
@@ -532,3 +576,68 @@ def test_a_dialog_can_be_left_without_its_close_button():
           / "libnodes" / "static" / "app.js").read_text()
     assert 'contains("backdrop")' in js
     assert 'e.key !== "Escape"' in js
+
+
+def _specificity(selector: str) -> tuple[int, int, int]:
+    """(ids, classes, types) for the simple selectors this stylesheet uses."""
+    import re
+
+    ids = len(re.findall(r"#[\w-]+", selector))
+    classes = len(re.findall(r"[.:\[][\w-]+", selector))
+    types = len(re.findall(r"(?:^|[\s>+~])([a-z]+)(?![\w-]*[(\w-])", selector))
+    return (ids, classes, types)
+
+
+def _claims_slot(selector: str, state: str) -> bool:
+    """Would this selector match `<i class="p-STATE">` inside a `.pmap`?
+
+    Only the shapes this stylesheet actually uses: the slot on its own, or the slot under
+    its map. Anything else is not a candidate and is not silently treated as one.
+    """
+    import re
+
+    target = selector.strip()
+    for parent in (".pmap >", ".pmap"):
+        if target.startswith(parent):
+            target = target[len(parent) :].strip()
+            break
+    return bool(re.fullmatch(rf"i|\.{state}|i\.{state}|\.{state}i", target))
+
+
+def test_a_slot_is_painted_by_its_state_and_not_by_the_default():
+    """The presence map shipped uniformly grey, on a fleet where seven nodes hold most of
+    the library, and every text-level test passed.
+
+    `.pmap > i` is a class *and* a type, so it outranks a bare `.p-ok`; `.pslot` ties with
+    one and comes later in the file, which settles it the same way. Both set a background,
+    so all four states rendered as --line. This is the `display: flex` beating `[hidden]`
+    lesson in §Conventions, and it is invisible in a stylesheet read as text -- so the
+    test has to do what the cascade does: collect every rule that could paint a slot in
+    that state, and check which of them wins.
+
+    tools/shot.py --eval on a slot's computed background is the real check and remains
+    the one to run; this stands in for it in a suite that has no browser.
+    """
+    import re
+
+    # Comments first: they carry commas, and a comma is how a selector list is split.
+    css = re.sub(r"/\*.*?\*/", "", _css(), flags=re.S)
+    rules = re.findall(r"([^{}]+)\{([^}]*)\}", css)
+
+    for state in ("p-ok", "p-part", "p-stale"):
+        claims: list[tuple[tuple[int, int, int], int, str]] = []
+        for order, (selectors, body) in enumerate(rules):
+            if "background" not in body:
+                continue
+            for selector in selectors.split(","):
+                if "@" in selector:
+                    continue
+                if _claims_slot(selector, state):
+                    claims.append((_specificity(selector), order, selector.strip()))
+
+        assert claims, f"nothing paints a .{state} slot at all"
+        claims.sort()
+        assert state in claims[-1][2], (
+            f"a .{state} slot is painted by `{claims[-1][2]}`, which outranks its own "
+            f"state rule — every slot renders as the absent colour"
+        )

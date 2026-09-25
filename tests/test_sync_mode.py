@@ -31,8 +31,8 @@ ROOT = Path(__file__).resolve().parent.parent
 def devices_file(settings) -> Path:
     """Overrides the shared fixture: this module needs a mirror node in the fleet.
 
-    Deliberately local. `push_devices` takes the first two *selectable* devices and
-    several UI tests elsewhere count on the shared fleet being exactly what it is.
+    Deliberately local: the presence map draws one slot per device, so several UI tests
+    elsewhere count on the shared fleet being exactly what it is.
     """
     path = settings.resolved_devices_file
     path.write_text(
@@ -470,11 +470,13 @@ async def test_a_mirror_node_is_not_a_selection_target(client):
     assert 'value="kobo"' in picker.text
     assert 'value="thinkpad"' not in picker.text
 
-    # The row's own → buttons, asserted on the payload they would post rather than on the
-    # node's name: the name also appears in the PRESENT ON badges, which mirror nodes keep.
+    # And there is no way past the picker: a row's two buttons both open it, so the
+    # picker's own filter is the only one there is. Asserted on the row's endpoints
+    # rather than on the node's name -- the name is in every row's presence map, which a
+    # mirror keeps, because what a mirror holds is worth showing.
     rows = await client.get("/lib/list")
-    assert '"device": "kobo"' in rows.text
-    assert '"device": "thinkpad"' not in rows.text
+    assert "/jobs/picker" in rows.text
+    assert "hx-post=\"/jobs\"" not in rows.text
 
 
 async def test_a_selection_post_to_a_mirror_is_refused(client, app):
