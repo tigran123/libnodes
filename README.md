@@ -35,8 +35,11 @@ directory's name opens it, the rest of the row ticks it for a push, and the brea
 goes back up — which is what makes the view usable on a tablet, where a separate tree pane
 had nowhere to go. `PRESENT ON` is one slot per device, always the whole fleet and always
 in the same order, so the column reads as a matrix down the page; opening a row's strip
-names each device, says how much of the row it holds and when we last had evidence. Both a
-dark and a light theme are built in.
+names each device, says how much of the row it holds and when we last had evidence. The
+totals beside the breadcrumb open the same map for wherever you are, `/Books` included:
+a bar per device for how much of it that device holds, and a cell per folder for which
+parts, counted against the index so only the library's own files count. Both a dark and a
+light theme are built in.
 
 ![The Library view](docs/library.png)
 
@@ -264,7 +267,7 @@ infer from its label is a bad action.
 | `probe.py` | cached reachability and free-space probes, with backoff |
 | `jobs.py` | job store, rsync runner, progress parser, failure hints |
 | `procs.py` | subprocess teardown: terminate, wait, release the pipes |
-| `manifests.py` | what each device holds; `PRESENT ON` and staleness |
+| `manifests.py` | what each device holds; `PRESENT ON`, staleness and the coverage map |
 | `scan.py` | remote listing, and recovery of mangled filenames |
 | `auth.py` | the shared-password lock: signed cookie, middleware, what stays open |
 | `watch.py` | inotify on `devices.yaml`, so edits appear without polling |

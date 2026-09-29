@@ -156,6 +156,14 @@ listed.
   `test_manifests.py::test_a_directory_count_costs_the_subtree_not_the_whole_device`.
 - **`Manifests.last_sync` is cached and every write keeps it exact** — the Devices poll asks
   for the whole fleet every 10 s. `test_manifests.py::test_last_sync_stays_exact_through_every_write`.
+- **The coverage map counts only library paths**: `Manifests.coverage` joins to the index on
+  `path` (a range count took dragon's vault for books), and takes sizes from the index. The
+  root alone is cached per device, keyed on the index's `indexed_at` and a counter every
+  write bumps *after* committing (`_touched`; a new writer must call it), so a count taken
+  across a write is never served. `test_manifests.py::test_coverage_counts_only_the_librarys_own_files`,
+  `::test_the_root_coverage_follows_every_write`, `::test_a_write_during_the_root_count_is_not_cached_away`.
+- **"Not there" needs a `scans` row**; no rows and no scan is "nothing recorded"
+  (`CoverageRow.state`). `test_routes.py::test_a_scanned_device_holding_nothing_is_not_called_unscanned`.
 - **A scanned symlink's size comes from the vault; unresolvable is `None` (a dash), not 0.**
   A mirror's vault is not "extras" (`expected_toplevel=SKIP_TOPLEVEL`).
 - **Requests never probe a device.** `note_interest()` is a `time.time()` stamp and must stay
@@ -219,9 +227,14 @@ listed.
   `::test_the_rail_breakpoint_follows_the_zoom`, `::test_the_tablet_zoom_leaves_the_library_a_table`,
   `::test_the_touch_minimum_survives_the_zoom`.
 - **The device table's tracks, header cells and row cells agree in number.**
-  `test_battery.py::test_the_grid_declares_a_track_for_every_cell`.
+  `test_battery.py::test_the_grid_declares_a_track_for_every_cell`. So do the coverage map's:
+  four device tracks plus one per folder, and `repeat()` cannot take 0, so no folders is its
+  own rule. `test_routes.py::test_the_coverage_grid_declares_a_track_for_every_cell`.
 - **A dialog scrolls in its body and never outgrows the screen**; Escape or a tap on the
   backdrop closes the top one. `test_theme.py::test_a_dialog_taller_than_the_screen_scrolls_and_keeps_its_close`.
+  Its `dvh` cap is in `@supports`: a declaration holding `var()` does not fall back to the
+  line above when a unit is unknown, it computes to `none` (Chrome < 108, the Nexus 10 and
+  the LG G4). `test_theme.py::test_a_newer_viewport_unit_is_behind_supports`.
 - **The SSE dock:** `dock`/`done` events are never dropped from a full subscriber queue;
   terminal lines are batched (`LINE_BATCH`). The dock opens a stream only while a job is
   live (six connections per host). `AuthMiddleware` is pure ASGI, never

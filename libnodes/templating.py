@@ -59,6 +59,19 @@ def commafy(num: int | float | None) -> str:
     return f"{int(num):,}"
 
 
+def share(held: int | None, total: int | None) -> str:
+    """`99.9%` -- the coverage map's share, rounded down: 20,787 of 20,794 is not `100%`,
+    and one book of 20,794 is not `0%`."""
+    if not held or not total:
+        return "0%"
+    if held >= total:
+        return "100%"
+    tenths = held * 1000 // total
+    if tenths == 0:
+        return "<0.1%"
+    return f"{tenths // 10}.{tenths % 10}%"
+
+
 def reltime(ts: float | None, now: float | None = None) -> str:
     """`14m ago` / `yesterday` / `4d ago` -- every "how old is this" on the page."""
     if not ts:
@@ -144,6 +157,7 @@ def build_templates() -> Jinja2Templates:
         hsize=hsize,
         hsize_short=hsize_short,
         commafy=commafy,
+        share=share,
         reltime=reltime,
         until=until,
         hhmmss=hhmmss,
@@ -166,6 +180,7 @@ __all__ = [
     "hsize",
     "hsize_short",
     "commafy",
+    "share",
     "reltime",
     "hhmmss",
     "clock",

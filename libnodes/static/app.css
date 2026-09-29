@@ -1339,6 +1339,18 @@ ul {
   color: var(--ink);
 }
 
+/* The totals open the coverage map. Dotted, where a link that leaves is solid: the tablets
+   cannot hover to find out. */
+.pathline .cov-open {
+  text-decoration: underline dotted var(--faint);
+  text-underline-offset: 3px;
+}
+
+.pathline .cov-open:hover {
+  color: var(--accent);
+  text-decoration-color: currentColor;
+}
+
 /* margin-left:auto right-aligns it on the crumb's line, and on a line of its own once the
    crumb has wrapped past it. */
 .pathline .summary {
@@ -1963,18 +1975,27 @@ a.file-name:hover {
 
 /* Capped at the screen with a scrolling body, so the head and its Close are always on it:
    taller than the viewport, a dialog spilled past both edges of the fixed backdrop and left
-   only Android's Back. Divided by --scale; dvh after vh for a collapsing toolbar. */
+   only Android's Back. Divided by --scale; dvh, for a collapsing toolbar, just below. */
 .dialog {
   width: 454px;
   max-width: 100%;
   max-height: calc(100vh / var(--scale) - 40px);
-  max-height: calc(100dvh / var(--scale) - 40px);
   display: flex;
   flex-direction: column;
   background: var(--panel);
   border: 1px solid var(--border-hi);
   border-radius: var(--r-panel);
   overflow: hidden;
+}
+
+/* Only where dvh exists. A declaration holding var() is not checked until it is computed,
+   so a unit the browser lacks does not fall back to the line above: the property becomes
+   `none`. Chrome before 108 -- the Nexus 10, the LG G4 -- drew every dialog uncapped, the
+   coverage map taller than the screen with its head, its Close and its backdrop off it. */
+@supports (max-height: 100dvh) {
+  .dialog {
+    max-height: calc(100dvh / var(--scale) - 40px);
+  }
 }
 
 .dialog-head,
@@ -2014,6 +2035,309 @@ a.file-name:hover {
   padding: 12px 15px;
   border-top: 1px solid var(--line);
 }
+
+/* Coverage map ------------------------------------------------------------ */
+
+/* As wide as its matrix, up to .dialog's max-width; past that the matrix scrolls sideways
+   in .cov-scroll, under a pinned device column, and the page never does. After .dialog,
+   which it overrides. */
+.cov-dialog {
+  width: max-content;
+  min-width: min(520px, 100%);
+}
+
+/* The prose wraps to the matrix instead of widening it: a paragraph's max-content is one
+   line, which sized a dialog with no folder columns at 1012px. width 0 is its contribution;
+   min-width 100% is its width. */
+.cov-dialog .dialog-body > :not(.cov-scroll) {
+  width: 0;
+  min-width: 100%;
+}
+
+.cov-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.cov-crumbs a {
+  color: var(--ink-3);
+  text-decoration: none;
+}
+
+.cov-crumbs a:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.cov-crumbs .sep {
+  color: var(--faint);
+}
+
+.cov-crumbs .leaf {
+  color: var(--ink);
+}
+
+.cov-held {
+  margin-left: auto;
+  padding-left: 12px;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--ink-3);
+}
+
+.cov-summary,
+.cov-counts {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 14px;
+  row-gap: 4px;
+}
+
+.cov-summary {
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.cov-scroll {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+/* The tracks: device, bar, share, count, then one per folder. repeat() cannot take 0, so
+   the folder tracks are a second rule rather than a --cols of 0.
+   tests/test_routes.py::test_the_coverage_grid_declares_a_track_for_every_cell. */
+/* Without folders the device column takes what the crumb left spare, rather than the
+   rules between devices stopping short of the dialog's edge. */
+.cov {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) 120px 50px 72px;
+  font-size: 12px;
+}
+
+.cov.has-cols {
+  grid-template-columns: minmax(160px, 240px) 120px 50px 72px repeat(var(--cols), 20px);
+}
+
+.cov-h {
+  align-self: end;
+  padding-bottom: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.cov-held-h {
+  grid-column: span 3;
+}
+
+/* Bottom-to-top, as the table's map headings are; the band behind every other column is
+   what the eye follows down (no :has(), which the Nexus 10 lacks). As tall as the longest
+   name here, up to ~19 characters; the title and the folder's own map have the rest. */
+.cov-col {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  align-self: stretch;
+  padding: 0 0 6px;
+  text-decoration: none;
+}
+
+.cov-col > span {
+  max-height: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-size: 10.5px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink-3);
+}
+
+.cov-col:hover > span {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.cov-col.band,
+.cov-c.band {
+  background: var(--surface);
+}
+
+/* Every cell of a device's line, so the rule between devices runs unbroken. */
+.cov-r {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  border-top: 1px solid var(--line);
+}
+
+/* Pinned while the folders scroll sideways; opaque, or they show through. */
+.cov-name {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  padding: 6px 12px 6px 0;
+  background: var(--panel);
+}
+
+.cov-dev {
+  color: var(--ink-2);
+}
+
+.cov-meta {
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--dim);
+}
+
+.cov-meta > span + span::before {
+  content: " · ";
+  color: var(--faint);
+}
+
+.cov-meta > .is-warn {
+  color: var(--warn);
+}
+
+.cov-meta > .cov-role {
+  color: var(--accent);
+}
+
+.cov-bar {
+  display: flex;
+  flex: 1;
+  height: 8px;
+  margin-right: 10px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--line);
+}
+
+.cov-bar > i {
+  display: block;
+  height: 100%;
+}
+
+.cov-bar > .cov-bar-ok {
+  background: var(--ok);
+}
+
+.cov-bar > .cov-bar-stale {
+  background: var(--warn-fill);
+}
+
+.cov-pct,
+.cov-n {
+  justify-content: flex-end;
+  padding-right: 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.cov-pct {
+  color: var(--ink-2);
+}
+
+/* The count over its size, the two lines of the row beside it. */
+.cov-n {
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  color: var(--ink-3);
+}
+
+.cov-gb {
+  font-size: 10px;
+  color: var(--dim);
+}
+
+.cov-word {
+  grid-column: span 3;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.cov-word.is-complete {
+  color: var(--ok);
+}
+
+.cov-word.is-stale {
+  color: var(--warn);
+}
+
+.cov-word.is-absent {
+  color: var(--muted);
+}
+
+.cov-c {
+  justify-content: center;
+}
+
+/* A square filled from the bottom: green for current copies, amber above for stale ones,
+   the track for the rest. `absent` is known empty, a scan's word; `unknown` is only an
+   outline, because nothing has been asked. */
+.cov-sq {
+  display: block;
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+}
+
+.cov-sq.is-complete,
+.cov-sq.is-partial {
+  background: linear-gradient(
+    to top,
+    var(--ok) 0 var(--fo),
+    var(--warn-fill) var(--fo) calc(var(--fo) + var(--fs)),
+    var(--line) 0
+  );
+}
+
+.cov-sq.is-absent {
+  background: var(--border);
+}
+
+.cov-sq.is-unknown {
+  border: 1px dashed var(--border-hi);
+}
+
+.cov-legend {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 14px;
+  row-gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--dim);
+}
+
+.cov-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 
 .test-strip {
   margin-top: 8px;

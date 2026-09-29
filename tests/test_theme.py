@@ -559,6 +559,37 @@ def test_a_dialog_taller_than_the_screen_scrolls_and_keeps_its_close():
     assert "flex-shrink: 0" in _rule(css, ".dialog-body > *")
 
 
+def _outside_supports(css: str) -> str:
+    """The stylesheet with every `@supports` block, braces matched, cut out."""
+    out, i = [], 0
+    while (start := css.find("@supports", i)) != -1:
+        out.append(css[i:start])
+        depth, j = 0, css.index("{", start)
+        while True:
+            depth += {"{": 1, "}": -1}.get(css[j], 0)
+            j += 1
+            if depth == 0:
+                break
+        i = j
+    out.append(css[i:])
+    return "".join(out)
+
+
+def test_a_newer_viewport_unit_is_behind_supports():
+    """`max-height: calc(100dvh / var(--scale) - 40px)` after a vh line looks like a
+    fallback and is not one: a declaration holding var() is validated only when computed,
+    so on a Chrome without dvh (before 108: the Nexus 10, the LG G4) it wins the cascade and
+    then computes to `none`. Every dialog there was uncapped, and the coverage map covered
+    the screen with its Close off it (shots/nexus10-map.jpg). In @supports, the vh line
+    stands on the old devices and the new ones read exactly what they read before."""
+    import re
+
+    css = _css()
+    loose = re.findall(r"[^\n]*\d(?:dvh|svh|lvh|dvw|svw|lvw)\b[^\n]*", _outside_supports(css))
+    assert not loose, "a newer viewport unit outside @supports:\n" + "\n".join(loose)
+    assert "@supports (max-height: 100dvh)" in css, "the dialog's dvh cap went missing"
+
+
 def test_an_action_note_drops_under_its_button_on_a_narrow_dialog():
     """Unwrapped, the 150px button left the note ~120px of a phone's dialog and the Pull
     note stood one word to a line."""

@@ -66,7 +66,15 @@
       </span>
       {# Recursive totals for the directory, not just its direct children. #}
       <span class="summary">
-        {{ entry.files|commafy }} files · {{ entry.size|hsize }} · mtime {{ entry.mtime|isodate }}
+        {# The totals open the coverage map of what they count: the only way into the map of
+           /Books, which has no row and no strip. Not the crumb, whose /Books means "go to
+           the root" one level down and would mean "the map" here. #}
+        <button class="cov-open" type="button"
+                hx-get="/lib/presence?p={{ path|urlencode }}"
+                hx-target="#notices"
+                hx-swap="beforeend"
+                title="Which devices hold these files">{{ entry.files|commafy }} files · {{ entry.size|hsize }}</button>
+        · mtime {{ entry.mtime|isodate }}
       </span>
     </nav>
 

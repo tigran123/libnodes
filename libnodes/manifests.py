@@ -10,13 +10,25 @@ from __future__ import annotations
 
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Literal, Sequence
+from typing import TYPE_CHECKING, Iterable, Literal, Sequence
 
 from .library import Entry
 
+if TYPE_CHECKING:
+    from .models import Device
+
 Presence = Literal["ok", "stale", "partial", "absent"]
+
+#: The coverage map's four answers. `absent` is a claim -- a scan listed the device and
+#: this was not on it -- and `unknown` is the lack of one; see `CoverageRow.state`.
+Coverage = Literal["complete", "partial", "absent", "unknown"]
+
+#: The widest folder matrix the coverage map draws: 32 columns of 20px beside the ~430px
+#: of device columns is the 1090px band, and covers 385 of the library's 407 directories
+#: (2026-09-29). Past it (Fiction has 304) the map draws the bars alone.
+MAX_COLUMNS = 32
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS manifest (
@@ -119,12 +131,208 @@ def presence_slots(
     }
 
 
+# --- the coverage map ------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Tally:
+    """What one device holds of one folder, counted against the index (`coverage`)."""
+
+    files: int = 0
+    #: Their size as the index has it: a mirror's scan row carries the link's own size.
+    bytes: int = 0
+    #: Of `files`, copies whose content is not the library's (`_compare`'s rule).
+    stale: int = 0
+    pushed_at: float | None = None
+    pulled_at: float | None = None
+
+    def __add__(self, other: "Tally") -> "Tally":
+        return Tally(
+            self.files + other.files,
+            self.bytes + other.bytes,
+            self.stale + other.stale,
+            _newest(self.pushed_at, other.pushed_at),
+            _newest(self.pulled_at, other.pulled_at),
+        )
+
+
+def _newest(a: float | None, b: float | None) -> float | None:
+    return b if a is None else a if b is None else max(a, b)
+
+
+def _fill(held: int, total: int, floor: float, ceiling: float) -> float:
+    """The drawn share, in percent: `floor` so something held never reads as empty,
+    `ceiling` so something missing never reads as full. The exact share is in words."""
+    if held <= 0 or total <= 0:
+        return 0.0
+    if held >= total:
+        return 100.0
+    return min(max(100.0 * held / total, floor), ceiling)
+
+
+@dataclass(frozen=True)
+class _Drawn:
+    """A held/total pair and how it is painted: green for current copies, amber for
+    stale ones, the track for the rest."""
+
+    held: int
+    total: int
+    stale: int
+    #: A scan has listed the device, so an empty answer is evidence, not a gap.
+    scanned: bool
+
+    FLOOR = 2.0
+    CEILING = 97.0
+
+    @property
+    def state(self) -> Coverage:
+        if self.held and self.held >= self.total:
+            return "complete"
+        if self.held:
+            return "partial"
+        return "absent" if self.scanned else "unknown"
+
+    @property
+    def fill_ok(self) -> float:
+        return self._fill_held() - self.fill_stale
+
+    @property
+    def fill_stale(self) -> float:
+        if not self.stale:
+            return 0.0
+        held = self._fill_held()
+        return min(max(held * self.stale / self.held, self.FLOOR), held)
+
+    def _fill_held(self) -> float:
+        return _fill(self.held, self.total, self.FLOOR, self.CEILING)
+
+
+@dataclass(frozen=True)
+class CoverageCell(_Drawn):
+    """One device, one child folder: a square whose height is the share held."""
+
+    name: str = ""
+
+    # 14px tall: a fifth is the least that reads as "some", four fifths the most that does
+    # not read as "all".
+    FLOOR = 20.0
+    CEILING = 80.0
+
+
+@dataclass(frozen=True)
+class CoverageRow(_Drawn):
+    """One fleet device's line on the map: its bar, and a cell per column."""
+
+    device: "Device | None" = None
+    tally: Tally = field(default_factory=Tally)
+    scanned_at: float | None = None
+    cells: list[CoverageCell] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class CoverageView:
+    entry: Entry
+    rows: list[CoverageRow]
+    #: The child folders drawn as cells, in the table's order; empty past MAX_COLUMNS.
+    columns: list[Entry]
+    #: How many child folders there were when there were too many to draw; else 0.
+    too_many: int = 0
+
+    @property
+    def is_tree(self) -> bool:
+        """A directory with files is counted; a file or an empty directory is a yes/no."""
+        return self.entry.is_dir and bool(self.entry.files)
+
+    def count(self, state: Coverage) -> int:
+        return sum(1 for r in self.rows if r.state == state)
+
+    @property
+    def held(self) -> int:
+        return self.count("complete") + self.count("partial")
+
+
+def coverage_view(
+    entry: Entry,
+    columns: Sequence[Entry],
+    fleet: Sequence["Device"],
+    tallies: dict[str, dict[str, Tally]],
+    scanned: dict[str, float],
+    too_many: int = 0,
+) -> CoverageView:
+    """The map of a directory with files: one row per fleet device, in fleet order, each
+    summing its `coverage` tallies and drawing one cell per column."""
+    total = entry.files or 0
+    rows = []
+    for device in fleet:
+        by_child = tallies.get(device.id, {})
+        tally = sum(by_child.values(), Tally())
+        was_scanned = device.id in scanned
+        cells = [
+            CoverageCell(
+                held=(t := by_child.get(col.name, Tally())).files,
+                total=col.files or 0,
+                stale=t.stale,
+                scanned=was_scanned,
+                name=col.name,
+            )
+            for col in columns
+        ]
+        rows.append(
+            CoverageRow(
+                held=tally.files,
+                total=total,
+                stale=tally.stale,
+                scanned=was_scanned,
+                device=device,
+                tally=tally,
+                scanned_at=scanned.get(device.id),
+                cells=cells,
+            )
+        )
+    return CoverageView(entry, rows, list(columns), too_many)
+
+
+def item_view(
+    entry: Entry,
+    fleet: Sequence["Device"],
+    slots: Sequence[DeviceState | None],
+    scanned: dict[str, float],
+) -> CoverageView:
+    """The map of a file, or of an empty directory: `presence`'s yes/no per device, drawn
+    with the same rows. `slots` comes from `presence_slots`, one per fleet device."""
+    rows = []
+    for device, s in zip(fleet, slots, strict=True):
+        held = s is not None and s.presence != "absent"
+        at = s.at if s is not None else None
+        source = s.source if s is not None else None
+        rows.append(
+            CoverageRow(
+                held=int(held),
+                total=1,
+                stale=int(s is not None and s.presence == "stale"),
+                scanned=device.id in scanned,
+                device=device,
+                tally=Tally(
+                    files=int(held),
+                    bytes=entry.size if held else 0,
+                    pushed_at=at if source == "push" else None,
+                    pulled_at=at if source == "pull" else None,
+                ),
+                scanned_at=scanned.get(device.id),
+            )
+        )
+    return CoverageView(entry, rows, [])
+
+
 class Manifests:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         #: `last_sync` per device. Every write below keeps it exact, which is safe because
         #: this object is the manifest's only writer. See `last_sync`.
         self._last_sync: dict[str, float | None] = {}
+        #: Bumped after every write to a device, for `coverage`'s root cache. See there.
+        self._writes: dict[str, int] = {}
+        self._root: dict[str, tuple[int, str | None, dict[str, Tally]]] = {}
         self._ensure()
 
     def _connect(self) -> sqlite3.Connection:
@@ -175,7 +383,12 @@ class Manifests:
         finally:
             conn.close()
         self._stamped(device_id, rows)
+        self._touched(device_id)
         return len(rows)
+
+    def _touched(self, device_id: str) -> None:
+        """After a write has committed, never before: see `coverage`."""
+        self._writes[device_id] = self._writes.get(device_id, 0) + 1
 
     def _stamped(self, device_id: str, rows: list[tuple]) -> None:
         """Keep `last_sync` exact after an upsert: every row just written carries `now`."""
@@ -201,7 +414,8 @@ class Manifests:
         which a book deleted upstream would otherwise leave claiming presence for ever.
         Push rows survive."""
         rows = _rows(device_id, entries, "scan")
-        total_bytes = sum((r[4] or 0) for r in rows if not r[7])
+        files = [r for r in rows if not r[7]]
+        total_bytes = sum((r[3] or 0) for r in files)
         # One transaction. As three, a reader between the DELETE and the INSERT saw the
         # device holding nothing, and a crash there left it that way.
         conn = self._connect()
@@ -217,12 +431,13 @@ class Manifests:
                     "VALUES (?,?,?,?) ON CONFLICT(device_id) DO UPDATE SET "
                     "  scanned_at=excluded.scanned_at, files=excluded.files, "
                     "  bytes=excluded.bytes",
-                    (device_id, time.time(), len(rows), total_bytes),
+                    (device_id, time.time(), len(files), total_bytes),
                 )
         finally:
             conn.close()
         # The DELETE may have taken the newest row with it, so ask again next time.
         self._last_sync.pop(device_id, None)
+        self._touched(device_id)
         return len(rows)
 
     def retract(self, device_id: str, paths: Iterable[str]) -> int:
@@ -242,9 +457,11 @@ class Manifests:
                 cur = conn.executemany(
                     "DELETE FROM manifest WHERE device_id = ? AND path = ?", rows
                 )
-                return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+                removed = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
         finally:
             conn.close()
+        self._touched(device_id)
+        return removed
 
     def forget(self, device_id: str) -> None:
         self._last_sync.pop(device_id, None)
@@ -255,6 +472,7 @@ class Manifests:
                 conn.execute("DELETE FROM scans WHERE device_id = ?", (device_id,))
         finally:
             conn.close()
+        self._touched(device_id)
 
     # --- reading ---------------------------------------------------------
 
@@ -306,6 +524,91 @@ class Manifests:
         finally:
             conn.close()
         return row[0] if row else None
+
+    def scanned_all(self, device_ids: Sequence[str]) -> dict[str, float]:
+        """`scanned_at` for several devices at once; a device never listed is missing."""
+        if not device_ids:
+            return {}
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT device_id, scanned_at FROM scans WHERE device_id IN "
+                f"({','.join('?' * len(device_ids))})",
+                list(device_ids),
+            ).fetchall()
+        finally:
+            conn.close()
+        return {r[0]: r[1] for r in rows if r[1] is not None}
+
+    def coverage(
+        self, index_db: Path, prefix: str, device_ids: Sequence[str]
+    ) -> dict[str, dict[str, Tally]]:
+        """How much of the directory `prefix` each device holds, per child: the first path
+        segment below it, `""` for its loose files.
+
+        Joined to the index on `path`, so only the library's own files count. A range count
+        cannot say that: dragon has 85,248 file rows for 20,794 library files (the vault,
+        urantia-library, `.sdr/`), nexus10 327 rows under the categories for 105 books. The
+        sizes come from the index as well.
+
+        Priced by the subtree -- Science 101 ms for the fleet, Fiction 34 -- except the
+        root, which is every device's whole slice: 450-650 ms, measured on pi5 against the
+        live databases. So the root alone is cached, per device, keyed on the index's
+        `indexed_at` and on `_writes`, which every write bumps after committing: a result
+        computed across a write carries the older count, and is never served. Blocking;
+        the route runs it on a thread.
+        """
+        out: dict[str, dict[str, Tally]] = {d: {} for d in device_ids}
+        if not device_ids or not index_db.exists():
+            return out
+        conn = sqlite3.connect(f"file:{self.db_path}", uri=True, timeout=10.0)
+        try:
+            conn.execute("ATTACH DATABASE ? AS idx", (f"file:{index_db}?mode=ro",))
+            row = conn.execute("SELECT v FROM idx.meta WHERE k = 'indexed_at'").fetchone()
+            generation = row[0] if row else None
+            for device_id in device_ids:
+                if prefix:
+                    out[device_id] = self._tally(conn, device_id, prefix)
+                    continue
+                writes = self._writes.get(device_id, 0)
+                hit = self._root.get(device_id)
+                if hit and hit[0] == writes and hit[1] == generation:
+                    out[device_id] = hit[2]
+                    continue
+                out[device_id] = self._tally(conn, device_id, prefix)
+                self._root[device_id] = (writes, generation, out[device_id])
+        finally:
+            conn.close()
+        return out
+
+    @staticmethod
+    def _tally(conn: sqlite3.Connection, device_id: str, prefix: str) -> dict[str, Tally]:
+        rest = "substr(m.path, :start)"
+        child = (
+            f"CASE WHEN instr({rest}, '/') = 0 THEN '' "
+            f"ELSE substr({rest}, 1, instr({rest}, '/') - 1) END"
+        )
+        # The half-open range of `presence`, for the reason given there; the root is the
+        # whole slice, and the join drops what is not the library's.
+        where = "AND m.path >= :lo AND m.path < :hi" if prefix else ""
+        rows = conn.execute(
+            f"SELECT {child}, COUNT(*), COALESCE(SUM(e.size), 0), "
+            # `_compare`, as SQL: by blob where both have one, else by size.
+            "  SUM(CASE WHEN e.blob IS NOT NULL AND m.blob IS NOT NULL THEN e.blob != m.blob"
+            "           WHEN m.size IS NOT NULL THEN m.size != e.size ELSE 0 END), "
+            "  MAX(CASE WHEN m.source = 'push' THEN m.shipped_at END), "
+            "  MAX(CASE WHEN m.source = 'pull' THEN m.shipped_at END) "
+            "FROM manifest m JOIN idx.entries e ON e.path = m.path AND e.is_dir = 0 "
+            f"WHERE m.device_id = :device AND m.is_dir = 0 {where} "
+            "GROUP BY 1",
+            {
+                "device": device_id,
+                "start": len(prefix) + 2 if prefix else 1,
+                "lo": f"{prefix}/",
+                "hi": f"{prefix}0",
+            },
+        ).fetchall()
+        return {r[0]: Tally(r[1], r[2], r[3] or 0, r[4], r[5]) for r in rows}
 
     def presence(
         self, entries: Sequence[Entry], device_ids: Sequence[str]
@@ -539,4 +842,17 @@ def _compare(entry: Entry, row: sqlite3.Row) -> Presence:
     return "ok"
 
 
-__all__ = ["DeviceState", "Extras", "ManifestRow", "Manifests", "Presence"]
+__all__ = [
+    "MAX_COLUMNS",
+    "CoverageCell",
+    "CoverageRow",
+    "CoverageView",
+    "DeviceState",
+    "Extras",
+    "ManifestRow",
+    "Manifests",
+    "Presence",
+    "Tally",
+    "coverage_view",
+    "item_view",
+]

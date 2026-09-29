@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 from fastapi import APIRouter, Query, Request
@@ -10,7 +11,7 @@ from fastapi.responses import HTMLResponse
 from ..deps import base_context, state
 from ..libpos import library_href, remember
 from ..library import SORTS, Entry, normalise
-from ..manifests import presence_slots
+from ..manifests import MAX_COLUMNS, coverage_view, item_view, presence_slots
 from ..templating import templates
 
 router = APIRouter()
@@ -139,22 +140,36 @@ async def lib_selection(
 
 @router.get("/lib/presence", response_class=HTMLResponse)
 async def presence_dialog(request: Request, p: str = ""):
-    """Who holds this row, in words: the strip's names and ages, which a `title=` could
-    not give the fleet's own tablets. Through `presence_slots`, as the row is."""
+    """The coverage map: which devices hold this row or directory, how much of it, and
+    which of its folders -- in words the fleet's tablets can read without a hover. The
+    crumb line opens it for the directory you are in, `/Books` included."""
     app = state(request)
     entry = app.index.require(p)
     fleet = app.devices.config.devices
     device_ids = [d.id for d in fleet]
-    presence = app.manifests.presence([entry], device_ids)
-    slots = presence_slots(presence, device_ids).get(entry.path, [None] * len(fleet))
+    scanned = app.manifests.scanned_all(device_ids)
+
+    if entry.is_dir and entry.files:
+        folders = [c for c in app.index.children(entry.path) if c.is_dir and c.files]
+        too_many = len(folders) if len(folders) > MAX_COLUMNS else 0
+        # A thread: the root is every device's whole manifest slice (see `coverage`).
+        tallies = await asyncio.to_thread(
+            app.manifests.coverage, app.index.db_path, entry.path, device_ids
+        )
+        view = coverage_view(
+            entry, [] if too_many else folders, fleet, tallies, scanned, too_many
+        )
+    else:
+        presence = app.manifests.presence([entry], device_ids)
+        slots = presence_slots(presence, device_ids).get(entry.path, [None] * len(fleet))
+        view = item_view(entry, fleet, slots, scanned)
 
     ctx = base_context(request, "library")
     ctx.update(
         {
             "entry": entry,
-            # strict: one slot per fleet device is the whole contract (presence_slots).
-            "slots": list(zip(fleet, slots, strict=True)),
-            "held": sum(1 for s in slots if s is not None),
+            "view": view,
+            "ancestors": app.index.ancestors(entry.path) if entry.path else [],
         }
     )
     return templates.TemplateResponse(request, "dialogs/presence.html", ctx)

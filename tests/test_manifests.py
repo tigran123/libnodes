@@ -367,3 +367,205 @@ def test_last_sync_stays_exact_through_every_write(settings):
     assert cached.last_sync("kobo") == truth()
     cached.forget("kobo")
     assert cached.last_sync("kobo") is None
+
+
+# --- the coverage map -------------------------------------------------------
+
+
+def _total(tallies):
+    from libnodes.manifests import Tally
+
+    return sum(tallies.values(), Tally())
+
+
+def test_coverage_counts_only_the_librarys_own_files(settings, index):
+    """A range count over a device's rows counts whatever the device listed: dragon had
+    85,248 file rows for 20,794 library files (the vault, urantia-library, `.sdr/`), and
+    nexus10 327 rows under the categories for 105 books. The map joins to the index, so a
+    file the library does not have is not "held", and the root is not four times full."""
+    manifests = Manifests(settings.manifests_db)
+    landau = index.entry("Science/Physics/Landau.pdf")
+    feynman = index.entry("Science/Physics/Feynman.djvu")
+    manifests.replace_scan(
+        "kobo",
+        [
+            (landau.path, landau.blob, landau.size, landau.mtime),
+            (feynman.path, feynman.blob, feynman.size, feynman.mtime),
+            ("Science/Physics/Retired-Book.pdf", None, 999, 0),
+            ("Science/Physics/Landau.sdr/metadata.lua", None, 12, 0),
+            (f".data/{landau.blob}", None, landau.size, 0),
+            ("urantia-library/secrets.env", None, 10, 0),
+        ],
+    )
+
+    science = manifests.coverage(index.db_path, "Science", ["kobo"])["kobo"]
+    assert set(science) == {"Physics"}
+    assert science["Physics"].files == 2
+
+    root = manifests.coverage(index.db_path, "", ["kobo"])["kobo"]
+    assert set(root) == {"Science"}, "the vault and the service's tree are not the library"
+    assert _total(root).files == 2
+
+
+def test_coverage_takes_sizes_from_the_index(settings, index):
+    """A mirror's scan row is the link, and carries the link's size: summed as they
+    stand, dragon's 248 GB read as 0 GB."""
+    manifests = Manifests(settings.manifests_db)
+    landau = index.entry("Science/Physics/Landau.pdf")
+    manifests.replace_scan("dragon", [(landau.path, landau.blob, 0, landau.mtime)])
+
+    tally = manifests.coverage(index.db_path, "Science", ["dragon"])["dragon"]["Physics"]
+    assert tally.bytes == landau.size
+    assert tally.stale == 0, "the blob matches, so the link's size is not a difference"
+
+
+def test_coverage_counts_a_changed_blob_as_out_of_date(settings, index):
+    manifests = Manifests(settings.manifests_db)
+    landau = index.entry("Science/Physics/Landau.pdf")
+    tal = index.entry("Science/Chess/Tal.pdf")
+    manifests.record("kobo", [(landau.path, "0" * 128, landau.size, landau.mtime)])
+    manifests.record_entries("kobo", [tal])
+
+    by_child = manifests.coverage(index.db_path, "Science", ["kobo"])["kobo"]
+    assert (by_child["Physics"].files, by_child["Physics"].stale) == (1, 1)
+    assert (by_child["Chess"].files, by_child["Chess"].stale) == (1, 0)
+    assert by_child["Chess"].pushed_at is not None
+
+
+def test_the_root_coverage_follows_every_write(settings, index):
+    """The root is cached -- every device's whole slice, 650 ms for the fleet -- so each
+    kind of write has to reach it. Checked against a fresh, uncached reader."""
+    cached = Manifests(settings.manifests_db)
+    landau = index.entry("Science/Physics/Landau.pdf")
+    tal = index.entry("Science/Chess/Tal.pdf")
+
+    def check():
+        mine = _total(cached.coverage(index.db_path, "", ["kobo"])["kobo"])
+        truth = Manifests(settings.manifests_db).coverage(index.db_path, "", ["kobo"])
+        assert mine == _total(truth["kobo"])
+        return mine.files
+
+    assert check() == 0
+    cached.record_entries("kobo", [landau])
+    assert check() == 1
+    cached.record_entries("kobo", [tal])
+    assert check() == 2
+    cached.retract("kobo", [tal.path])
+    assert check() == 1
+    cached.replace_scan("kobo", [(tal.path, tal.blob, tal.size, tal.mtime)])
+    assert check() == 2, "a scan replaces scan rows; the push row for Landau survives"
+    cached.forget("kobo")
+    assert check() == 0
+
+
+def test_a_write_during_the_root_count_is_not_cached_away(settings, index, monkeypatch):
+    """The count runs on a thread while pushes keep writing. A row committed after the
+    count read the database must not be hidden behind the result it produced."""
+    manifests = Manifests(settings.manifests_db)
+    landau = index.entry("Science/Physics/Landau.pdf")
+    real = Manifests._tally
+    once = []
+
+    def tally_then_write(conn, device_id, prefix):
+        out = real(conn, device_id, prefix)
+        if not once:
+            once.append(True)
+            manifests.record_entries(device_id, [landau])
+        return out
+
+    monkeypatch.setattr(manifests, "_tally", tally_then_write)
+    assert _total(manifests.coverage(index.db_path, "", ["kobo"])["kobo"]).files == 0
+    assert _total(manifests.coverage(index.db_path, "", ["kobo"])["kobo"]).files == 1
+
+
+def test_the_root_coverage_follows_a_new_index(settings, index, library):
+    """A book the device had before the library did counts once the index has it."""
+    import os
+    import time
+
+    manifests = Manifests(settings.manifests_db)
+    manifests.replace_scan("kobo", [("Science/Chess/Botvinnik.pdf", None, 3, 0)])
+    assert manifests.coverage(index.db_path, "", ["kobo"])["kobo"] == {}
+
+    blob = "ab" * 32
+    (library / ".data" / blob).write_bytes(b"bot")
+    os.symlink(f"../../.data/{blob}", library / "Science" / "Chess" / "Botvinnik.pdf")
+    time.sleep(0.01)  # indexed_at is the cache key: let the clock move
+    index.reindex()
+    assert _total(manifests.coverage(index.db_path, "", ["kobo"])["kobo"]).files == 1
+
+
+def test_a_scan_records_its_files_and_their_bytes(settings):
+    """`scans.bytes` summed `r[4]`, which in a `_rows` tuple is the mtime: LG G4's scan
+    "totalled" 32 TB. And `files` counted directories."""
+    import sqlite3
+
+    manifests = Manifests(settings.manifests_db)
+    manifests.replace_scan(
+        "kobo",
+        [("Dir", None, 4096, 1_700_000_000, 1), ("Dir/a.pdf", None, 100, 1_700_000_000),
+         ("Dir/b.pdf", None, 23, 1_700_000_000)],
+    )
+    conn = sqlite3.connect(settings.manifests_db)
+    try:
+        files, total = conn.execute("SELECT files, bytes FROM scans").fetchone()
+    finally:
+        conn.close()
+    assert (files, total) == (2, 123)
+
+
+def test_a_device_scanned_empty_is_absent_and_one_never_scanned_is_unknown(settings, index):
+    """"Nothing recorded -- never pushed here, never seen in a scan" was said of OLD LG G4
+    minutes after a scan found nothing on it: no rows was read as no scan. A scan that
+    lists nothing is evidence; only its absence is a gap."""
+    from libnodes.manifests import coverage_view
+    from libnodes.models import Device
+
+    manifests = Manifests(settings.manifests_db)
+    manifests.replace_scan("phone", [])
+    fleet = [
+        Device(id=d, name=d, type="termux", host="h", target="/t") for d in ("kobo", "phone")
+    ]
+    physics = index.entry("Science/Physics")
+    view = coverage_view(
+        physics,
+        [],
+        fleet,
+        manifests.coverage(index.db_path, physics.path, ["kobo", "phone"]),
+        manifests.scanned_all(["kobo", "phone"]),
+    )
+    assert [r.state for r in view.rows] == ["unknown", "absent"]
+
+
+def test_the_map_never_draws_some_as_none_or_most_as_all():
+    """One book of 20,794 is 0.005% of a 120px bar, and 2,810 of 2,811 is 99.96% of a 12px
+    square: drawn true, the first reads as empty and the second as full. The words carry
+    the exact share; the paint only has to keep the four answers apart."""
+    from libnodes.manifests import CoverageCell, CoverageRow
+
+    one = CoverageRow(held=1, total=20_794, stale=0, scanned=True)
+    assert one.state == "partial" and one.fill_ok >= CoverageRow.FLOOR
+    most = CoverageRow(held=20_786, total=20_794, stale=0, scanned=True)
+    assert most.fill_ok <= CoverageRow.CEILING
+    full = CoverageRow(held=5, total=5, stale=0, scanned=False)
+    assert full.state == "complete" and full.fill_ok == 100
+
+    cell = CoverageCell(held=2_810, total=2_811, stale=0, scanned=True)
+    assert cell.fill_ok <= 80
+    assert CoverageCell(held=1, total=7_045, stale=0, scanned=True).fill_ok >= 20
+
+    stale = CoverageRow(held=20_781, total=20_781, stale=2, scanned=True)
+    assert stale.fill_stale >= CoverageRow.FLOOR, "two stale copies must show as amber"
+    assert stale.fill_ok + stale.fill_stale == 100
+
+
+def test_a_share_is_rounded_down():
+    """20,787 of 20,794 is 99.97%: printed as `100%` it says complete about a device that
+    is seven books short. One of 20,794 is not `0%` either."""
+    from libnodes.templating import share
+
+    assert share(20_794, 20_794) == "100%"
+    assert share(20_787, 20_794) == "99.9%"
+    assert share(45, 20_794) == "0.2%"
+    assert share(1, 20_794) == "<0.1%"
+    assert share(0, 20_794) == share(3, 0) == "0%"

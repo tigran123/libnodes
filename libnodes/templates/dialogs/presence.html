@@ -1,42 +1,133 @@
-{# Who holds this row, in words: the names, counts and ages behind the strip's
-   slots, which the tablets cannot hover for. Same slots as the row's. #}
+{# The coverage map: which devices hold this row or directory, how much of it, and which
+   of its folders. Opened by a row's strip and by the crumb line's button; a crumb or a
+   folder heading swaps it in place. One row per fleet device, in fleet order, and every
+   word visible without a hover -- the tablets have none. #}
+{% set cols = view.columns|length %}
 <div class="backdrop" id="presence-detail">
-  <div class="dialog" style="width:460px">
+  <div class="dialog cov-dialog">
 
     <div class="dialog-head">
       <span class="dot dot-accent"></span>
-      Present on {{ held }} of {{ slots|length }}
+      <nav class="cov-crumbs" aria-label="Folder">
+        {% if entry.path %}
+          <a href="/library"
+             hx-get="/lib/presence"
+             hx-target="closest .backdrop"
+             hx-swap="outerHTML">{{ library_root }}</a>
+          {% for a in ancestors %}
+            <span class="sep" aria-hidden="true">/</span>
+            <a href="/library?p={{ a.path|urlencode }}"
+               hx-get="/lib/presence?p={{ a.path|urlencode }}"
+               hx-target="closest .backdrop"
+               hx-swap="outerHTML">{{ a.name }}</a>
+          {% endfor %}
+          <span class="sep" aria-hidden="true">/</span>
+          <span class="leaf" title="{{ entry.path }}">{{ entry.label }}</span>
+        {% else %}
+          <span class="leaf">{{ library_root }}</span>
+        {% endif %}
+      </nav>
+      <span class="cov-held">on {{ view.held }} of {{ view.rows|length }}</span>
     </div>
 
     <div class="dialog-body">
-      <div class="mono t-dim nowrap" title="{{ entry.path }}">{{ entry.label }}</div>
-      <div class="mono t-dim">
-        {% if entry.is_dir %}{{ entry.files|commafy }} files · {% endif %}{{ entry.size|hsize }}
+      <div class="cov-summary">
+        <span>{% if entry.is_dir %}{{ entry.files|commafy }} files · {% endif %}{{ entry.size|hsize }}</span>
+        <span class="cov-counts">
+          {% for state, word in [('complete', 'complete' if view.is_tree else 'has it'),
+                                 ('partial', 'partial'), ('absent', 'not there'),
+                                 ('unknown', 'nothing recorded')] %}
+            {% if view.count(state) %}<span>{{ view.count(state) }} {{ word }}</span>{% endif %}
+          {% endfor %}
+        </span>
       </div>
 
-      {% for dev, s in slots %}
-        <div class="opt" style="cursor:default">
-          <span class="pslot {{ s.map_class if s else 'p-none' }}"></span>
-          <span style="flex:1;min-width:0">
-            {{ dev.name }}
-            <span class="opt-note">
-              {% if s %}
-                {# A directory's have/total, or a file's state word. #}
-                {{ s.detail or s.presence }}{% if s.detail %} files · {{ s.presence }}{% endif %}
-                · {{ s.verb }} {{ s.at|reltime }}
-              {% else %}
-                nothing recorded — never pushed here, never seen in a scan
-              {% endif %}
-            </span>
-          </span>
+      {% if view.rows %}
+      <div class="cov-scroll">
+        <div class="cov{{ ' has-cols' if cols }}"{% if cols %} style="--cols: {{ cols }}"{% endif %}>
+          <div class="cov-h">device</div>
+          <div class="cov-h cov-held-h">{{ 'held' if view.is_tree else 'state' }}</div>
+          {% for col in view.columns %}
+            <a class="cov-h cov-col{{ ' band' if loop.index is even }}"
+               href="/library?p={{ col.path|urlencode }}"
+               hx-get="/lib/presence?p={{ col.path|urlencode }}"
+               hx-target="closest .backdrop"
+               hx-swap="outerHTML"
+               title="{{ col.name }} · {{ col.files|commafy }} files · open its map"><span>{{ col.name }}</span></a>
+          {% endfor %}
+
+          {% for row in view.rows %}
+            {% set t = row.tally %}
+            <div class="cov-r cov-name">
+              <span class="cov-dev">{{ row.device.name }}</span>
+              <span class="cov-meta">
+                {% if row.device.is_upstream %}<span class="cov-role">upstream</span>
+                {% elif row.device.is_mirror %}<span class="cov-role">mirror</span>{% endif %}
+                {% if t.stale and view.is_tree %}<span class="is-warn">{{ t.stale|commafy }} out of date</span>{% endif %}
+                {% if t.pushed_at %}<span>pushed {{ t.pushed_at|reltime }}</span>{% endif %}
+                {% if t.pulled_at %}<span>pulled {{ t.pulled_at|reltime }}</span>{% endif %}
+                {% if row.scanned_at %}<span>scanned {{ row.scanned_at|reltime }}</span>
+                {% else %}<span>never scanned</span>{% endif %}
+              </span>
+            </div>
+
+            {% if row.state in ('complete', 'partial') and view.is_tree %}
+              <div class="cov-r">
+                <span class="cov-bar" aria-hidden="true">
+                  <i class="cov-bar-ok" style="width:{{ '%.1f'|format(row.fill_ok) }}%"></i>
+                  {% if row.fill_stale %}<i class="cov-bar-stale" style="width:{{ '%.1f'|format(row.fill_stale) }}%"></i>{% endif %}
+                </span>
+              </div>
+              <div class="cov-r cov-pct">{{ row.held|share(row.total) }}</div>
+              <div class="cov-r cov-n">
+                <span>{{ row.held|commafy }}</span>
+                <span class="cov-gb">{{ t.bytes|hsize }}</span>
+              </div>
+            {% elif row.state == 'complete' %}
+              <div class="cov-r cov-word {{ 'is-stale' if row.stale else 'is-complete' }}">
+                {{ 'out of date' if row.stale else 'has it' }}
+              </div>
+            {% else %}
+              <div class="cov-r cov-word is-{{ row.state }}">
+                {{ 'not there' if row.state == 'absent' else 'nothing recorded' }}
+              </div>
+            {% endif %}
+
+            {% for cell in row.cells %}
+              <div class="cov-r cov-c{{ ' band' if loop.index is even }}"
+                   title="{{ row.device.name }} · {{ cell.name }} · {{ cell.held|commafy }}/{{ cell.total|commafy }} files{% if cell.stale %}, {{ cell.stale|commafy }} out of date{% endif %}">
+                <i class="cov-sq is-{{ cell.state }}"
+                   style="--fo:{{ '%.0f'|format(cell.fill_ok) }}%;--fs:{{ '%.0f'|format(cell.fill_stale) }}%"></i>
+              </div>
+            {% endfor %}
+          {% endfor %}
         </div>
+      </div>
       {% else %}
         <div class="meta">No devices configured.</div>
-      {% endfor %}
+      {% endif %}
+
+      {% if view.too_many %}
+        <div class="meta">
+          {{ view.too_many|commafy }} folders here, too many to draw as columns: open one
+          from the table for its map.
+        </div>
+      {% endif %}
+
+      {# Drawn with the map's own classes, so it cannot drift. #}
+      <div class="cov-legend">
+        <span><i class="cov-sq is-complete" style="--fo:100%;--fs:0%"></i> has it</span>
+        {% if view.is_tree %}
+          <span><i class="cov-sq is-partial" style="--fo:50%;--fs:0%"></i> part of it</span>
+        {% endif %}
+        <span><i class="cov-sq is-partial" style="--fo:0%;--fs:100%"></i> out of date</span>
+        <span><i class="cov-sq is-absent"></i> not there (a scan says so)</span>
+        <span><i class="cov-sq is-unknown"></i> nothing recorded</span>
+      </div>
 
       <div class="meta">
-        A cached view: what we last pushed, pulled or saw in a scan, not a live look at
-        the device.
+        Counts only the library's own files. A cached view: what we last pushed, pulled or
+        saw in a scan, not a live look at the device.
       </div>
     </div>
 

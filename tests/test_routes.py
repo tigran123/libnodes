@@ -791,3 +791,114 @@ async def test_a_row_offers_no_one_click_push(client):
     assert 'hx-post="/jobs"' not in rows
     assert "/jobs/picker?dry_run=true&amp;path=" in rows
     assert "/jobs/picker?path=" in rows
+
+
+# --- the coverage map -------------------------------------------------------
+
+
+def _cov_rows(html: str) -> list[str]:
+    """Each device's run of grid items: from its name cell up to the next one."""
+    parts = re.split(r'<div class="cov-r cov-name">', html)
+    return parts[1:]
+
+
+async def test_the_whole_library_has_a_map(client, app):
+    """`/Books` has no row, so it had no strip and no dialog. The crumb line opens the map
+    for wherever you are, the root included: every device, and a column per top-level
+    folder that holds files."""
+    r = await client.get("/lib/presence")
+    assert r.status_code == 200
+    for device in app.state.lib.devices.config.devices:
+        assert device.name in r.text
+    columns = re.findall(
+        r'class="cov-h cov-col[^"]*"\s+href="[^"]*"\s+hx-get="([^"]+)"', r.text
+    )
+    assert columns == ["/lib/presence?p=Fiction", "/lib/presence?p=Science"]
+    assert "urantia-library" not in r.text
+
+
+async def test_a_scanned_device_holding_nothing_is_not_called_unscanned(client, app):
+    """Reported: OLD LG G4 was scanned, held nothing, and the dialog still said "never
+    pushed here, never seen in a scan". A scan that lists nothing is evidence."""
+    app.state.lib.manifests.replace_scan("phone", [])
+    r = await client.get("/lib/presence", params={"p": "Science/Physics"})
+    rows = dict(zip(["kobo", "phone"], _cov_rows(r.text), strict=True))
+    assert "not there" in rows["phone"]
+    assert re.search(r"scanned \d+s ago", rows["phone"])
+    assert "never scanned" not in rows["phone"]
+    assert "nothing recorded" in rows["kobo"] and "never scanned" in rows["kobo"]
+    assert "never seen in a scan" not in r.text
+
+
+async def test_the_coverage_grid_declares_a_track_for_every_cell(client, app):
+    """A grid drops a cell onto the next line when a row carries one item more than the
+    template has tracks -- and every device after it is drawn one folder to the left, on
+    a page that renders perfectly. Four device tracks plus one per folder, everywhere."""
+    from tests.test_theme import _css, _rule
+
+    lib = app.state.lib
+    lib.manifests.record_entries("kobo", [lib.index.entry("Science/Chess/Tal.pdf")])
+    r = await client.get("/lib/presence", params={"p": "Science"})
+    cols = int(re.search(r'style="--cols: (\d+)"', r.text).group(1))
+    assert cols == len(re.findall(r'class="cov-h cov-col', r.text)) == 2
+
+    head = r.text.split('<div class="cov has-cols"')[1].split('<div class="cov-r cov-name">')[0]
+    # "device", then "held" spanning three, then one heading per folder.
+    assert len(re.findall(r'class="cov-h[ "]', head)) == 2 + cols
+    for row in _cov_rows(r.text):
+        spans3 = row.count("cov-word")
+        singles = len(re.findall(r'<div class="cov-r[ "]', row)) - spans3
+        assert 1 + singles + 3 * spans3 == 4 + cols, row
+
+    css = _css()
+    tracks = _rule(css, ".cov").split("grid-template-columns:")[1].split(";")[0]
+    assert len(re.findall(r"minmax\([^)]*\)|\d+px", tracks)) == 4, tracks
+    assert "repeat(var(--cols), 20px)" in _rule(css, ".cov.has-cols")
+    for spanning in (".cov-held-h", ".cov-word"):
+        assert "grid-column: span 3" in _rule(css, spanning)
+
+
+async def test_a_directory_with_too_many_folders_draws_bars_alone(client, monkeypatch):
+    """Fiction has 304 folders; 304 columns is not a map. Past MAX_COLUMNS, the bars."""
+    import libnodes.routes.library as routes
+
+    monkeypatch.setattr(routes, "MAX_COLUMNS", 1)
+    r = await client.get("/lib/presence", params={"p": "Science"})
+    assert "cov-col" not in r.text and "cov-c " not in r.text
+    assert 'class="cov"' in r.text, "the no-folder template, with no repeat(0)"
+    assert "2 folders here" in r.text
+
+
+async def test_a_heading_or_a_crumb_swaps_the_map_in_place(client):
+    r = await client.get("/lib/presence", params={"p": "Science/Physics"})
+    crumb = re.search(
+        r'<a href="/library\?p=Science"\s+hx-get="([^"]+)"'
+        r'\s+hx-target="([^"]+)"\s+hx-swap="([^"]+)"',
+        r.text,
+    )
+    assert crumb.groups() == ("/lib/presence?p=Science", "closest .backdrop", "outerHTML")
+    root = await client.get("/lib/presence")
+    assert 'hx-target="closest .backdrop"' in root.text
+
+
+@pytest.mark.parametrize("path", ["", "Science/Physics"])
+async def test_the_totals_open_the_map_of_where_you_are(client, path):
+    """The only way into the map of /Books, which has no row. The totals and nothing else
+    in the crumb line: one level down `/Books` is the way home, and as the leaf it would
+    have meant the map instead -- one label, two meanings."""
+    r = await client.get("/lib/pane", params={"p": path})
+    line = r.text.split('class="pathline"')[1].split("</nav>")[0]
+    crumbs, summary = line.split('class="summary"')
+    assert f'hx-get="/lib/presence?p={path}"' in summary
+    assert "/lib/presence" not in crumbs, "a crumb opens the map again"
+
+
+async def test_a_file_map_says_yes_or_no_per_device(client, app):
+    lib = app.state.lib
+    tal = lib.index.entry("Science/Chess/Tal.pdf")
+    lib.manifests.record_entries("kobo", [tal])
+    r = await client.get("/lib/presence", params={"p": tal.path})
+    rows = dict(zip(["kobo", "phone"], _cov_rows(r.text), strict=True))
+    assert "has it" in rows["kobo"] and "pushed" in rows["kobo"]
+    assert "nothing recorded" in rows["phone"]
+    assert "cov-bar" not in r.text, "a file is held or not; there is no share to draw"
