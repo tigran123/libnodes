@@ -8,7 +8,6 @@ behaviour depends on.
 from __future__ import annotations
 
 import hashlib
-import os
 from pathlib import Path
 
 import pytest
@@ -85,7 +84,6 @@ def devices_file(settings) -> Path:
     path.write_text(
         """
 defaults:
-  rsync_flags: ["-avhP", "--partial", "--info=progress2"]
   timeout: 20
   retries: 0
 
@@ -100,7 +98,6 @@ devices:
     target: /mnt/onboard/Books
     full_sync: true
     capacity: 29G
-    formats: [epub, pdf]
 
   - id: phone
     name: Test Phone

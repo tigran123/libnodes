@@ -338,3 +338,32 @@ def test_a_partial_directory_is_not_drawn_like_a_full_one(settings, index):
     state = manifests.presence([directory], ["kobo"])[directory.path][0]
     assert state.presence == "partial"
     assert len({state.map_class, "p-ok", "p-none", "p-stale"}) == 4
+
+
+def test_last_sync_stays_exact_through_every_write(settings):
+    """`last_sync` is cached -- the Devices poll asked for every device every 10 s, at
+    159 ms a render against the live manifest -- so each write has to keep it exact. Checked
+    after every kind of write against a fresh, uncached reader of the same database."""
+    import time
+
+    from libnodes.manifests import Manifests
+
+    cached = Manifests(settings.manifests_db)
+
+    def truth():
+        return Manifests(settings.manifests_db).last_sync("kobo")
+
+    assert cached.last_sync("kobo") is None
+    cached.record("kobo", [("a.pdf", None, 1, 0)])
+    assert cached.last_sync("kobo") == truth() is not None
+    time.sleep(0.01)
+    cached.record("kobo", [("b.pdf", None, 1, 0)])
+    assert cached.last_sync("kobo") == truth()
+    cached.record("kobo", [("Dir", None, 0, 0, 1)])  # a directory row is not a sync
+    assert cached.last_sync("kobo") == truth()
+    cached.retract("kobo", ["b.pdf"])
+    assert cached.last_sync("kobo") == truth()
+    cached.replace_scan("kobo", [("c.pdf", None, 1, 0)])
+    assert cached.last_sync("kobo") == truth()
+    cached.forget("kobo")
+    assert cached.last_sync("kobo") is None

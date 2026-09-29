@@ -34,33 +34,52 @@ class AppState:
             self.manifests,
             self.probe,
             devices,
-            # A pull is the only job that writes into library_root, so it is the only one
-            # that can leave the index stale. Passed in rather than imported: the runner
-            # is constructed by this object, and reindex_soon is already idempotent.
-            on_library_changed=self.reindex_soon,
+            # A pull is the one job that changes library_root.
+            on_library_changed=self.reindex,
         )
         self.config_watch = FileWatcher(settings.resolved_devices_file)
         self.scanner = Scanner(settings, self.manifests)
-        # One worker: a reindex is a disk-bound walk and the Pi has one spindle.
+        # One worker: a reindex is one disk-bound walk at a time.
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="reindex")
         self._reindex_task: asyncio.Task | None = None
+        #: A rebuild was asked for while one was running, and that one may have walked the
+        #: tree before the change that prompted the ask -- a pull finishing mid-walk.
+        self._reindex_again = False
         self._reindex_loop_task: asyncio.Task | None = None
         self._config_reload_task: asyncio.Task | None = None
 
     # --- reindex ----------------------------------------------------------
 
     def reindex_soon(self) -> None:
-        """Kick a rebuild if one is not already in flight. Returns immediately."""
-        if self.index.running:
-            return
+        """Kick a rebuild, or ask the running one to go again. Returns immediately.
+
+        Dropping the ask while a walk was in flight, as this once did, left a pull's books
+        out of the index until the next 30-minute tick whenever the pull finished
+        mid-walk: the walk had already passed the directories the pull wrote into.
+        """
         if self._reindex_task is not None and not self._reindex_task.done():
+            self._reindex_again = True
             return
         loop = asyncio.get_running_loop()
         self._reindex_task = loop.create_task(self._reindex())
 
+    async def reindex(self) -> None:
+        """Rebuild the index -- or join the rebuild already running -- and wait for it.
+
+        For a pull, which ends by saying the index now holds what it brought. Shielded, so
+        a job cancelled on shutdown does not take a half-done walk down with it.
+        """
+        self.reindex_soon()
+        if self._reindex_task is not None:
+            await asyncio.shield(self._reindex_task)
+
     async def _reindex(self) -> None:
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(self._pool, self.index.reindex)
+        while True:
+            self._reindex_again = False
+            await loop.run_in_executor(self._pool, self.index.reindex)
+            if not self._reindex_again:
+                return
 
     async def _reindex_loop(self) -> None:
         interval = self.settings.reindex_interval
@@ -76,26 +95,14 @@ class AppState:
     # --- devices.yaml -----------------------------------------------------
 
     async def _config_reload_loop(self) -> None:
-        """Re-read the whole fleet whenever devices.yaml changes.
-
-        `DevicesStore` already reloads on mtime, so the *config* is never stale — but the
-        probe's readings are cached on their own schedule, and a `df` is only re-read
-        every `freespace_interval` (300s). So an edit that added a `battery:` path took
-        effect immediately in every sense except the one the editor was watching: the new
-        column stayed empty for up to five minutes. Same for a corrected host, target or
-        port, where the row kept vouching for a reading taken through the old one.
-
-        The refresh is a cache invalidation, not a probe — see `DeviceProbe.refresh_all`.
-
-        Driven by the same inotify watcher the devices.yaml page uses, so a save costs one
-        wakeup and an untouched file costs nothing.
-        """
+        """Re-read the whole fleet's readings whenever devices.yaml changes: the config
+        reloads on its own, but a new `battery:` line or a corrected host would otherwise
+        wait out `freespace_interval`. See `DeviceProbe.refresh_all`."""
         queue = self.config_watch.subscribe()
         try:
             while True:
                 await queue.get()
-                # Coalesce the burst one save produces — write, chmod, rename are three
-                # events and one edit. The devices.yaml SSE route does the same.
+                # One save is several events.
                 await asyncio.sleep(0.05)
                 while not queue.empty():
                     queue.get_nowait()
@@ -133,8 +140,7 @@ class AppState:
         ):
             if task is not None:
                 task.cancel()
-        # Awaited, not just cancelled: it holds a subscription on config_watch, and
-        # config_watch.stop() below clears the subscriber set out from under it.
+        # Awaited: it holds a subscription config_watch.stop() clears.
         if self._config_reload_task is not None:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._config_reload_task

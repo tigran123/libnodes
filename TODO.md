@@ -26,7 +26,7 @@ what is left, with pointers into the code. Keep the two from contradicting each 
 - [ ] **Keys page.** The informational stub is gone; what it said about `~/.ssh` and
       `BatchMode=yes` now sits at the foot of `/settings`. The real feature is still
       wanted: list the identities in the service user's `~/.ssh` and offer a per-device
-      "test key" that runs the existing `ssh_argv` (`libnodes/probe.py:448`) and reports
+      "test key" that runs the existing `probe.ssh_argv` and reports
       the exit status — the machinery is already there, only the view is missing.
 
 - [x] **Orphan blobs after a pull.** *(Done 2026-09-19.)* This asked for a read-only
@@ -47,44 +47,28 @@ what is left, with pointers into the code. Keep the two from contradicting each 
       pruned symlink is. Not added to `config.PULL_EXCLUDES` — an exclude would make them
       the one part of the tree that silently stops replicating.
 
-- [ ] **A mirror's prune does not retract its manifest rows.** `_debit_pull` does this for
-      a pull — `Manifests.retract`, from rsync's own `deleting` lines — and a mirror push
-      carries the only other `--delete` in the program, outward instead of inward. Its
-      stale rows survive: `_update_manifest` re-records the index for each source, and a
-      path the replica no longer has is not in the index to be re-recorded, so it keeps
-      claiming the replica holds a file `--delete` removed. The count is already collected
-      (`self._deleted`, every kind) and the retraction is source-agnostic, so this is a
-      call site and a name that no longer says "pull". Surfaced by giving the FILES column
-      a deleted count, which now shows a Replicate's prune beside a PRESENT ON fraction
-      that has not heard about it.
+- [x] **A mirror's prune does not retract its manifest rows.** *(Done.)* `JobRunner._debit`
+      retracts what any non-dry-run job pruned, at either end.
 
 ## Engineering hygiene
 
-- [ ] **`Scanner` and `JobRunner` deregister a subprocess while being cancelled**, the same
-      way `DeviceProbe` did before it was fixed. `scan.py:205` (`self._procs.pop(...)` in a
-      `finally`) and `jobs.py:862` run on the `CancelledError` path too, so the proc leaves
-      the registry a moment before their `stop()` reaps it — and the one process that needs
-      reaping is the one missing from the set. The fixed form is at `probe.py:264`:
-      deregister only when `proc.returncode is not None`, and leave a still-running child
-      for `stop()`. Not currently observable — the probe is the only one of the three the
-      suite exercises hard enough — but it is the same `RuntimeError: Event loop is closed`
-      with an rsync or a scan behind it instead of a `df`.
+- [x] **`Scanner` and `JobRunner` deregister a subprocess while being cancelled.** *(Done
+      2026-09-29.)* Both deregister only an exited child now, as the probe does; pinned by
+      `test_scan_adopt.py::test_stopping_the_scanner_reaps_a_listing_still_running`.
 
-- [ ] **Add ruff (lint + format).** No `pyproject.toml` or `ruff.toml` exists, yet the code
-      already carries `# noqa: BLE001` (`libnodes/state.py:62`) — a linter was assumed and
-      never wired up. Add the config, add ruff to `requirements-dev.in`, recompile.
+- [x] **Add ruff.** *(Done 2026-09-29, lint only.)* `ruff.toml` selects pyflakes and
+      bugbear; `tests/test_lint.py` runs it, so `uv run pytest` is the gate. The formatter
+      is deliberately not adopted: it would rewrite 31 of 50 files against a hand layout.
 
-- [ ] **Add CI.** There is no `.github/`. The suite needs no network and runs in ~20 s on
-      pi5 (514 tests, measured 2026-08-19), so a workflow that does
+- [ ] **Add CI.** There is no `.github/`. The suite needs no network and runs in ~30 s on
+      pi5 (~730 tests, 2026-09-29), so a workflow that does
       `uv pip sync requirements-dev.txt && pytest` costs almost nothing and would catch the
       class of break that only shows up on a clean checkout. Worth more now that dev happens
       on the deployment host: nothing else exercises a clean tree.
 
-- [ ] **Resolve the dead schema fields.** `formats` (`libnodes/models.py:141`) and
-      `rsync_flags` (`libnodes/models.py:150`, and in `Defaults`) are accepted and ignored.
-      Someone who sets `rsync_flags:` today is silently misled into thinking it does
-      something. Either surface them in the validation strip as *ignored*, or drop them and
-      say so in the seed `devices.yaml` comment block.
+- [x] **Resolve the dead schema fields.** *(Done 2026-09-29.)* `formats`, `rsync_flags`,
+      `wol_mac`, `keep_free` and per-device `probe_interval` are gone; a file that still uses
+      one is named in the Devices chip while the last good config keeps serving.
 
 - [x] **Re-home the docs on pi5 as the dev host.** *(done 2026-08-19.)* Development moved
       onto pi5, so `deploy.sh` is no longer the loop — edit, `sudo systemctl restart

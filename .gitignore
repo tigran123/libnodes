@@ -12,3 +12,6 @@ design_handoff_libnodes/
 # Screenshots from tools/shot.py. The docs' examples write here, and a PNG of the UI at
 # some past moment is not a record of anything — the tool regenerates it in a second.
 shots/
+
+# ruff check, run by tests/test_lint.py.
+.ruff_cache/

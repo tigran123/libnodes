@@ -1,12 +1,7 @@
-{# One device row. Renders standalone: /device/{id}/row swaps it as outerHTML.
-
-   `oob` lets a response whose real payload is something else — the Test dialog — carry a
-   refreshed row along with it, matching the flag file_rows.html uses for its counter.
-   Undefined in the row loops, and an undefined name is falsy, so they are unaffected. #}
+{# One device row, standalone for /device/{id}/row. `oob` lets the Test dialog
+   carry a refreshed row out of band. #}
 <div class="trow device-grid {{ node.row_class }}"
-     {# dom_id, not id: htmx builds an out-of-band swap's selector as "#" + this
-        attribute and runs it through querySelectorAll, so a dot in it matches nothing
-        and the swap is dropped in silence. See Device.dom_id. #}
+     {# dom_id, never the raw id: see Device.dom_id. #}
      id="node-{{ node.device.dom_id }}"
      data-node="{{ node.device.id }}"
      {% if oob %}hx-swap-oob="true"{% endif %}>
@@ -14,18 +9,13 @@
   <div data-label="Device">
     <span class="node-name">
       <span class="dot {{ node.dot_class }}"></span>
-      {# .nowrap ellipsises, and the stacked row pairs its cells above 660px -- 139px of
-         value at a Galaxy Tab S4's 700 CSS px, against the ~168px "ThinkPad T450s
-         (Ubuntu 26)" measures. The title is what keeps a clipped name readable, as the
-         Target cell below already does. #}
+      {# Clipped when the row stacks two-up; the title keeps it readable. #}
       <span class="nowrap" title="{{ node.device.name }}">{{ node.device.name }}</span>
     </span>
   </div>
 
-  {# The mode rides in the Type cell rather than a column of its own: the CSS tracks, the
-     <thead> cells and these row cells have to agree in number, and a grid that grows a
-     column the stylesheet does not know about wraps its last cell silently. Type and mode
-     are both "what kind of node is this", so one cell holds both. #}
+  {# The mode shares the Type cell: tracks, header cells and row cells must agree
+     in number. #}
   <div data-label="Type">
     <span class="badge">{{ node.device.type|upper }}</span>
     {% if node.device.is_mirror %}
@@ -33,21 +23,14 @@
                                  symlinks and vault included, and prunes with
                                  --delete">MIRROR</span>
     {% elif node.device.is_upstream %}
-      {# Amber, and deliberately not the plain badge MIRROR wears: this is the one node in
-         the fleet that must never be written to, and the two look identical in the yaml.
-         badge-err is spoken for by OFFLINE and would read as a fault on a node working
-         perfectly; badge-accent means running. One badge, not two — a second NO PUSH chip
-         wraps at the Tab S4's 700 CSS px, so the tooltip carries the prohibition. #}
+      {# Amber: the one node that must never be written to. The tooltip says so. #}
       <span class="badge badge-warn"
             title="sync_mode: upstream — the library's source. LibNodes pulls into
                    {{ library_root }} from here and never pushes, replicates, adopts or
                    deletes there.">UPSTREAM</span>
     {% endif %}
     {% if node.scanning %}
-      {# A scan is not a Job and never reaches the dock, so without this the only place a
-         running one is visible is inside the dialog that started it -- and closing that
-         made the work look cancelled. Independent of the mode chain above: any node can
-         be scanned. The row re-renders every 10s, so it clears itself. #}
+      {# A scan never reaches the dock, so the row says one is running. #}
       <span class="badge badge-accent"
             title="a listing is running against this device. It keeps going if you close
                    the dialog you started it from — nothing there is holding it up.">SCANNING</span>
@@ -61,18 +44,11 @@
   <div data-label="Target" class="mono t-muted nowrap"><span title="{{ node.device.target }}">{{ node.device.display_target }}</span></div>
 
   <div data-label="Storage">
-    {# Shown whatever the dot says, because LAST SEEN beside it dates the figure: an
-       offline row's `—` was hiding a reading it still had, and hiding it here while the
-       card view and every *sleeping* row printed theirs. Faint, with a faint bar, so it
-       still cannot be mistaken for a live measurement. #}
+    {# Shown whatever the dot says -- faint when offline -- because LAST SEEN dates it. #}
     {% if node.used is none %}
       <span class="usage-v t-faint">—</span>
     {% else %}
-      {# used / total, because the bar under it is `used_pct`: a figure and a bar side by
-         side have to be the same quantity. This printed free space over a used bar, so
-         LG G4 read "163G / 466G" with the bar two-thirds full, and disagreed with the
-         rail's own `disk 894G / 2.7T`. Free space still matters before a push — it is in
-         the tooltip, where it is read rather than compared. #}
+      {# used / total, the same quantity as the bar; free space is in the tooltip. #}
       <div class="usage">
         <span class="usage-v"
               title="{{ node.used|hsize }} used · {{ node.free|hsize }} free of {{ node.capacity|hsize }}">
@@ -83,11 +59,8 @@
     {% endif %}
   </div>
 
-  {# Battery. The column is present for every device but only filled for one that
-     declares a `battery:` path — there is no portable way to ask, so a node that has
-     not been told where to look reports nothing rather than guessing. Keyed on the
-     declared path and not on the reading, or the cell would empty itself between the
-     poll and the next successful probe. #}
+  {# Filled only for a declared battery source, keyed on the declaration so the cell
+     does not come and go with the poll. #}
   <div data-label="Battery">
     {% if not node.has_battery %}
       <span class="usage-v t-faint">—</span>
@@ -103,10 +76,7 @@
     {% endif %}
   </div>
 
-  {# The age of the two readings to the left, which is not the age of the dot: one ssh
-     carries df and battery every freespace_interval (300s) while the connect behind the
-     dot repeats every 10-30s. The tooltip carries both, so the disagreement reads as the
-     normal case it is rather than as a fault. #}
+  {# The readings' age, not the dot's: see DeviceView.seen_at. #}
   <div data-label="Last seen" class="mono t-dim" title="{{ node.seen_note }}">
     {{ node.seen_at|reltime }}
   </div>
@@ -129,27 +99,14 @@
               hx-disabled-elt="this">Abort</button>
 
     {% else %}
-      {# Every action behind this menu needs the device to answer, so it is offered
-         only when the dot is green. Test re-probes and brings it back: it runs the same
-         connect a Retry button used to, before its ssh, and refreshes this row out of
-         band. That made Retry a strict subset of the button beside it, so it went. #}
-      {# Print what the connect actually reported, in both states. `sleeping` means only
-         "it failed and this node answered within the last half hour" — it carries no
-         diagnosis, so the old fixed "sshd asleep" invented one: fair for a refused
-         connection (the host is up, Termux's sshd stops with the screen), plainly wrong
-         for a timeout, where nothing answered at all and it is the device that is gone,
-         not its sshd. The dot and the colour already say which state this is; the text
-         says what happened, and the tooltip carries the reading. #}
+      {# The connect's own error, in amber and red alike; the tooltip interprets it. #}
       {% if node.offline or node.sleeping %}
         <span class="mono {{ 't-err' if node.offline else 't-warn' }} nowrap"
               title="{{ node.reach_note }}">{{ node.reach.error or 'unreachable' }}</span>
       {% endif %}
 
-      {# Test sits in the row rather than behind Actions because it is the only action
-         that changes nothing — df, rsync --version, test -w — so it needs no command
-         strip to read first. The tooltip carries the command anyway, and the result
-         echoes it. It stays enabled when the dot is red: a device that is not answering
-         is precisely when you want the test, and the result names a likely cause. #}
+      {# Test writes nothing, so it needs no command strip and stays enabled on a red
+         row, where it is most useful. Actions -- everything that writes -- needs green. #}
       <button class="btn"
               hx-post="/device/{{ node.device.id }}/test"
               hx-target="#notices"
@@ -161,8 +118,6 @@
         <button class="btn is-disabled" disabled
                 title="{{ node.device.name }} is not answering — Test first">Actions</button>
       {% else %}
-        {# One entry point for everything that writes: Full Sync, Adopt and Scan, each
-           showing the command it will run. #}
         <button class="btn btn-default"
                 hx-get="/device/{{ node.device.id }}/menu"
                 hx-target="#notices"
@@ -171,7 +126,7 @@
     {% endif %}
   </div>
 
-  {# The syncing row grows a second line: bar, percentage, current file, rate, eta. #}
+  {# A syncing row grows a progress line. #}
   {% if node.state == 'syncing' and node.job %}
   <div class="subrow">
     <div class="track track-thin track-striped" style="max-width:440px">

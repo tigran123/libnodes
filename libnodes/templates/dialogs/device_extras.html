@@ -1,18 +1,8 @@
-{# Files on the device that the library has no record of — and, before that, whether we
-   have any record of the device at all.
-
-   The empty list is not an answer. BK502 had never been pushed to and never scanned, so
-   the set difference came out empty and this dialog reported "the device holds exactly
-   what the library has, and no more" over 36 files it had never seen. Every branch below
-   exists to keep the three states apart: we have not looked, we cannot compare, we
-   looked and this is what is there. #}
+{# Files on the device the library has no record of -- and first, whether anyone has
+   looked: only a scan can answer (see Manifests.extras). #}
 <div class="backdrop" id="device-extras"
      {% if scanning %}
-       {# The dialog is its own poller, so a scan started from here turns into the list
-          without the user reopening anything. The attributes exist only while the scan
-          runs, so it stops the moment there is an answer. Deliberately not
-          fragments/scan_status.html: that fragment polls and swaps *itself*, and two
-          pollers in one node fight over the same DOM. #}
+       {# Its own poller while a scan runs, so the list arrives without another click. #}
        hx-get="/device/{{ device.id }}/extras"
        hx-trigger="every 3s"
        hx-target="this"
@@ -34,8 +24,7 @@
       {%- if scanning %} scanning…
       {%- elif not index_meta.ready %} library index not built
       {%- elif not extras.known %} never scanned
-      {#- On an upstream node "not in the library" reads as an accusation against the
-          host other people upload to. It is not junk; it is the backlog. -#}
+      {#- On an upstream this is a backlog, not an accusation. -#}
       {%- elif device.is_upstream %} {{ extras.total|commafy }} file{{ '' if extras.total == 1 else 's' }} here that we do not have
       {%- else %} {{ extras.total|commafy }} file{{ '' if extras.total == 1 else 's' }} not in the library
       {%- endif %}
@@ -68,10 +57,8 @@
           subtracting the library from it yields nothing whatever is on the card.
         </div>
 
-        {# `swap: none` because the scan POST answers with a status line, not a dialog:
-           its reply is dropped and `after` re-requests this dialog instead.
-           `Scanner.start` marks the device running before it creates the task, so that
-           reply comes back with `scanning` set and takes over the poll above. #}
+        {# `swap: none`: the scan's reply is a status line; the re-request below brings
+           the dialog back. #}
         {% set act = {
           'label': 'Scan device',
           'note': 'read what is already there · ~35s for a full library',
@@ -99,9 +86,7 @@
               A Pull brings exactly this across.
             {% endif %}
             {% if extras.duplicates %}
-              {# Genuinely a different warning from a reader's. There, a mangled duplicate
-                 is dead weight you may delete. Here, pulling it would make a *second*
-                 copy appear locally under the mangled name. #}
+              {# On an upstream a mangled duplicate is the far end's, not ours to delete. #}
               <span class="t-warn">{{ extras.duplicates }}</span> of them are the same book
               under a mangled filename — this host already has it under the decoded name,
               so a Pull would bring a second copy across under the mangled one.
@@ -112,9 +97,7 @@
             show. The Dry run does.
           </div>
 
-          {# `after`, not `close`: the `close` slot in device_action.html hard-codes
-             #device-menu, which does not exist in this dialog, so the dialog would stay
-             open over its own toast. Same reason the Scan action above uses `after`. #}
+          {# `after`, not `close`, which hard-codes #device-menu. #}
           {% set act = {
             'label': 'Pull',
             'note': 'bring the backlog across · six phases, streaming into the dock',
@@ -161,8 +144,7 @@
                   </div>
                 {% endif %}
               </div>
-              {# `is none`, not falsiness: a genuinely empty file is 0 B and should say
-                 so. Only an unresolvable one gets the dash. See Manifests.extras. #}
+              {# `is none`: an empty file is 0 B; only an unresolvable size is a dash. #}
               <div class="cell-r mono t-dim">{{ '—' if x.size is none else x.size|hsize }}</div>
             </div>
           {% endfor %}
@@ -173,9 +155,7 @@
             showing first {{ extras.rows|length }} of {{ extras.total|commafy }} ·
           {% endif %}
           {% set unknown = extras.rows | selectattr('size', 'none') | list | length %}
-          {# "0 B listed" beside a column of dashes reads as "these files are empty",
-             which is the claim the dashes exist to avoid. Say how many we could not
-             price, and drop the byte figure entirely when that is all of them. #}
+          {# No total over dashes: "0 B listed" would claim the files are empty. #}
           {% if unknown < extras.rows|length %}{{ extras.listed_bytes|hsize }} listed{% endif %}
           {% if unknown %}
             {% if unknown < extras.rows|length %} · {% endif %}
@@ -184,8 +164,7 @@
         </div>
 
       {% else %}
-        {# The one branch that may reassure, because a scan actually looked. It carries
-           when it looked: this is a claim about a moment, not a standing property. #}
+        {# The only reassurance, because a scan looked -- and it says when. #}
         <div class="meta">
           {% if device.is_upstream %}
             Nothing to pull — as the scan {{ extras.scanned_at|reltime }} saw it, this host

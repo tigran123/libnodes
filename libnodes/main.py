@@ -40,24 +40,14 @@ def create_app() -> FastAPI:
     app = FastAPI(title="LibNodes", lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.lib = lib
 
-    # Middleware, not `dependencies=` on the include_router calls below. A router
-    # dependency would cover the four route modules and leave /, /healthz, the /fleet
-    # and /node redirects and the /static mount open, and every route added later would
-    # be a fresh chance to forget one -- the same failure mode as the FRAGMENTS list in
-    # tests/test_routes.py. This covers everything by construction; auth.OPEN_PATHS is
-    # then the single, readable list of what is deliberately not covered.
+    # A middleware, so every route, mount and redirect is covered by construction;
+    # auth.OPEN_PATHS lists what is deliberately not.
     app.add_middleware(AuthMiddleware)
 
     if not settings.auth_enabled:
-        # Fail-open is the deliberate default -- it is what leaves a dev server and the
-        # test suite untouched -- so this warning is the only thing standing between a
-        # Pi that lost its LIBNODES_PASSWORD and a fleet anyone on the LAN can drive.
-        #
-        # The app configures no logging at all, so this reaches stderr through
-        # logging.lastResort, which has no formatter and prints the bare message. Hence
-        # the literal "WARNING:" and the padding: without them the line lands in the
-        # journal looking like a stray print, indistinguishable from chatter, next to
-        # uvicorn's own "INFO:     " column.
+        # Fail-open by design, so this warning is all that stands between a host that
+        # lost its password and a fleet the LAN can drive. No logging is configured, so it
+        # goes through logging.lastResort bare -- hence the literal "WARNING:  ".
         logging.getLogger("libnodes").warning(
             "WARNING:  no LIBNODES_PASSWORD set - the UI is open to every host that "
             "can reach this port. See deploy/README.md section Access."
@@ -67,8 +57,6 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(PathError)
     async def _path_error(request: Request, exc: PathError) -> HTMLResponse:
-        # Every library path is validated against the index; anything else is a 400,
-        # not a traversal.
         return HTMLResponse(
             f'<div class="hint t-err">{exc}</div>', status_code=400
         )
@@ -77,12 +65,8 @@ def create_app() -> FastAPI:
     async def root() -> RedirectResponse:
         return RedirectResponse("/devices", status_code=307)
 
-    # --- compatibility with the pre-rename URLs -----------------------------
-    #
-    # "Fleet" became "Devices". A page loaded before that rename keeps polling
-    # /fleet/rows every 10s for as long as it stays open, and without these it just
-    # 404s forever: the table silently stops updating and nothing says why. 308
-    # preserves the method, so the POST actions redirect correctly too.
+    # "Fleet" became "Devices": a tab open since keeps polling /fleet/rows, and without
+    # these would 404 silently for ever. 308 keeps the method.
 
     @app.api_route(
         "/fleet", methods=["GET"], include_in_schema=False

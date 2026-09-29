@@ -18,9 +18,9 @@ from ..probe import (
     Reachability,
     _parse_battery,
     _parse_power,
+    _readings_script,
     _section,
     battery_command,
-    charging_command,
     ssh_argv,
 )
 from ..config import PULL_EXCLUDES, SKIP_TOPLEVEL
@@ -51,11 +51,8 @@ from ..templating import clock, reltime, templates, until
 router = APIRouter()
 
 
-#: What a failed connect implies, keyed on the string `_describe` produced. `sleeping`
-#: says only "the connect failed and the node answered within sleeping_window" — it
-#: carries no diagnosis of its own, so any reading of one has to come from the error.
-#: Mirrors the `connection refused` entry in jobs.py's `_HINTS`, which is what the
-#: connection-test dialog shows for the same failure.
+#: What a failed connect implies, keyed on `probe._describe`'s strings. `sleeping` carries no
+#: diagnosis of its own, so any reading of one comes from the error.
 _REACH_NOTES: list[tuple[str, str]] = [
     (
         "connection refused",
@@ -75,21 +72,15 @@ _REACH_NOTES: list[tuple[str, str]] = [
 ]
 
 
-#: The Devices view choice, persisted per browser. A cookie rather than localStorage
-#: because devices.html picks the table/grid branch server-side -- localStorage would
-#: render TABLE and swap to GRID after paint, a flash plus a wasted poll on every load.
-#: A year, matching the theme cookie in app.js:25: both are display preferences, and
-#: neither is worth asking twice.
+#: TABLE or GRID, per browser. A cookie, because the branch is chosen server-side:
+#: localStorage would paint TABLE and swap after load.
 VIEW_COOKIE = "libnodes_view"
 VIEW_MAX_AGE = 31536000
 
 
 def resolved_view(request: Request, view: str | None = None) -> str:
-    """Which of the two layouts this browser is on.
-
-    An explicit `?view=` wins -- the toggle just named one. Otherwise the cookie, which
-    is what carries the choice back through base.html's bare /devices rail link.
-    """
+    """Which layout this browser is on: an explicit `?view=`, else the cookie, which is
+    only ever written from an explicit one and so always matches the branch rendered."""
     if view in ("table", "grid"):
         return view
     return "grid" if request.cookies.get(VIEW_COOKIE) == "grid" else "table"
@@ -105,19 +96,11 @@ class DeviceView:
     battery: Battery
     last_sync: float | None
     job: Job | None
-    #: The connection test as a shell line, for the row button's tooltip. The test is the
-    #: one action safe enough to run straight from the row, so it does not get the
-    #: dialog's command strip — but "every action shows the command it will run" still
-    #: holds, and the result echoes the same line. Built by `_test_argv`, once, so the
-    #: two cannot disagree.
+    #: The connection test as a shell line, for the Test button's tooltip; the result
+    #: echoes the same line, both from `_test_argv`.
     test_command: str = ""
-    #: A listing is running against this node right now.
-    #:
-    #: A scan is not a Job — it is `Scanner`, its own machinery, and it never appears in
-    #: the dock or on /jobs. Until this flag existed the *only* place a running one could
-    #: be seen was inside the two dialogs that offer it, so closing one made the work
-    #: invisible and "Close" read as "Cancel". It does not cancel: `Scanner.start` owns
-    #: the task and nothing in the dialog is holding it up.
+    #: A scan is running. It is not a Job and never reaches the dock, so without this the
+    #: row gave no sign of it once its dialog closed.
     scanning: bool = False
 
     @property
@@ -149,23 +132,14 @@ class DeviceView:
 
     @property
     def online(self) -> bool:
-        """Green. Every device action needs this — offering them otherwise just
-        produces a failure the user could have been spared."""
+        """Green, which every writing action needs."""
         return self.state == "online"
 
     @property
     def reach_note(self) -> str:
-        """The tooltip behind a failed row: a reading of the error, when it last
-        answered, and how old the reading itself is. A reading, not the fact — the fact is
-        the error itself, which the row prints. Here rather than in the template because it
-        interprets, and templates only format.
-
-        The age is not decoration. The row is re-rendered every 10s but the probe behind it
-        backs off to five minutes, so without it a dot silently asserts a measurement it
-        did not just take — a device that came back four minutes ago looks identical to one
-        that is still down, and the page gives you no way to tell. Chasing exactly that
-        cost an afternoon.
-        """
+        """A failed row's tooltip: what the error suggests, when the node last answered,
+        and how old the check is -- the row repaints every 10 s but the probe behind it
+        backs off, so without the age a dot claims a measurement it did not just take."""
         if self.online or not self.reach.error:
             return ""
         error = self.reach.error.lower()
@@ -195,12 +169,7 @@ class DeviceView:
 
     @property
     def used(self) -> int | None:
-        """What the Storage column prints, because it is what the bar draws.
-
-        `_parse_df` sets total/used/free together or not at all, and the declared-capacity
-        fallback (probe.py) leaves both used and free None, so this is None in exactly the
-        cases `free` was.
-        """
+        """What the Storage column prints, because it is what the bar draws."""
         return self.space.used
 
     @property
@@ -212,18 +181,13 @@ class DeviceView:
 
     @property
     def has_battery(self) -> bool:
-        """Whether this device reports a battery at all.
-
-        Keyed on the declaration, not on the reading: a node with a battery source set
-        that has not answered yet must render an empty cell rather than no cell, or the
-        column would appear and disappear under the poll.
-        """
+        """Whether a battery source is declared -- not whether one was read, or the cell
+        would come and go with the poll."""
         return bool(self.device.battery or self.device.battery_cmd)
 
     @property
     def battery_source(self) -> str:
-        """The file or command the reading came from, for the tooltip — so a cell that is
-        empty or wrong names the thing to go and check."""
+        """The file or command the reading came from, named in the tooltip."""
         return self.device.battery or self.device.battery_cmd or ""
 
     @property
@@ -232,12 +196,8 @@ class DeviceView:
 
     @property
     def battery_class(self) -> str:
-        """The bar's tint — a colour modifier only, composed onto `track track-2` by the
-        template, since `track-2` is a height and these are not.
-
-        Storage fills up as it gets worse and a battery empties, so the two cannot share
-        a threshold: this is low-is-bad, at the levels a phone itself warns at.
-        """
+        """The bar's tint, low-is-bad at the levels a phone warns at (storage is the
+        opposite, so the two cannot share a threshold)."""
         pct = self.battery.percent
         if pct is None:
             return ""
@@ -249,23 +209,11 @@ class DeviceView:
 
     @property
     def bolt_class(self) -> str:
-        """The charging glyph's tint, or "" for no glyph at all.
+        """The charging glyph's tint -- amber charging, green plugged and full -- or "".
 
-        Two colours because the two states are different news: amber says the figure beside
-        it is climbing, green says the device is on a charger and done. Both are drawn only
-        from the reading just taken — `adopt_battery` never carries a charge state forward —
-        so a bolt on screen means the last successful read saw a charger, dated by LAST SEEN
-        like every other figure in the row.
-
-        A red row draws neither, which is the other half of that rule. `adopt_battery`
-        blanks a stale bolt when a read comes back *empty*, and an unreachable device
-        produces no read at all to blank it with — so s4l sat for five days at `100%`
-        beside a bolt claiming a charger nothing had been able to ask about. `offline` is
-        a statement about the reading's age and not merely about the dot: it needs
-        `sleeping_window` (1800s) since `reach.last_ok`, and a battery reading can never
-        be newer than `last_ok`, so red means the charge state is at least half an hour
-        old. Amber `sleeping` keeps its bolt on purpose — under half an hour a charger it
-        was on is very probably still under it, and the percentage beside it is no fresher.
+        None on a red row: an unreachable device produces no read to blank a stale bolt
+        with, and s4l sat five days at `100%` beside a charger nothing could ask about.
+        Red means the reading is at least `sleeping_window` old; amber keeps its bolt.
         """
         if self.offline:
             return ""
@@ -288,13 +236,8 @@ class DeviceView:
             return f"{self.battery_source}: {self.battery.error} · {stale}"
         if self.battery.percent is None:
             return f"{self.battery_source} — not read yet"
-        # Spelled out here even where the bolt says it, because the bolt cannot distinguish
-        # "on its own battery" from "we could not read the charger" and this can — and
-        # because a two-colour glyph needs somewhere that names which colour is which.
-        # Past tense on a red row, where `bolt_class` has withdrawn the glyph: the record
-        # still holds what was measured and this is the only place that can report it, but
-        # it must not go on claiming in the present what the row has stopped drawing. The
-        # `read <age> ago` below is what dates the past tense.
+        # Spelled out, because the bolt cannot tell "on battery" from "charger unread".
+        # Past tense on a red row, which has withdrawn the bolt.
         power = {
             "charging": "charging",
             "plugged": "on charger, not charging",
@@ -309,30 +252,20 @@ class DeviceView:
 
     @property
     def seen_at(self) -> float | None:
-        """When the readings this row is showing were taken — the LAST SEEN column.
-
-        The df and the battery come back on one ssh, so one stamp dates both. Not
-        `reach.last_ok`, which is a 2s connect repeated every probe_interval and says
-        nothing about the figures: at the defaults it is up to `freespace_interval` (300s)
-        fresher than they are, so printing it here would date STORAGE five minutes early.
-        The fallback is for a node whose battery was adopted by the connection test before
-        any df ran.
-        """
+        """When this row's readings were taken -- the LAST SEEN column. One ssh carries df
+        and battery, so one stamp dates both. Not `reach.last_ok`, the connect, which is up
+        to `freespace_interval` fresher than the figures."""
         return self.space.checked_at or self.battery.checked_at
 
     @property
     def seen_note(self) -> str:
-        """The column's tooltip: when, from what, and how that compares to the connect.
-
-        Both cadences in one string on purpose — the cell can only carry one number, and
-        the two disagreeing is the normal case rather than a fault.
-        """
+        """LAST SEEN's tooltip, both cadences: the readings and the connect disagree as a
+        matter of course."""
         if self.seen_at is None:
             return "no reading yet"
         sources = "df + battery" if self.has_battery else "df"
         parts = [f"{sources} read at {clock(self.seen_at)}"]
-        # An age against a "—" means we asked and got nothing, which is worth saying here:
-        # the storage cell has no room for the reason.
+        # The storage cell has no room for why a reading failed.
         if self.space.error:
             parts.append(self.space.error)
         parts.append(
@@ -343,23 +276,26 @@ class DeviceView:
         return " · ".join(parts)
 
 
+def _running(app: AppState) -> dict[str, Job]:
+    return {j.device_id: j for j in app.jobs.active() if j.state == "running"}
+
+
+def _view(app: AppState, device: Device, running: dict[str, Job]) -> DeviceView:
+    return DeviceView(
+        device=device,
+        reach=app.probe.status(device.id),
+        space=app.probe.space(device.id),
+        battery=app.probe.battery(device.id),
+        last_sync=app.manifests.last_sync(device.id),
+        job=running.get(device.id),
+        scanning=app.scanner.is_running(device.id),
+        test_command=shlex.join(_test_argv(device, app.settings)),
+    )
+
+
 def device_views(app: AppState) -> list[DeviceView]:
-    running = {j.device_id: j for j in app.jobs.active() if j.state == "running"}
-    out = []
-    for device in app.devices.config.devices:
-        out.append(
-            DeviceView(
-                device=device,
-                reach=app.probe.status(device.id),
-                space=app.probe.space(device.id),
-                battery=app.probe.battery(device.id),
-                last_sync=app.manifests.last_sync(device.id),
-                job=running.get(device.id),
-                scanning=app.scanner.is_running(device.id),
-                test_command=_shell(_test_argv(device, app.settings)),
-            )
-        )
-    return out
+    running = _running(app)
+    return [_view(app, device, running) for device in app.devices.config.devices]
 
 
 def _filtered(views: list[DeviceView], q: str | None) -> list[DeviceView]:
@@ -381,39 +317,36 @@ def devices_context(
     request: Request, q: str | None = None, view: str | None = None
 ) -> dict:
     app = state(request)
-    # A stamp, not a probe -- this stays inside "requests never probe a device". It tells
-    # the background loop somebody is looking, which tightens the backoff ceiling from five
-    # minutes to thirty seconds for as long as the page keeps polling. Every devices route
-    # funnels through here, so the row poll alone is enough to hold it.
+    # A stamp, not a probe: it tightens the backoff ceiling while a page polls.
     app.probe.note_interest()
-    views = _filtered(device_views(app), q)
+    ctx = _status_context(request)
+    ctx.update(
+        {
+            "nodes": _filtered(device_views(app), q),
+            "q": q or "",
+            "view": resolved_view(request, view),
+        }
+    )
+    return ctx
+
+
+def _status_context(request: Request) -> dict:
+    """What the top-bar chips need, and not the rows: `/devices/status` polls every 10 s
+    beside `/devices/rows`, and building every row for it doubled the poll's cost."""
+    app = state(request)
     online, total = app.probe.reachable_count
     ctx = base_context(request, "devices")
     ctx.update(
         {
-            "nodes": views,
-            "q": q or "",
             "online": online,
             "total": total,
             "last_scan": app.probe.last_scan,
             "profiles": app.devices.config.profiles,
-            # The only surface devices.yaml's validation errors have. The read-only YAML
-            # view that used to carry them is gone -- the file is hand-edited over ssh, so
-            # a page that could only *show* it earned nothing -- but a typo that fails to
-            # parse must not be silent: the store keeps serving the last good config, so
-            # the fleet on screen looks perfectly well. Costs nothing new: the property
-            # is an mtime check, the same one `.config` two lines up already made, and
-            # the inotify watcher is what actually re-reads the file.
+            # devices.yaml's only error surface: the last good config keeps serving.
             "issues": app.devices.issues,
-            # Whether device_status.html should carry the titlebar subtitle out of band.
-            # False here and flipped by the /devices/status handler alone -- the page
-            # renders that fragment inline in its topbar, where an oob span would be a
-            # duplicate id. Same flag, same reason, as routes/library.py's file rows.
+            # The titlebar subtitle rides out of band only on /devices/status; inline it
+            # would be a duplicate id.
             "oob": False,
-            # Set here rather than in the page handler alone, so the fragments and the
-            # rescan agree with the branch devices.html rendered. They can trust the
-            # cookie because it is only ever written from an explicit `?view=`.
-            "view": resolved_view(request, view),
         }
     )
     return ctx
@@ -421,22 +354,15 @@ def devices_context(
 
 @router.get("/devices", response_class=HTMLResponse)
 async def devices_page(request: Request, q: str | None = None, view: str | None = None):
-    """The Devices page, in whichever layout this browser last chose.
-
-    `view` defaults to None, not "table": the rail link in base.html is a bare /devices,
-    and a handler that cannot tell it from a click on TABLE would pin the cookie to its
-    own default -- which is the bug this cookie exists to fix, arriving from the far side.
-    """
+    """The Devices page, in this browser's last layout. Only an explicit `?view=` writes
+    the cookie: the rail's bare /devices must not pin the default it guessed."""
     ctx = devices_context(request, q, view)
     response = templates.TemplateResponse(request, "devices.html", ctx)
     if view in ("table", "grid"):
         response.set_cookie(
             VIEW_COOKIE,
             view,
-            # No `secure`: LibNodes is served over plain http on the LAN, so a Secure
-            # cookie would never be stored -- the constraint routes/auth.py records for
-            # the session cookie. httponly because nothing on the client reads this one:
-            # the toggle is a navigation, so the server both writes and reads it.
+            # No `secure`: plain http on the LAN would never store it.
             httponly=True,
             samesite="lax",
             path="/",
@@ -457,22 +383,19 @@ async def device_grid(request: Request, q: str | None = None):
 
 @router.get("/devices/status", response_class=HTMLResponse)
 async def device_status(request: Request):
-    """The top-bar chips — polled alongside the table.
-
-    And the titlebar subtitle with them, out of band. It counts the same fleet the chip
-    does and is the only figure on the page no container repaints, so it rides the poll
-    that is already on the wire rather than earning a third one.
-    """
-    ctx = devices_context(request)
+    """The top-bar chips, polled beside the table, with the titlebar subtitle out of band
+    -- the one figure no container repaints."""
+    app = state(request)
+    app.probe.note_interest()
+    ctx = _status_context(request)
     ctx["oob"] = True
     return templates.TemplateResponse(request, "device_status.html", ctx)
 
 
 def _one(request: Request, device_id: str) -> DeviceView | None:
-    for view in device_views(state(request)):
-        if view.device.id == device_id:
-            return view
-    return None
+    app = state(request)
+    device = app.devices.device(device_id)
+    return None if device is None else _view(app, device, _running(app))
 
 
 @router.get("/device/{device_id}/row", response_class=HTMLResponse)
@@ -498,24 +421,15 @@ async def device_card(request: Request, device_id: str):
 
 @router.post("/devices/rescan", response_class=HTMLResponse)
 async def devices_rescan(request: Request, q: str | None = Form(default=None)):
-    """Sweep every device, ignoring backoff, and rebuild the library index — without
-    making the browser wait for either.
+    """Probe every device, ignoring backoff, and rebuild the index, without waiting for
+    either; the fragment schedules one follow-up refresh.
 
-    Awaiting this would make Rescan cost one connect timeout per unreachable node. The
-    returned fragment schedules a single follow-up refresh to pick up the results.
-
-    `Form`, not a query parameter: the button reaches here with `hx-include="[name=q]"`,
-    and for a POST htmx puts included values in the *body*. As a query parameter this
-    bound to None however carefully the button was wired, and Rescan answered with the
-    whole fleet — the filter erased by the one control most likely to be pressed while
-    filtering. Measured in the live page, where the unit test had passed by supplying `q`
-    the one way the browser never does.
+    `q` is a Form field: htmx puts an included value in a POST's *body*, and as a query
+    parameter it bound to None and Rescan erased the filter.
     """
     app = state(request)
     app.probe.rescan_soon(force=True)
-    # The Library's ⟳ folded into this button: one "look again" control rather than two
-    # glyphs meaning different things on two pages. Cheap to pair -- the walk is ~0.6 s on
-    # pi5 on its own worker thread, and reindex_soon is a no-op while one is in flight.
+    # One "look again" control for both; the walk is ~1 s on its own thread.
     app.reindex_soon()
     ctx = devices_context(request, q)
     ctx["rescanning"] = True
@@ -523,55 +437,48 @@ async def devices_rescan(request: Request, q: str | None = Form(default=None)):
     return templates.TemplateResponse(request, template, ctx)
 
 
-def _shell(argv: list[str]) -> str:
-    """An argv rendered as the shell line it is equivalent to — for display only."""
-    return " ".join(shlex.quote(a) for a in argv)
-
-
 def _preview(build) -> str:
-    """A command strip, or the reason there is no command to show.
-
-    `build_argv` refuses to compose a mirror push it cannot make safe — an empty source
-    list, a target at the root — because `--delete` turns either into data loss. The menu
-    is rendered from those same calls, so it has to survive the refusal: show why, rather
-    than 500 on a dialog whose whole job is to say what will run.
-    """
+    """A command strip, or why there is none: the builders refuse what they cannot make
+    safe, and the dialog shows the refusal rather than failing."""
     try:
-        return _shell(build())
+        return shlex.join(build())
     except ValueError as exc:
         return f"unavailable — {exc}"
 
 
 def _pull_plan(app: AppState, device: Device) -> list[str]:
-    """Every command a Pull runs, in order — not just the transfer.
+    """Every command a Pull runs, in order, built by the functions the runner calls.
 
-    Showing only the rsync would hide the steps that carry the risk, and since the pull
-    learned to prune there are two of them rather than one: the transfer now carries
-    `--delete`, which removes local files, and phase 3 is a `systemctl stop` with an
-    overwritten catalog database behind it. Neither is readable from the button.
-    "The command is the documentation" (device_menu.html) cuts that way — and the cap
-    beside the flag is half of what makes the first one safe to read, so it is shown with
-    it rather than hidden in a setting.
-
-    Built from the same functions the runner calls, so the strip cannot drift from what
-    runs — the lesson `_test_argv` already carries.
+    The rsync alone would hide the steps that carry the risk: its --delete (with the cap
+    beside it) and the `systemctl stop` with an overwritten catalog behind it.
     """
     config = app.devices.config
     steps: list[str] = []
 
     def step(n: int, what: str, build) -> None:
         try:
-            steps.append(f"{n}. {what}\n   {_shell(build())}")
+            steps.append(f"{n}. {what}\n   {shlex.join(build())}")
         except ValueError as exc:
             steps.append(f"{n}. {what}\n   unavailable — {exc}")
 
     unit = app.settings.local_service
+    if unit:
+        # Numbered 0 so the six phases keep the numbers the dock prints for them.
+        steps.append(
+            "0. before anything moves: is this host's reader running, and may we manage "
+            "it? (the start is a no-op on a running unit)\n   "
+            f"{shlex.join(service_argv('is-active', app.settings))}\n   "
+            f"{shlex.join(service_argv('start', app.settings))}"
+        )
     step(1, "the library — and prune what this node no longer has, both services still running",
          lambda: build_pull_argv(device, config, app.settings))
     step(2, "snapshot the upstream's catalog, without stopping it",
          lambda: snapshot_argv(device, config, app.settings))
     if unit:
-        steps.append(f"3. stop this host's reader\n   {_shell(service_argv('stop', app.settings))}")
+        steps.append(
+            "3. stop this host's reader, if it is still running\n   "
+            f"{shlex.join(service_argv('stop', app.settings))}"
+        )
     else:
         steps.append(
             "3. stop this host's reader\n   unavailable — no LIBNODES_LOCAL_SERVICE "
@@ -579,11 +486,12 @@ def _pull_plan(app: AppState, device: Device) -> list[str]:
         )
     step(4, "swap the catalog in", lambda: build_catalog_argv(device, config, app.settings))
     if unit:
-        steps.append(f"5. start it again, whatever happened\n   {_shell(service_argv('start', app.settings))}")
+        steps.append(
+            "5. start it again if step 3 stopped it, whatever happened between\n   "
+            f"{shlex.join(service_argv('start', app.settings))}"
+        )
     else:
-        # Listed even when it cannot run, so the numbering never silently skips a step —
-        # a plan that jumps from 4 to 6 reads as a rendering bug rather than as a missing
-        # setting.
+        # Listed even when it cannot run, so the numbering never skips.
         steps.append(
             "5. start it again, whatever happened\n   unavailable — nothing was stopped"
         )
@@ -593,16 +501,12 @@ def _pull_plan(app: AppState, device: Device) -> list[str]:
 
 
 def _replicate_plan(app: AppState, device: Device, sources: list[str]) -> list[str]:
-    """Replicate's commands: the files, then the catalog beside them.
-
-    Shown in full for the reason Pull's is. The rsync is the readable part; the steps that
-    touch a database are the ones worth reading before pressing anything.
-    """
+    """Replicate's commands: the files, then the catalog steps worth reading first."""
     config = app.devices.config
     try:
         steps = [
             "1. the library, --delete and all\n   "
-            + _shell(build_argv(device, config, sources, app.settings))
+            + shlex.join(build_argv(device, config, sources, app.settings))
         ]
     except ValueError as exc:
         return [f"unavailable — {exc}"]
@@ -612,7 +516,7 @@ def _replicate_plan(app: AppState, device: Device, sources: list[str]) -> list[s
     if app.settings.local_service:
         steps.append(
             "2. is anything reading the catalog there?\n   "
-            + _shell(remote_reader_argv(device, config, app.settings))
+            + shlex.join(remote_reader_argv(device, config, app.settings))
         )
     steps.append(
         "3. snapshot ours, with this host's own reader still serving\n   "
@@ -621,22 +525,18 @@ def _replicate_plan(app: AppState, device: Device, sources: list[str]) -> list[s
     )
     steps.append(
         "4. clear the replica's stale write-ahead log\n   "
-        + _shell(remote_sidecar_argv(device, config, app.settings))
+        + shlex.join(remote_sidecar_argv(device, config, app.settings))
     )
     steps.append(
         "5. send the snapshot in as its lib.db\n   "
-        + _shell(replicate_catalog_argv(device, config, app.settings))
+        + shlex.join(replicate_catalog_argv(device, config, app.settings))
     )
     return steps
 
 
 def _whole_root_sources(app: AppState, device: Device) -> list[str]:
-    """Everything this device's mode considers "the whole library".
-
-    Two different answers, and every whole-root action wants the one matching the device:
-    a reader gets the browsable categories, a mirror gets the entire root including the
-    vault it needs for its symlinks to resolve.
-    """
+    """"The whole library" for this device's mode: a reader's browsable categories, or a
+    CAS node's entire root, vault included."""
     if device.cas_tree:
         return mirror_sources(app.settings)
     return full_sync_sources(app.settings)
@@ -644,19 +544,14 @@ def _whole_root_sources(app: AppState, device: Device) -> list[str]:
 
 @router.get("/device/{device_id}/menu", response_class=HTMLResponse)
 async def device_menu(request: Request, device_id: str):
-    """Every action for one device, each showing the command it will actually run.
-
-    An action whose effect you have to infer from its label is a bad action — "Adopt
-    existing copy" means nothing until you see the `--size-only` that makes it safe.
-    """
+    """Every action for one device, each showing the command it will run: "Adopt existing
+    copy" means nothing until you see its `--size-only`."""
     app = state(request)
     device = app.devices.device(device_id)
     if device is None:
         return HTMLResponse("", status_code=404)
 
     config = app.devices.config
-    # A mirror's every action is over the whole root including the vault, so the sources
-    # differ per mode rather than per action. build_argv reads the mode off the device.
     sources = _whole_root_sources(app, device)
     files, total_bytes, _last = app.manifests.summary(device_id)
 
@@ -670,22 +565,14 @@ async def device_menu(request: Request, device_id: str):
             "scan": app.scanner.result(device_id),
             "scanning": app.scanner.is_running(device_id),
             "commands": {
-                # `full_sync` and `replicate` are nearly the same argv; they are two keys
-                # because they are two different promises, and the dialog prints the
-                # promise beside the command. Replicate is defined by --delete. Full Sync
-                # carries one only where the node asked for it with `prune: true`, which
-                # is why `whole_library=True` is passed here and not on `replicate`: a
-                # mirror's --delete comes from its mode, a reader's from those two facts
-                # together. The dialog reads the flag it prints — see device_menu.html,
-                # where the note changes with `device.prune` rather than describing a
-                # command it is not showing.
+                # `whole_library=True`, so a `prune: true` node's preview shows the
+                # --delete its Full Sync will carry; the note beside it in
+                # device_menu.html changes with `device.prune` to match. Replicate's
+                # commands are `replicate_plan`, below.
                 "full_sync": _preview(
                     lambda: build_argv(
                         device, config, sources, app.settings, whole_library=True
                     )
-                ),
-                "replicate": _preview(
-                    lambda: build_argv(device, config, sources, app.settings)
                 ),
                 "dry_run": _preview(
                     lambda: build_argv(
@@ -700,10 +587,7 @@ async def device_menu(request: Request, device_id: str):
                 "adopt": _preview(
                     lambda: build_argv(device, config, sources, app.settings, adopt=True)
                 ),
-                "scan": _shell(scan_argv(device, app.settings)),
-                "pull": _preview(
-                    lambda: build_pull_argv(device, config, app.settings)
-                ) if device.is_upstream else "",
+                "scan": shlex.join(scan_argv(device, app.settings)),
                 "pull_dry_run": _preview(
                     lambda: build_pull_argv(
                         device, config, app.settings, dry_run=True
@@ -720,16 +604,9 @@ async def device_menu(request: Request, device_id: str):
     return templates.TemplateResponse(request, "dialogs/device_menu.html", ctx)
 
 
-#: One remote probe answering the three questions the design's test strip asks: is it
-#: reachable, does it have rsync, is the target writable. Deliberately read-only —
-#: `test -w` rather than creating a probe file on someone's device.
-#: `df -Pk` is the portable form on GNU coreutils, but Android's toybox rejects the
-#: flags, prints its output anyway and exits non-zero — so a plain `a || b` runs df
-#: twice and prints the table twice. Capture first, fall back only on empty output.
-_TEST_DF = (
-    'echo "# df"; d=`df -Pk {t} 2>/dev/null`; '
-    '[ -n "$d" ] || d=`df {t} 2>&1`; echo "$d"; '
-)
+#: The connection test's own questions, after the readings the background probe takes:
+#: does the device have rsync, and is the target writable. Read-only -- `test -w` rather
+#: than creating a probe file on someone's device.
 _TEST_TAIL = (
     'echo "# rsync"; rsync --version 2>/dev/null | head -1 || echo "rsync: not found"; '
     'echo "# write"; if test -w {t}; then echo "writable"; else echo "NOT writable"; fi'
@@ -737,35 +614,18 @@ _TEST_TAIL = (
 
 
 def _test_script(device: Device) -> str:
-    """The connection test, with a battery section for a device that declares one.
+    """The background probe's readings -- df, battery, charger -- plus the test's own two.
 
-    Built per device rather than as one constant, because the battery source is per
-    device — and read through `battery_command` so the quoting rule (a path is quoted, a
-    command line is not) lives in exactly one place and cannot drift from the background
-    probe's copy of the same decision.
+    Built from `_readings_script` rather than beside it, so pressing Test cannot read a
+    different set of things than the poll does. The tail is formatted on its own: a
+    `battery_cmd` is free-form shell and may contain braces -- `awk '{print $1}'` -- which
+    str.format would read as a field name.
     """
-    target = shlex.quote(device.target)
-    read = battery_command(device)
-    # Each half formatted before the battery fragment is joined on, never after: a
-    # battery_cmd is free-form shell and may well contain braces -- `awk '{print $1}'` --
-    # which str.format would then try to read as a field name and raise on.
-    battery = f'echo "# battery"; {read}; ' if read else ""
-    # The charger, on the same terms. Only the file form produces one -- a battery_cmd's
-    # JSON already carries `plugged` -- and `charging_command` is what decides that, here
-    # as in the probe, so pressing Test cannot read a different set of things than the poll.
-    charger = charging_command(device)
-    if charger is not None:
-        battery += f'echo "# power"; {charger}; '
-    return _TEST_DF.format(t=target) + battery + _TEST_TAIL.format(t=target)
+    return f"{_readings_script(device)}; " + _TEST_TAIL.format(t=shlex.quote(device.target))
 
 
 def _test_argv(device: Device, settings) -> list[str]:
-    """The connection test as one argv, built in exactly one place.
-
-    The row's tooltip and the line echoed above the output both come from here, so they
-    cannot drift from what runs. They used to: the Actions dialog advertised a bare
-    `df -Pk <target>` while the handler ran this three-part script.
-    """
+    """The connection test as one argv: the tooltip, the echoed line and the run agree."""
     return [
         *ssh_argv(device, settings),
         _test_script(device),
@@ -774,14 +634,9 @@ def _test_argv(device: Device, settings) -> list[str]:
 
 @router.post("/device/{device_id}/test", response_class=HTMLResponse)
 async def device_test(request: Request, device_id: str):
-    """ssh in and report back in a dialog of its own.
-
-    Driven from the device row, not from behind Actions: it reads `df`, the rsync version
-    and `test -w`, writes nothing, and is therefore the one action that does not need its
-    command read before it is pressed. The result carries the echoed command, the output,
-    and a one-line verdict — with the failure case naming a likely cause, which is
-    exactly what you want from a device that is not answering.
-    """
+    """ssh in, read without writing, and report in a dialog: the command, the output, a
+    one-line verdict and a likely cause. On the row rather than behind Actions, because
+    it writes nothing and is most useful when the device is not answering."""
     app = state(request)
     device = app.devices.device(device_id)
     if device is None:
@@ -810,13 +665,9 @@ async def device_test(request: Request, device_id: str):
         err = str(exc)
 
     elapsed = time.perf_counter() - started
-    # Re-probe reachability too, so the row behind the dialog agrees with the strip.
+    # Re-probe and keep the readings just taken, so the row refreshed out of band below
+    # agrees with the dialog rather than showing the last poll's figures.
     await app.probe.probe(device)
-    # And keep the `df` this test just ran. `probe()` above refreshes reachability only,
-    # so without this the Storage cell kept whatever the last space probe left there —
-    # up to freespace_interval (5 min) old, and visibly disagreeing with the figure in
-    # the dialog printed from the same command. The reading is free: we have already
-    # paid for the ssh.
     app.probe.adopt_space(device_id, _section(out, "df"))
     if battery_command(device):
         app.probe.adopt_battery(
@@ -827,32 +678,23 @@ async def device_test(request: Request, device_id: str):
     ctx.update(
         {
             "device": device,
-            "command": _shell(argv),
+            "command": shlex.join(argv),
             "stdout": out.strip(),
             "stderr": err.strip(),
             "code": code,
             "elapsed": elapsed,
             "summary": _test_summary(out) if code == 0 else None,
             "hints": hints_for_text(f"{out}\n{err}", code if code is not None else 255),
-            # Built after both updates above, so the row the dialog carries out of band
-            # shows the reachability and the storage this test just measured rather than
-            # the last poll's.
             "node": _one(request, device_id),
             "oob": True,
-            # Picks which shape the oob include emits. Without it the dialog refreshed a
-            # #node-<id> that grid mode does not render, and htmx dropped the swap
-            # silently -- the card kept the figures this test had just contradicted.
+            # Row or card: aimed at a `#node-…` grid mode never draws, htmx drops the swap.
             "view": resolved_view(request),
         }
     )
     return templates.TemplateResponse(request, "dialogs/test_result.html", ctx)
 
 
-#: How each charge state is worded, for the verdict line and the cell tooltip. One table,
-#: because a row saying "on charger" beside a dialog saying "plugged in" reads as two
-#: different readings of two different things. "unplugged" is worth saying out loud: it is
-#: what distinguishes a device we know to be on its own battery from one whose charger
-#: source did not answer, which is the distinction `Battery.power` keeps a `None` for.
+#: The charge state as the verdict words it.
 _POWER_VERDICT = {
     "charging": " (charging)",
     "plugged": " (on charger)",
@@ -865,17 +707,10 @@ def _test_summary(out: str) -> list[str]:
     bits = []
     if "# df" in out:
         bits.append("reachable")
-    # The charge, when the test read one. Parsed rather than echoed, so what the verdict
-    # claims is the same figure the row's bar draws — the raw JSON is right there in the
-    # transcript below for anyone who wants it.
+    # Parsed, not echoed, so the verdict claims the figure the row's bar draws.
     charge = _parse_battery(_section(out, "battery"))
     if charge is not None:
-        # The charger qualifies the figure rather than standing on its own: "battery 27%"
-        # and "battery 27% (charging)" are the same measurement heading opposite ways, and
-        # the second is the whole reason the reading is worth pressing Test for twice.
-        # `.get` with an explicit default: an unplugged node and an unreadable one both
-        # land on a key that is not in the table, and without it the verdict read
-        # "battery 100%None".
+        # `.get` with a default, or an unreadable charger reads "battery 100%None".
         power = _POWER_VERDICT.get(
             _parse_power(_section(out, "power") or _section(out, "battery")) or "", ""
         )
@@ -894,11 +729,8 @@ def _test_summary(out: str) -> list[str]:
 
 @router.post("/device/{device_id}/scan", response_class=HTMLResponse)
 async def device_scan(request: Request, device_id: str):
-    """Ask the device what it already holds.
-
-    Runs in the background — a real device takes ~35s for 20k files — so this returns
-    immediately and the row picks up the result on its next poll.
-    """
+    """Ask the device what it holds, in the background (~35 s for 20k files); the row
+    shows SCANNING until it finishes."""
     app = state(request)
     device = app.devices.device(device_id)
     if device is None:
@@ -911,41 +743,27 @@ async def device_scan(request: Request, device_id: str):
 
 @router.get("/device/{device_id}/extras", response_class=HTMLResponse)
 async def device_extras(request: Request, device_id: str):
-    """Files the device holds that the library does not.
-
-    Orphans: books deleted from the library since, and copies whose filenames were
-    mangled by whatever wrote them — a real device turned out to hold 17 of these, the
-    same albums a second time under a double-encoded name.
-
-    Answerable only for a scanned device, and the dialog says so rather than reporting
-    nought — see `Manifests.extras`. This route is also its own poller while a scan
-    started from the dialog runs, so both guards below are checked before anything
-    expensive: `all_file_paths()` is 20,782 rows on the Pi and would run every 3s.
-    """
+    """Files the device holds that the library does not: retired books, and copies under
+    mangled names. Answerable only after a scan (see `Manifests.extras`). The dialog polls
+    this route while its scan runs, so the cheap guards come first."""
     app = state(request)
     device = app.devices.device(device_id)
     if device is None:
         return HTMLResponse("", status_code=404)
 
-    # An unbuilt index answers `all_file_paths()` with an empty set rather than an error,
-    # which would report every file on a scanned device as an extra. Unknown, not 24,616.
+    # An unbuilt index would make every file an extra. Unknown instead.
     scanned = app.manifests.scanned_at(device_id)
     found = (
         app.manifests.extras(
             device_id,
             app.index.all_file_paths(),
-            # A mirror is deliberately sent the infrastructure the index does not hold, so
-            # on one of those these names are not orphans. See Manifests.extras.
             expected_toplevel=SKIP_TOPLEVEL if device.cas_tree else frozenset(),
         )
         if scanned is not None and app.index.meta().ready
         else Extras.unknown()
     )
-    # On an upstream the list is the pull backlog, and a backlog has to be honest about
-    # what the pull will decline to take: /Unsorted/ alone is 56 GB of the 56.5 GB listed
-    # here, so "a Pull brings exactly this across" would be a lie about almost all of it.
-    # Marked per row rather than filtered out, because "present there, and deliberately
-    # not coming" is worth seeing — it is the difference between a backlog and a mystery.
+    # On an upstream this is the pull backlog, and the pull's excludes decline most of it
+    # (/Unsorted/ was 56 of the 56.5 GB listed). Marked per row, not hidden.
     pull_held = 0
     if device.is_upstream:
         patterns = [
@@ -967,11 +785,7 @@ async def device_extras(request: Request, device_id: str):
             "pull_held": pull_held,
             "scan": app.scanner.result(device_id),
             "scanning": app.scanner.is_running(device_id),
-            # So the Scan button here shows what it will run, like every action does.
-            "commands": {"scan": _shell(scan_argv(device, app.settings))},
-            # The backlog dialog offers the Pull that would clear it, and shows the same
-            # six-step plan the Actions menu does — built by the same function, so the two
-            # cannot say different things about one action.
+            "commands": {"scan": shlex.join(scan_argv(device, app.settings))},
             "pull_plan": _pull_plan(app, device) if device.is_upstream else [],
         }
     )
@@ -995,193 +809,133 @@ async def device_scan_status(request: Request, device_id: str):
     return templates.TemplateResponse(request, "fragments/scan_status.html", ctx)
 
 
+def _queue_toast(request: Request, device_id: str, offered, submit) -> HTMLResponse:
+    """One device action: look the node up, refuse a mode it is not offered to, queue the
+    job, and answer with a toast.
+
+    `offered(device)` is the route's mode guard -- a 404, as for an unknown id. `submit(app,
+    device, reachable)` queues the job; a ValueError from it is `build_argv` refusing a
+    transfer it cannot make safe (no sources, a target at the root, an upstream), and is a
+    409 toast that says why rather than a 500.
+    """
+    app = state(request)
+    device = app.devices.device(device_id)
+    if device is None or not offered(device):
+        return HTMLResponse("", status_code=404)
+    ctx = base_context(request, "devices")
+    try:
+        ctx["job"] = submit(app, device, app.probe.status(device_id).online)
+    except ValueError as exc:
+        ctx["message"] = str(exc)
+        return templates.TemplateResponse(
+            request, "fragments/error_toast.html", ctx, status_code=409
+        )
+    return templates.TemplateResponse(request, "fragments/queued.html", ctx)
+
+
 @router.post("/device/{device_id}/adopt", response_class=HTMLResponse)
 async def device_adopt(request: Request, device_id: str):
     """Reconcile a device that already holds the library, without moving its bytes.
 
     The files are there and correct; only their timestamps say otherwise, so rsync's
     default check would re-send all of them. This queues a `--size-only` run, which
-    repairs the metadata and transfers nothing.
+    repairs the metadata and transfers nothing. Not for an upstream: --size-only makes a
+    push quieter, not read-only, and Adopt was once the last writing route that reached one.
     """
-    app = state(request)
-    device = app.devices.device(device_id)
-    # Adopt never asked what the device was, which is how it stayed the one writing
-    # endpoint that would still reach an upstream node after every other route had been
-    # taught to refuse -- it is `-a --size-only`, and --size-only makes it quieter, not
-    # read-only. build_argv refuses an upstream too; this is so the answer is a 404
-    # rather than a 500.
-    if device is None or device.is_upstream:
-        return HTMLResponse("", status_code=404)
-    sources = _whole_root_sources(app, device)
-    reachable = app.probe.status(device_id).online
-    job = app.jobs.submit(
-        device,
-        sources,
-        label="(adopt existing copy)",
-        deferred=not reachable,
-        adopt=True,
+    return _queue_toast(
+        request, device_id,
+        lambda d: not d.is_upstream,
+        lambda app, d, reachable: app.jobs.submit(
+            d, _whole_root_sources(app, d), label="(adopt existing copy)",
+            deferred=not reachable, adopt=True,
+        ),
     )
-    ctx = base_context(request, "devices")
-    ctx["job"] = job
-    return templates.TemplateResponse(request, "fragments/queued.html", ctx)
 
 
 @router.post("/device/{device_id}/dry-run", response_class=HTMLResponse)
 async def device_dry_run(request: Request, device_id: str):
-    """What a Full Sync would actually do, without doing it.
+    """What a Full Sync or a Replicate would actually do, without doing it.
 
-    Runs as an ordinary job so it queues behind anything in flight, streams its file
-    list into the dock, and lands in history — a preview you can read afterwards rather
-    than a number that flashes past.
+    Runs as an ordinary job so it queues behind anything in flight, streams its file list
+    into the dock and lands in history. `whole_library=True`, because the sources *are*
+    the library: the preview must carry whatever the real run would, a `prune: true`
+    node's --delete included -- `-n` is what makes that safe. An upstream previews a
+    *pull*, at /pull-dry-run.
     """
-    app = state(request)
-    device = app.devices.device(device_id)
-    # An upstream node previews a *pull*, at /pull-dry-run. Routing it here would build a
-    # push argv, which build_argv refuses outright.
-    if device is None or device.is_upstream:
-        return HTMLResponse("", status_code=404)
-    label = (
-        "(dry run · whole root)" if device.is_mirror else "(dry run · full library)"
+    return _queue_toast(
+        request, device_id,
+        lambda d: not d.is_upstream,
+        lambda app, d, reachable: app.jobs.submit(
+            d, _whole_root_sources(app, d),
+            label="(dry run · whole root)" if d.is_mirror else "(dry run · full library)",
+            dry_run=True, whole_library=True,
+        ),
     )
-    job = app.jobs.submit(
-        device,
-        _whole_root_sources(app, device),
-        label=label,
-        dry_run=True,
-        # The sources *are* the library, so this preview carries whatever the real run
-        # would — including a `prune: true` node's --delete. A dry run is the only way to
-        # read a prune before it happens, so the one thing it must not do is quietly
-        # preview a different command. `-n` is what makes that safe; build_argv adds it.
-        whole_library=True,
-    )
-    ctx = base_context(request, "devices")
-    ctx["job"] = job
-    return templates.TemplateResponse(request, "fragments/queued.html", ctx)
 
 
 @router.post("/device/{device_id}/full-sync", response_class=HTMLResponse)
 async def device_full_sync(request: Request, device_id: str):
-    """Queue the whole library. Only offered for devices with `full_sync: true`.
+    """Queue the whole library. Only for a `books` node with `full_sync: true`.
 
-    Not for a mirror node: that one replicates, and the difference is `--delete`. Routing
-    it here would hand it Full Sync's "never deletes anything" promise under an action that
-    breaks it, so it 404s and `/replicate` is the way in.
+    Not for a mirror, whose transfer is defined by --delete and which replicates instead,
+    and not for an upstream -- the explicit term is what keeps Full Sync, a push to
+    production, out of reach the instant a node stops being a mirror. `whole_library` is
+    the precondition `Device.prune` needs before build_argv will add --delete.
     """
-    app = state(request)
-    device = app.devices.device(device_id)
-    if device is None or not device.full_sync or device.is_mirror or device.is_upstream:
-        return HTMLResponse("", status_code=404)
-    sources = full_sync_sources(app.settings)
-    reachable = app.probe.status(device_id).online
-    try:
-        job = app.jobs.submit(
-            device,
-            sources,
-            label="(full library)",
-            deferred=not reachable,
-            # The whole library, which is the precondition `Device.prune` needs before
-            # build_argv will add --delete. Nothing else in the program passes this.
-            whole_library=True,
-        )
-    except ValueError as exc:
-        # build_argv refused a prune: no sources, or a target at the root. Only reachable
-        # for a `prune: true` node, and only because that run deletes — say so rather than
-        # queueing it. The same shape as /replicate's.
-        ctx = base_context(request, "devices")
-        ctx["message"] = str(exc)
-        return templates.TemplateResponse(
-            request, "fragments/error_toast.html", ctx, status_code=409
-        )
-    ctx = base_context(request, "devices")
-    ctx["job"] = job
-    ctx["node"] = _one(request, device_id)
-    return templates.TemplateResponse(request, "fragments/queued.html", ctx)
+    return _queue_toast(
+        request, device_id,
+        lambda d: d.full_sync and not d.is_mirror and not d.is_upstream,
+        lambda app, d, reachable: app.jobs.submit(
+            d, full_sync_sources(app.settings), label="(full library)",
+            deferred=not reachable, whole_library=True,
+        ),
+    )
 
 
 @router.post("/device/{device_id}/replicate", response_class=HTMLResponse)
 async def device_replicate(request: Request, device_id: str):
     """Replicate the whole root verbatim. Only for `sync_mode: mirror`.
 
-    Not gated on `full_sync` as well, though it is the larger transfer of the two. That
-    flag says "this node can hold the whole library", and a node declared a mirror has
-    already said so more strongly — requiring both would let a one-word omission in
-    devices.yaml silently hide the only action a mirror node has.
+    Not gated on `full_sync` as well: a node declared a mirror has already said it holds
+    the whole library, and requiring both would let a one-word omission hide its only
+    action. `is_mirror` already excludes an upstream, and must not be widened to
+    `cas_tree` -- pinned by test_replicate_is_not_a_way_into_an_upstream_node.
     """
-    app = state(request)
-    device = app.devices.device(device_id)
-    # `not is_mirror` already excludes an upstream node, and deliberately so: this is the
-    # only --delete the program emits, and it is reachable from exactly one mode. Pinned
-    # by test_replicate_is_not_a_way_into_an_upstream_node so the exclusion cannot be
-    # widened back out by a well-meaning `cas_tree`.
-    if device is None or not device.is_mirror:
-        return HTMLResponse("", status_code=404)
-    ctx = base_context(request, "devices")
-    reachable = app.probe.status(device_id).online
-    try:
-        job = app.jobs.submit(
-            device,
-            _whole_root_sources(app, device),
-            label="(replicate · whole root)",
+    return _queue_toast(
+        request, device_id,
+        lambda d: d.is_mirror,
+        lambda app, d, reachable: app.jobs.submit(
+            d, _whole_root_sources(app, d), label="(replicate · whole root)",
             deferred=not reachable,
-        )
-    except ValueError as exc:
-        # build_argv refused: no sources, or a target at the root. Both are only unsafe
-        # because this run carries --delete, so say so instead of queueing it.
-        ctx["message"] = str(exc)
-        return templates.TemplateResponse(
-            request, "fragments/error_toast.html", ctx, status_code=409
-        )
-    ctx["job"] = job
-    ctx["node"] = _one(request, device_id)
-    return templates.TemplateResponse(request, "fragments/queued.html", ctx)
+        ),
+    )
 
 
 @router.post("/device/{device_id}/pull", response_class=HTMLResponse)
 async def device_pull(request: Request, device_id: str):
     """Bring the upstream's library here. Only for `sync_mode: upstream`.
 
-    The mirror image of /replicate, and gated the same way: one mode, one action. Six
-    phases rather than one rsync — see JobRunner._run_pull — but one Job and one dock
-    card, because the `finally` that restarts this host's reader has to span all of them.
+    One Job and one dock card for all six phases -- see JobRunner._run_pull -- because the
+    `finally` that restarts this host's reader has to span them.
     """
-    app = state(request)
-    device = app.devices.device(device_id)
-    if device is None or not device.is_upstream:
-        return HTMLResponse("", status_code=404)
-    ctx = base_context(request, "devices")
-    reachable = app.probe.status(device_id).online
-    try:
-        job = app.jobs.submit_pull(device, deferred=not reachable)
-    except ValueError as exc:
-        ctx["message"] = str(exc)
-        return templates.TemplateResponse(
-            request, "fragments/error_toast.html", ctx, status_code=409
-        )
-    ctx["job"] = job
-    ctx["node"] = _one(request, device_id)
-    return templates.TemplateResponse(request, "fragments/queued.html", ctx)
+    return _queue_toast(
+        request, device_id,
+        lambda d: d.is_upstream,
+        lambda app, d, reachable: app.jobs.submit_pull(d, deferred=not reachable),
+    )
 
 
 @router.post("/device/{device_id}/pull-dry-run", response_class=HTMLResponse)
 async def device_pull_dry_run(request: Request, device_id: str):
-    """What a Pull would bring across, without bringing it.
+    """What a Pull would bring across, and what it would prune, without either.
 
     Phase 1 with -n and nothing else: no snapshot is written onto the upstream and no
-    service is stopped, which is checked before the snapshot rather than after it.
+    service is stopped.
     """
-    app = state(request)
-    device = app.devices.device(device_id)
-    if device is None or not device.is_upstream:
-        return HTMLResponse("", status_code=404)
-    ctx = base_context(request, "devices")
-    reachable = app.probe.status(device_id).online
-    try:
-        job = app.jobs.submit_pull(device, deferred=not reachable, dry_run=True)
-    except ValueError as exc:
-        ctx["message"] = str(exc)
-        return templates.TemplateResponse(
-            request, "fragments/error_toast.html", ctx, status_code=409
-        )
-    ctx["job"] = job
-    ctx["node"] = _one(request, device_id)
-    return templates.TemplateResponse(request, "fragments/queued.html", ctx)
+    return _queue_toast(
+        request, device_id,
+        lambda d: d.is_upstream,
+        lambda app, d, reachable: app.jobs.submit_pull(
+            d, deferred=not reachable, dry_run=True
+        ),
+    )

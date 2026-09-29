@@ -227,8 +227,7 @@ was not brought across.
   run during a transfer.
 - Expect ~65 MB RSS (67.4 MB measured, idle, index loaded, after four hours up).
   `MemoryMax=1G` in the unit is a leak-catcher, not a budget.
-- The suite is **514 tests in ~20 s** here (`uv run pytest`), and needs no network. It was
-  ~17 s on the x86_64 workstation, which is the closest thing to a slowdown this move cost.
+- The suite is **~730 tests in ~30 s** here (`uv run pytest`), and needs no network.
 - Logs are capped at `LIBNODES_LOG_RETENTION` (200) files under `var/logs/`.
 
 ## Environment
@@ -301,8 +300,11 @@ so it is ahead of pi5 rather than behind it. Every writing action — Push Selec
 Sync, Replicate, Adopt — refuses such a node at its route *and* in `jobs.build_argv`
 itself, so a code path nobody remembered cannot compose one.
 
-A Pull runs in six phases, and only the middle ones need anything special:
+A Pull runs a preflight and six phases, and only the middle ones need anything special:
 
+0. preflight — `systemctl is-active urantia-library.service`, and if it is running the
+   no-op `systemctl --no-ask-password start` that travels the same polkit path as `stop`.
+   Refused, and the pull fails before a byte moves;
 1. the library — `rsync` from the upstream into `/Books`, both services still running.
    This phase **deletes**: an upstream is the source of truth, so a book it has dropped is
    pruned here, blob and cover with it. The excludes are outside the prune (rsync never
@@ -313,9 +315,12 @@ A Pull runs in six phases, and only the middle ones need anything special:
    `python3 -c 'sqlite3 … .backup …'` over ssh. `Connection.backup` reads a live WAL
    database without blocking its writer, which is why **production is never stopped**
    (measured against sigmaai.au's live catalog: 82 tables, 7,224 pages, 1.07 s);
-3. `systemctl stop urantia-library.service` — **on pi5 only**;
+3. `systemctl stop urantia-library.service` — **on pi5 only**, and only if it is running
+   at that moment (asked again: hours may have passed). A stopped unit is swapped under
+   without a quiet window and left stopped;
 4. drop the snapshot in as `/Books/.data/db/lib.db`, stale `-wal`/`-shm` removed first;
-5. `systemctl start` again, in a `finally`;
+5. `systemctl start` again, in a `finally`, if phase 3 stopped it. Abort cannot interrupt
+   the `systemctl` calls: a killed `stop` client does not cancel the stop;
 6. remove the snapshot from the upstream.
 
 So pi5's own site is down for the seconds phases 3-5 take, and sigmaai.au never is.
@@ -348,9 +353,9 @@ CheckAuthorization() and pass details`), and without it `action.lookup("unit")` 
 undefined, so a unit-scoped rule never matches and it reports "not authorised" whether or
 not the rule is installed.
 
-Until the rule is in place a Pull still transfers the books and then says
-`CATALOG NOT REFRESHED` in amber rather than half-running — the check is a preflight, so
-it never gets as far as stopping a service it cannot start again.
+Until the rule is in place a Pull fails at its preflight, before transferring anything,
+with a message naming this file — rather than moving the whole library and only then
+finding it cannot stop the service.
 
 ### `var/service-hold.json`
 

@@ -1,9 +1,5 @@
 {# Everything you can do to one device, each showing the command it will run.
-   The command is the documentation: "Adopt existing copy" means nothing until you can
-   see the --size-only that makes it safe.
-
-   Every action reports back. Ones that create a job close the dialog first, because
-   #notices sits below the backdrop and a toast fired underneath it is invisible. #}
+   Actions that create a job close the dialog, or their toast lands behind it. #}
 <div class="backdrop" id="device-menu">
   <div class="dialog" style="width:720px">
 
@@ -16,16 +12,12 @@
     </div>
 
     <div class="dialog-body">
-      {# dom_id: `sigmaai.au` made this `#scan-status-sigmaai.au`, which CSS reads as an id
-         plus a class, matched nothing, and htmx answers an unresolvable target by not
-         sending the request at all — so Scan device did nothing, silently. #}
+      {# dom_id: see Device.dom_id. #}
       <div id="scan-status-{{ device.dom_id }}">
         {% with device_id = device.id %}{% include "fragments/scan_status.html" %}{% endwith %}
       </div>
 
-      {# An upstream node's own two actions, and the only ones it gets besides Scan. Dry
-         run sits above Pull because the order is the advice -- the same reason a mirror's
-         does. #}
+      {# An upstream's own actions. Dry run first, because the order is the advice. #}
       {% if device.is_upstream %}
         {% set act = {
           'label': 'Dry run',
@@ -63,15 +55,11 @@
         {% include "fragments/device_action.html" %}
       {% endif %}
 
-      {# Everything between here and Scan writes to the device, so an upstream node is
-         offered none of it: it is the library's source and LibNodes never pushes there.
-         Its own actions are above. #}
+      {# Everything from here to Scan writes, so an upstream is offered none of it. #}
       {% if not device.is_upstream %}
 
-      {# A mirror node's Dry run is not the same offer as a reader's: it is the only way to
-         read what --delete would remove before it removes it, so it is offered
-         unconditionally rather than behind `full_sync`. A reader's is gated with Full Sync
-         because there is nothing to preview until the whole library is on the table. #}
+      {# A mirror's Dry run is the only preview of its prune, so it is always offered;
+         a reader's comes with Full Sync. #}
       {% if device.is_mirror or device.full_sync %}
         {% set act = {
           'label': 'Dry run',
@@ -93,8 +81,6 @@
       {% endif %}
 
       {% if device.is_mirror %}
-        {# Deliberately not sharing Full Sync's note below: that one promises it never
-           deletes, and this one is defined by deleting. #}
         {% set act = {
           'label': 'Replicate',
           'note': 'replicate ' ~ library_root ~ ' verbatim — symlinks kept as symlinks,
@@ -113,21 +99,12 @@
         } %}
         {% include "fragments/device_action.html" %}
 
-      {# `and not device.is_upstream` is belt and braces: the model coerces full_sync off
-         for an upstream node and the route refuses it, so this can only fire if both of
-         those regressed. It stays anyway, for the reason routes/jobs.py re-checks a form
-         post server-side — a hidden button is not a guard, and the converse is that a
-         guard costing one clause is worth keeping. The exclusivity below is with *mirror*,
-         which is exactly what made this dangerous: `upstream` is a value the `elif` knew
-         nothing about, so the moment sigmaai.au stopped being a mirror, Full Sync — a push
-         to production — would have appeared here. #}
+      {# `not is_upstream` on top of the model's coercion and the route's guard: the
+         exclusion here is with *mirror*, so a node leaving that mode would otherwise
+         be offered Full Sync -- a push to production. #}
       {% elif device.full_sync and not device.is_upstream %}
-        {# Two notes, because `prune: true` makes this a different promise and the note is
-           the only place the difference is stated in words. The command above it already
-           shows the --delete; a note still reading "never deletes anything" beside it
-           would be the more believable of the two. The prune is scoped to the categories
-           in the transfer, so the note says so: a top-level name the library does not
-           have is never scanned, and `excludes` protect what must survive inside one. #}
+        {# The note changes with `prune`: a command showing --delete beside "never
+           deletes anything" would leave the note the more believable of the two. #}
         {% set act = {
           'label': 'Full Sync',
           'note': (
@@ -155,8 +132,7 @@
 
       {% endif %}{# not device.is_upstream — everything above writes #}
 
-      {# Scan is outside the gate: it reads. On an upstream node it is the action that
-         matters most, because the backlog the extras dialog lists is derived from it. #}
+      {# Scan reads, so every mode gets it; an upstream's backlog comes from it. #}
       {% set act = {
         'label': 'Scan device',
         'note': 'read what is already there · updates PRESENT ON. Runs on the server,
@@ -168,8 +144,7 @@
       } %}
       {% include "fragments/device_action.html" %}
 
-      {# Adopt looks read-only and is not: --size-only makes it quieter, not harmless, so
-         it is gated with the writing actions even though it sits below Scan. #}
+      {# Adopt is gated with the writes: --size-only makes it quieter, not harmless. #}
       {% if not device.is_upstream %}
       {% set act = {
         'label': 'Adopt existing copy',
@@ -184,10 +159,8 @@
       {% include "fragments/device_action.html" %}
       {% endif %}{# not device.is_upstream #}
 
-      {# Test is not here. It lives on the device row as its own button, because it is
-         the only action that writes nothing and so needs no command read beforehand —
-         and because it is most useful when the device is offline, which is exactly when
-         this dialog is unreachable. #}
+      {# Test is on the row: it writes nothing, and this dialog is unreachable when
+         the device is not answering. #}
 
       {% set act = {
         'label': "What is on it that we don't have",

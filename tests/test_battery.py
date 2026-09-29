@@ -99,28 +99,28 @@ def test_the_battery_rides_along_with_df():
     """One ssh, not two. On a sleeping Termux node the connection is the cost, and two
     probes on separate schedules would also drift apart in a row that shows both."""
     device = _dev(battery="/sys/class/power_supply/battery/capacity")
-    script = _readings_script(device, "df -Pk /sdcard/Books")
+    script = _readings_script(device)
     assert script.count("df -Pk") == 1
     assert "# df" in script and "# battery" in script
     assert "/sys/class/power_supply/battery/capacity" in script
 
-    # A device with no battery declared gets the bare df it always got — no marker
-    # scaffolding, nothing extra to parse.
-    assert _readings_script(_dev(), "df -Pk /sdcard/Books") == "df -Pk /sdcard/Books"
+    # A device with no battery declared is asked for df and nothing else.
+    plain = _readings_script(_dev())
+    assert "# battery" not in plain and "power_supply" not in plain
 
 
 def test_a_command_is_run_not_quoted_as_a_filename():
     """battery_cmd is a command line and may be a pipeline. Quoting it the way the file
     path is quoted would run the whole string as the name of one program."""
     cmd = "/data/data/com.termux/files/usr/libexec/termux-api BatteryStatus"
-    script = _readings_script(_dev(battery_cmd=cmd), "df /sdcard/Books")
+    script = _readings_script(_dev(battery_cmd=cmd))
     assert cmd in script                      # verbatim, argument and all
     assert f"'{cmd}'" not in script
     assert "cat " not in script
     assert "# battery" in script
 
     # The file form still is quoted — a path with a space must not become two words.
-    spaced = _readings_script(_dev(battery="/sys/odd name/capacity"), "df /x")
+    spaced = _readings_script(_dev(battery="/sys/odd name/capacity"))
     assert "'/sys/odd name/capacity'" in spaced
 
 
@@ -262,7 +262,7 @@ def test_a_device_can_say_where_its_charger_lives():
     )
     # The override wins outright -- the fuel gauge's own (absent) status is never asked
     # for, or the transcript would carry two answers and a "No such file" beside them.
-    script = _readings_script(nexus, "df /sdcard")
+    script = _readings_script(nexus)
     assert "ds2784-fuelgauge/status" not in script
     assert "ds2784-fuelgauge/capacity" in script     # the charge still comes from there
     assert script.count("# power") == 1
@@ -297,21 +297,19 @@ def test_the_current_sign_is_not_a_charging_signal():
 def test_the_charger_rides_along_on_the_same_ssh():
     """Still one connection. The charger is a second `cat` in the same script, not a
     second probe -- on a sleeping Termux node the connection is the whole cost."""
-    script = _readings_script(
-        _dev(battery="/sys/class/power_supply/battery/capacity"), "df -Pk /sdcard/Books"
-    )
+    script = _readings_script(_dev(battery="/sys/class/power_supply/battery/capacity"))
     assert script.count("df -Pk") == 1
     assert "# df" in script and "# battery" in script and "# power" in script
     assert "battery/capacity" in script and "battery/status" in script
 
     # A termux node gets no second command at all -- one invocation answers both.
     cmd = "/data/data/com.termux/files/usr/libexec/termux-api BatteryStatus"
-    termux = _readings_script(_dev(battery_cmd=cmd), "df /sdcard/Books")
+    termux = _readings_script(_dev(battery_cmd=cmd))
     assert termux.count("BatteryStatus") == 1
     assert "# power" not in termux
 
-    # And a node with no battery still gets the bare df it always got.
-    assert _readings_script(_dev(), "df -Pk /sdcard/Books") == "df -Pk /sdcard/Books"
+    # And a node with no battery is asked for nothing beyond its df.
+    assert "# power" not in _readings_script(_dev())
 
 
 def test_the_power_section_does_not_swallow_the_battery():
@@ -1693,3 +1691,28 @@ def test_the_map_header_appears_only_where_it_fits():
         f"the labels appear at {breakpoint_}px, inside the touch band that ends at "
         f"{touch_ceiling}px, where --scale is larger and the panel smaller"
     )
+
+
+
+@pytest.mark.parametrize("dialect", ["gnu", "toybox"])
+def test_either_df_dialect_is_answered_once_on_one_ssh(tmp_path, dialect):
+    """toybox rejects `-Pk` but prints its table anyway and exits non-zero, which is why the
+    fallback is keyed on empty output rather than on the exit code. It used to be a second
+    ssh, every five minutes, to every Termux node. Run through a real shell, because the
+    logic now lives there."""
+    import subprocess
+
+    from libnodes.probe import _parse_df, df_command
+
+    table = "echo 'Filesystem 1K-blocks Used Available Use% Mounted on'; echo '/dev/x 100 40 60 40% /t'"
+    rejects = 'if [ "$1" = "-Pk" ]; then echo "df: unknown option P" >&2; exit 1; fi; '
+    fake = tmp_path / "df"
+    fake.write_text("#!/bin/sh\n" + (rejects if dialect == "toybox" else "") + table + "\n")
+    fake.chmod(0o755)
+    out = subprocess.run(
+        ["sh", "-c", df_command("/t")],
+        env={"PATH": f"{tmp_path}:/usr/bin:/bin"},
+        capture_output=True, text=True, check=False,
+    ).stdout
+    assert out.count("Filesystem") == 1
+    assert _parse_df(out) == (100 * 1024, 40 * 1024, 60 * 1024)

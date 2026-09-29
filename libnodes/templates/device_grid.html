@@ -1,5 +1,4 @@
-{# Card variant of the devices table. Same states, same colours, different geometry.
-   Polled every 10s and swapped wholesale, exactly as device_rows.html is. #}
+{# The cards, polled and swapped wholesale like device_rows.html. #}
 {% if rescanning %}
   {# The sweep runs in the background; collect its result once, shortly. #}
   <div hx-get="/devices/grid{% if q %}?q={{ q|urlencode }}{% endif %}"
@@ -12,8 +11,7 @@
 {% for node in nodes %}
   {% include "device_card.html" %}
 {% else %}
-  {# Filtering reaches the grid too, so the empty state has to tell a filter that matched
-     nothing from a fleet with nothing in it -- the same two cases device_rows.html names. #}
+  {# Tells a filter that matched nothing from an empty fleet. #}
   <div class="card">
     <span class="t-dim">
       {% if q %}

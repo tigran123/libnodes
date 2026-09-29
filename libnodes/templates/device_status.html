@@ -1,39 +1,21 @@
-{# Top-bar chips. Standalone fragment, polled every 10s. #}
+{# Top-bar chips, polled every 10 s. #}
 
-{# The Devices subtitle lives down in the titlebar, outside every polled container, so
-   this poll carries it out of band. Without that it keeps whatever devices.yaml said
-   when the page loaded: edit the file and the subtitle sits one device short for ever,
-   beside the chip below that corrected itself within a tick and cards that had too --
-   three figures on one page, one of them stale, and nothing failing anywhere. `total`
-   rather than a filtered count because that is the chip's own denominator
-   (probe.reachable_count), so the subtitle and the chip cannot disagree. Only when
-   swapping, though: devices.html includes this fragment inline in the topbar, and an
-   unguarded span would put a second id="device-meta" on the page at first paint. Same
-   shape, and the same `oob` flag, as file_rows.html's result counter. #}
+{# The titlebar subtitle, out of band: no container repaints it, and devices.yaml
+   edits change it. Only when swapping, or first paint would carry a duplicate id. #}
 {% if oob %}
 <span id="device-meta" class="title-meta" hx-swap-oob="true">
   {{ total }} devices · {{ profiles }} profiles
 </span>
 {% endif %}
-{# "online" is the exact word: the count is Reachability.online, state == "online", so it
-   is the green dots and nothing else -- amber and red are not in it. The "sshd" prefix
-   only said how that is measured and cost 5 of the ~15 characters a 412px phone shows of
-   this chip, so the how moved into the tooltip. #}
+{# Green dots only; how that is measured is in the tooltip. #}
 <span class="chip" title="nodes whose ssh port answered a TCP connect in the last sweep; sleeping and offline nodes are not counted">
   <span class="dot {{ 'dot-ok' if online else 'dot-err' }}"></span>
   {{ online }}/{{ total }} online
 </span>
-{# Named for what it dates -- the newest reachability check of any node -- in the same
-   words the Library uses for the index: "devices checked 3s ago" beside "index 18m ago".
-   "last scan" read as the Rescan button's whole effect, and a Scan is something else
-   again here (the per-device rsync listing). chip-checked because it goes on a narrow
-   screen: every dot on the page already says the same, a node at a time. #}
+{# Dates the newest reachability check, in the words the index chip uses. #}
 <span class="chip chip-checked">devices checked {{ last_scan|reltime }}</span>
 {% if issues %}
-  {# devices.yaml failed to parse or validate. The config in memory is the last good one,
-     so nothing else on the page looks wrong -- this chip is the whole warning. It rides
-     the 10s poll this fragment already has, so a bad save shows within a tick and a fixed
-     one clears itself. #}
+  {# The only sign of a bad devices.yaml: the last good config keeps serving. #}
   <span class="chip" title="{% for i in issues %}{{ settings.resolved_devices_file }} {{ i.label }} {{ i.message }}{% if not loop.last %} · {% endif %}{% endfor %}">
     <span class="dot dot-err"></span>
     {{ issues|length }} problem{{ '' if issues|length == 1 else 's' }} in devices.yaml

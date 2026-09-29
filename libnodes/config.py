@@ -18,48 +18,18 @@ from .models import DevicesFile, ValidationIssue, parse_devices
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-# Top-level names that are never part of the browsable library. Mirrors
-# _TOPDIR_SKIPLIST in /Books/urantia-library/webapp/backend/config.py:34, plus the
-# entries in /Books/urantia-library/exclude.txt.
+# Top-level names that are never part of the browsable library (urantia-library's own
+# _TOPDIR_SKIPLIST plus its exclude.txt). A security boundary, not housekeeping: the index
+# walk drops them at depth 0, and a push admits only what the index vouches for
+# (`routes/jobs._resolve`), so none of this can be browsed, searched or selected. Only a
+# `sync_mode: mirror` node receives them, by `jobs.mirror_sources`, which ignores this list.
 #
-# This list governs *browsing*, and browsing is what makes it a boundary rather than a
-# preference: the index walk applies it at depth 0 (library.py), and the push path admits
-# only paths the index vouches for (routes/jobs.py `_resolve`). Nothing here can be
-# reached by browsing, searching or selecting, and that has not changed.
-#
-# What did change: a `sync_mode: mirror` node -- and only such a node -- is sent these
-# paths deliberately, by `jobs.mirror_sources`, which does not consult this list at all.
-# So the rule is "never browsable, and pushable only to a device that names the mode",
-# not "never pushable". A reader still cannot receive any of it.
-#
-# Three of these entries are load-bearing, not housekeeping:
-#
-#   urantia-library  A sibling application that lives inside the library root: the
-#                    webapp that owns the catalog. Its tree holds source, configuration
-#                    and potentially credentials, none of which is a book. Removing it
-#                    from this set would make all of that browsable, and pushable to
-#                    every device. Do not. A mirror node receives it because a verbatim
-#                    replica of the Pi's /Books is the whole point of that mode, which is
-#                    also its whole cost: declaring `sync_mode: mirror` is declaring that
-#                    this node may hold the credentials. Nothing else grants that.
-#
-#   .data            Skipped for *browsing* only. It holds the actual bytes every
-#                    library symlink points at, and rsync -L dereferences into it when
-#                    transferring -- so it must stay out of the tree without being
-#                    excluded from transfers. For a mirror it inverts from permitted to
-#                    mandatory: that transfer keeps the symlinks, so without the vault
-#                    beside them every one of them dangles.
-#
-#   Recommended      Not a place, a *category*. urantia-library calls it a "pseudo-
-#                    directory managed exclusively by the recommend/unrecommend
-#                    endpoints" (RECOMMENDED_SUBDIR in its config.py) and fills it with
-#                    companion symlinks to books that already live elsewhere in the
-#                    tree. Verified: all three of its entries point at blobs also
-#                    reachable under Religions/ and Science/. Because we transfer with
-#                    -L, syncing it would ship a complete SECOND copy of every
-#                    recommended book to the device. That reason is specific to -L: a
-#                    mirror preserves the companion links as links, so they cost a few
-#                    hundred bytes and belong in a replica.
+#   urantia-library  The sibling webapp: source, configuration and credentials. Declaring a
+#                    node a mirror is declaring it may hold them.
+#   .data            The vault. Hidden from browsing only; -L dereferences into it, and a
+#                    mirror, which keeps the links, needs it sent.
+#   Recommended      Companion symlinks to books that live elsewhere: with -L, a second full
+#                    copy of every recommended book. As a mirror's links, a few hundred bytes.
 SKIP_TOPLEVEL = frozenset(
     {
         ".data",
@@ -75,39 +45,19 @@ SKIP_TOPLEVEL = frozenset(
 )
 
 
-# What a *pull* holds back, and it is not SKIP_TOPLEVEL. The two lists answer different
-# questions and only two of the nine names above appear here, so do not collapse them:
-# SKIP_TOPLEVEL asks "may this be browsed and pushed", and a pull is neither. A pull
-# actively *wants* `.data/` -- it is the vault every incoming symlink resolves into, so
-# without it the whole transfer is 20.8k dangling links -- and wants `Recommended/`, whose
-# companion links cost a few hundred bytes with no -L to expand them.
+# What a *pull* holds back: a different question from SKIP_TOPLEVEL's, so do not merge
+# them. A pull wants `.data/` (every incoming link resolves into it) and `Recommended/`.
+# Anchored, because the transfer root is the library root. rsync never deletes what an
+# exclude matched, so these also survive the pull's --delete.
 #
-# Anchored (`/urantia-library/`, not `urantia-library/`) because the transfer root *is* the
-# library root: the anchored form says exactly what is meant and cannot match a nested
-# directory that happens to share the name.
+#   /urantia-library/  This host's own instance: its secrets.env holds per-host URLs, and
+#                      pulling production's would point pi5's site at production.
+#   /Unsorted/         55 GB of OS images on sigmaai.au (2026-09-14). The one preference
+#                      rather than a boundary; narrow it in devices.yaml if books land there.
+#   /.data/staging/    Half-written uploads: a torn blob would not hash to its own name.
 #
-#   /urantia-library/  The sibling webapp, and here the boundary runs the *other* way from
-#                      SKIP_TOPLEVEL's. There it protects the fleet from the credentials;
-#                      here it protects this host's own instance from the upstream's --
-#                      secrets.env carries APP_URL, APP_ENV, APP_ROOT_PATH and
-#                      VITE_API_URL, every one of them a per-host value, and the tree is a
-#                      live git checkout. Pulling it verbatim would point pi5's site at
-#                      production's URLs.
-#
-#   /Unsorted/         55 GB of Ubuntu .img/.vdi images on sigmaai.au as of 2026-09-14, and
-#                      nothing else; pi5's Unsorted/ is empty. Not books. This is the one
-#                      entry that is a preference rather than a boundary -- narrow it to
-#                      /Unsorted/<subdir>/ in devices.yaml if unsorted *books* ever land
-#                      there.
-#
-#   /.data/staging/    Where the upstream's webapp assembles half-written uploads. A
-#                      correctness boundary, not tidiness: the vault is content-addressed
-#                      and therefore trusts whatever lands in it, so a torn upload pulled
-#                      into .data/ would be a blob that does not hash to its own name.
-#
-# The catalog files under /.data/db/ are *not* here. They do come across; they travel in
-# their own phase, under a quiet window, because they are a live WAL database. See
-# jobs.build_pull_argv.
+# The catalog files come across in their own phase, under a quiet window; see
+# `jobs._catalog_excludes`.
 PULL_EXCLUDES = ("/urantia-library/", "/Unsorted/", "/.data/staging/")
 
 
@@ -120,92 +70,56 @@ class Settings(BaseSettings):
     library_root: Path = Path("/Books")
     state_dir: Path = PROJECT_ROOT / "var"
     devices_file: Path | None = None
-    #: urantia-library's catalog, read-only and entirely optional. When present it
-    #: supplies title/author for indexed entries; when absent we fall back to filenames.
+    #: urantia-library's catalog, optional: titles and authors for the index.
     catalog_db: Path = Path("/Books/.data/db/lib.db")
 
     # --- background work ------------------------------------------------------
     concurrency: int = 1
     probe_interval: float = 10.0
     probe_timeout: float = 2.0
-    #: A node that answered within this many seconds but not now reads as "sleeping"
-    #: rather than "offline" -- the Termux/Kobo suspend case.
+    #: A node that answered within this many seconds reads as amber "sleeping", not red.
     sleeping_window: float = 1800.0
     freespace_interval: float = 300.0
-    #: A node that keeps failing is probed exponentially less often, up to this ceiling.
-    #: Without it, twenty dead devices cost twenty connect attempts every probe_interval
-    #: for as long as the service runs.
+    #: The backoff ceiling for a node that keeps failing.
     probe_backoff_max: float = 300.0
-    #: The same ceiling, for a fleet someone is actually looking at. The backoff is a cost
-    #: control, but its cost is only ever *paid* by a person watching a red dot that will
-    #: not go green: at 300s a device that came back stayed red for up to five minutes
-    #: while the browser dutifully re-rendered the stale reading every 10s. That is what
-    #: this exists to stop, and it is charged only while a Devices page is polling.
+    #: The ceiling while a Devices page is polling: at 300 s a device that came back stayed
+    #: red for up to five minutes in front of someone watching it.
     probe_backoff_watched: float = 30.0
-    #: How long a Devices request keeps the fleet "watched" after the last one. Sized
-    #: against what a browser actually does, not against the template: `every 10s` holds
-    #: only while the tab is in front. Backgrounded, the browser throttles the timer to
-    #: once a minute -- measured on the Pi's journal, 10s intervals from 09:08:01 to
-    #: 09:10:11 and exactly 60s from 09:11:01 on, same tab. At 60 this would sit on that
-    #: boundary and flap between the two ceilings; 150 leaves two and a half throttled
-    #: polls of margin and still relaxes a couple of minutes after the last tab closes.
-    #: A backgrounded tab counting as watched is the point -- you alt-tab back to a page
-    #: that is current, which is the whole complaint.
+    #: How long one Devices request keeps the fleet "watched". A background tab's timer is
+    #: throttled to once a minute (measured in the journal), so 150 s keeps it watched with
+    #: margin and relaxes soon after the last tab closes.
     watch_window: float = 150.0
     reindex_interval: float = 1800.0
     reindex_on_start: bool = True
 
     # --- local services -------------------------------------------------------
-    #: The systemd unit **on this host** that reads `catalog_db`, paused for the seconds
-    #: it takes to drop a freshly pulled lib.db into place and started again in a
-    #: `finally`. Named with its `.service` suffix so what LibNodes invokes and what the
-    #: polkit rule matches cannot drift.
-    #:
-    #: Empty is not "stop nothing": it means no unit was declared, so a Pull skips the
-    #: catalog phase entirely and says so in the dock. Overwriting a live WAL database
-    #: under a running reader is the corruption this exists to prevent, not a risk to
-    #: take quietly.
-    #:
-    #: Empty by default for the same reason `concurrency` is 1 by default -- the default
-    #: is not the deployment. `urantia-library` is a pi5 fact, so pi5's unit declares it.
+    #: The unit **on this host** that reads `catalog_db`, stopped while a pull swaps it and
+    #: started again in a `finally`. With its `.service` suffix, to match the polkit rule.
+    #: Empty means none declared, and a Pull then skips the catalog phase and says so --
+    #: overwriting a live WAL database under a reader is the corruption this prevents.
+    #: Empty by default because the default is not the deployment; pi5's unit sets it.
     local_service: str = ""
 
     # --- limits ---------------------------------------------------------------
     term_ring: int = 500
     log_retention: int = 200
-    #: The ceiling on what one Pull may prune from *this host's* library. A pull replicates
-    #: an upstream inward, so `--delete` there is the only flag in the program that removes
-    #: local files, and the failure it has to survive is the upstream being half there: an
-    #: unmounted /Books presents an almost empty file list, and an uncapped prune would
-    #: answer that by deleting all 63,518 entries of a correct library in one pass.
-    #:
-    #: 1000 clears any ordinary cleanup -- the divergence measured against sigmaai.au on
-    #: 2026-09-19, after four months, was three objects -- and stops that. Hitting it is
-    #: rsync exit 25: nothing further is deleted, the files it received still landed, and
-    #: `hints_for_text` says to read the dry run before raising this.
-    #:
-    #: Negative omits the flag entirely (uncapped). Zero cannot mean that, because zero is
-    #: rsync's own and genuinely useful setting: delete nothing, but exit 25 if anything
-    #: would have been -- a pull that reports divergence instead of acting on it.
+    #: The most one Pull may prune from *this host's* library. An upstream that is half
+    #: mounted presents an almost empty list, whose honest reading is "delete everything";
+    #: 1000 clears ordinary cleanup (three objects after four months, 2026-09-19) and stops
+    #: that. Hitting it is rsync exit 25, not retried. Negative means uncapped; zero is
+    #: rsync's own "delete nothing, but say if you would have".
     pull_max_delete: int = 1000
 
     # --- serving --------------------------------------------------------------
     host: str = "0.0.0.0"
-    # LAN only on pi5, with nothing in front: nginx owns 80/443 for urantia-library, which
-    # itself sits on 8000. 8090 was already the port on the old Pi, where 8080 was nginx's.
+    # LAN only; nginx and urantia-library own 80/443 and 8000 on pi5.
     port: int = 8090
 
     # --- access ---------------------------------------------------------------
-    #: The single shared password. Empty means no login at all, which is what keeps a
-    #: dev server and the test suite working unchanged -- and it is fail-open, so
-    #: create_app() warns loudly at startup when it is unset.
-    #:
-    #: SecretStr rather than str because base_context puts this whole object into every
-    #: template context (deps.py:38). A stray {{ settings }} in any template would
-    #: otherwise print the password into the page; SecretStr renders `**********`.
+    #: The shared password. Empty means no login at all -- fail-open, warned at startup.
+    #: SecretStr, because `settings` is in every template context.
     password: SecretStr = SecretStr("")
-    #: How long "stay signed in" lasts. Long by design: the point is to be asked once per
-    #: browser, not to expire people out of a household tool.
+    #: How long "stay signed in" lasts: once per browser, not once per visit.
     session_days: float = 30.0
 
     @property
@@ -234,11 +148,8 @@ class Settings(BaseSettings):
 
     @property
     def probe_cache(self) -> Path:
-        """Last session's device readings. A cache, not state: safe to delete, and the
-        app starts with a blank fleet if it is missing. JSON rather than a fourth SQLite
-        file because nothing queries it -- it is written once at shutdown and read once at
-        startup. Lives beside devices.yaml, which the config watcher filters by name, so
-        writing it does not trip a config reload."""
+        """Last session's device readings: a cache, safe to delete, written at shutdown and
+        read at startup."""
         return self.state_dir / "probe.json"
 
     def ensure_dirs(self) -> None:
@@ -412,13 +323,10 @@ devices:
 
 
 class DevicesStore:
-    """Holds the parsed devices.yaml and reloads it when its mtime moves.
+    """The parsed devices.yaml, reloaded when its mtime moves.
 
-    The file is the single source of truth for the Devices view and is hand-edited on the
-    Pi, so we never cache across an edit. Parse failures are kept, not raised: the fleet
-    goes on running the previous good config while the Devices top bar carries a chip
-    naming every issue (`device_status.html`). Raising instead would take the page down
-    over a typo in a file nothing in the app can fix.
+    A failed parse keeps the previous good config serving, and the Devices chip names every
+    issue: raising would take the page down over a typo nothing in the app can fix.
     """
 
     def __init__(self, path: Path) -> None:
@@ -427,7 +335,6 @@ class DevicesStore:
         self._mtime: float | None = None
         self._config = DevicesFile()
         self._issues: list[ValidationIssue] = []
-        self._text = ""
 
     def seed_if_missing(self) -> None:
         if not self.path.exists():
@@ -449,10 +356,8 @@ class DevicesStore:
             try:
                 text = self.path.read_text(encoding="utf-8")
             except OSError as exc:
-                self._text = ""
                 self._issues = [ValidationIssue(path="", line=None, message=str(exc))]
                 return
-            self._text = text
             config, issues = parse_devices(text)
             self._issues = issues
             if config is not None:
@@ -467,16 +372,6 @@ class DevicesStore:
     def issues(self) -> list[ValidationIssue]:
         self.reload()
         return self._issues
-
-    @property
-    def text(self) -> str:
-        self.reload()
-        return self._text
-
-    @property
-    def mtime(self) -> float | None:
-        self.reload()
-        return self._mtime
 
     def device(self, device_id: str):
         return self.config.by_id.get(device_id)

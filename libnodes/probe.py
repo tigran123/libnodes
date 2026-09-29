@@ -1,29 +1,17 @@
 """Reachability and free-space probes for the configured devices.
 
-Requests never probe. A background task TCP-connects to the nodes that are due and writes
-into a dict; handlers read the dict. That is what keeps `/devices/rows` — which the browser
-polls every 10s — from turning six sleeping e-readers into a six-second page load.
+Requests never probe: a background task TCP-connects to the nodes that are due and writes a
+dict that handlers read, so six sleeping e-readers cannot become a six-second page load.
 
-**Two cadences, and only one of them is 10s.** The browser's poll is a hardcoded
-`every 10s` in `devices.html`; it re-renders whatever is in the dict, however old. This
-loop's own rate is `probe_interval` (10s) only for a node that answered. A node that did
-not is backed off exponentially — 10, 20, 40, 80, 160 — up to `probe_backoff_max`, so it
-is really contacted every five minutes and the 10s poll just re-paints a stale dot. Read
-`probe_backoff_max` as "how long a recovery can go unnoticed", because that is the number
-it sets: 310s measured against a live fleet, which is what `probe_backoff_watched` and
-`note_interest` exist to cut to ~40s whenever a Devices page is actually open.
+Two cadences. The browser re-renders the dict every 10 s, however old it is; this loop
+contacts a failing node on an exponential backoff up to `probe_backoff_max`, which is
+therefore how long a recovery can go unnoticed (310 s measured) -- and `note_interest` cuts
+it to `probe_backoff_watched` while a Devices page polls. Red `offline` needs
+`sleeping_window` since the last answer; amber `sleeping` is before that. Losing a node
+surfaces in ~22 s.
 
-The two slow numbers compound, so a *red* dot is slower than it looks: `offline` needs
-`sleeping_window` (1800s) to have passed since the node last answered, and a node down that
-long is also pinned at the backoff ceiling. Amber `sleeping` is the first 30 minutes.
-Losing a node is quick either way — while it is green the next probe is 10s out, so a
-failure surfaces in ~22s including the poll.
-
-Free space is a second, much slower probe (it costs a real ssh round trip), so it runs
-on its own longer interval and is refreshed opportunistically after a transfer. It is
-never awaited by this loop: a `df` is bounded at 15s and tried twice, and thirty seconds
-per online node between one reachability sweep and the next is thirty seconds of every
-dot being wrong.
+Free space and battery are one slower ssh (`_readings_script`), on their own interval and
+refreshed after a transfer, and never awaited by the sweep.
 """
 
 from __future__ import annotations
@@ -44,28 +32,18 @@ from .procs import reap
 
 State = Literal["online", "sleeping", "offline", "unknown"]
 
-#: How long a connection may be *completely* silent before ssh asks the far end whether
-#: it is still there, and how many such questions may go unanswered before it gives up.
-#: 60 x 3 = 180 s. Shared by `ssh_argv` and `build_argv` so the probe and the transfer
-#: cannot disagree about the master they share. Reasoned about in ssh_argv's docstring.
+#: ssh keepalives: 60 s of total silence, three times. See `ssh_base`.
 SERVER_ALIVE_INTERVAL = 60
 SERVER_ALIVE_COUNT_MAX = 3
 
 log = logging.getLogger(__name__)
 
-#: Bumped when the shape of probe.json changes. A file that does not match is dropped
-#: rather than migrated -- it rebuilds itself within one probe interval, which is cheaper
-#: than carrying a migration path for a cache.
+#: Bumped when probe.json's shape changes; a mismatched file is dropped, not migrated.
 _CACHE_VERSION = 1
 
 
 def _only(row: dict, cls: type) -> dict:
-    """The keys of `row` that `cls` actually declares, with everything else dropped.
-
-    The cache is written by one version and read by another, so a field removed since the
-    file was written would otherwise raise TypeError inside a restore that is supposed to
-    be unable to fail. Missing keys need no handling -- every field has a default.
-    """
+    """`row` without keys `cls` no longer declares, so an older cache still restores."""
     known = {f.name for f in fields(cls)}
     return {k: v for k, v in row.items() if k in known}
 
@@ -113,25 +91,13 @@ class FreeSpace:
 
 @dataclass(frozen=True)
 class Battery:
-    """What `cat <device.battery>` said, as a percentage, and whether it is on a charger.
-
-    Separate from FreeSpace despite arriving down the same ssh: a device can answer one
-    and not the other -- an unreadable sysfs node, or a `df` that toybox refused -- and
-    folding them into one record would make either failure look like both.
-    """
+    """The charge and whether a charger is attached. Separate from FreeSpace though it
+    arrives on the same ssh, because either can fail alone."""
 
     percent: int | None = None
-    #: Three states and not a bool, for two reasons. The row paints a different bolt for
-    #: each of the first two -- amber while current is flowing, green while merely
-    #: connected -- and `None` has to stay distinguishable from `"unplugged"`, or a node
-    #: whose charger source did not answer would render as one we know to be on battery.
-    #: This is the measurement and stays it; whether a bolt is *drawn* is a separate
-    #: question that `DeviceView.bolt_class` answers, and it draws none on an offline row.
-    #:
-    #:   "charging"    drawing current
-    #:   "plugged"     on the charger but not drawing: full, or paused
-    #:   "unplugged"   on its own battery
-    #:   None          not read, or the source said something we do not understand
+    #: "charging" (drawing current), "plugged" (attached, not drawing), "unplugged", or
+    #: None (unread or not understood) -- kept apart from "unplugged" so the tooltip can say
+    #: which. Whether a bolt is drawn is `DeviceView.bolt_class`'s decision.
     power: Literal["charging", "plugged", "unplugged"] | None = None
     checked_at: float | None = None
     error: str | None = None
@@ -147,10 +113,8 @@ class _Slot:
     space: FreeSpace = field(default_factory=FreeSpace)
     battery: Battery = field(default_factory=Battery)
     space_inflight: bool = False
-    #: Re-read the space at the next opportunity whatever its age -- a transfer landed, or
-    #: devices.yaml changed. A flag rather than a forged `checked_at`: that field dates the
-    #: reading the row is showing, and the LAST SEEN column prints it, so nulling it to
-    #: force a probe would make the column say "never" beside figures plainly on screen.
+    #: Re-read at the next chance whatever its age. A flag, not a nulled `checked_at`,
+    #: which dates the figures on screen in LAST SEEN.
     space_stale: bool = False
 
 
@@ -248,9 +212,7 @@ class DeviceProbe:
         except (OSError, asyncio.TimeoutError) as exc:
             now = time.time()
             previous = slot.reach
-            # A node that answered recently is asleep, not gone. Termux sshd stops with
-            # the screen and Kobos suspend aggressively; the design distinguishes the
-            # two because only one of them is worth a wake-on-LAN.
+            # A node that answered recently is asleep, not gone.
             recent = (
                 previous.last_ok is not None
                 and now - previous.last_ok < self.settings.sleeping_window
@@ -268,14 +230,8 @@ class DeviceProbe:
         return slot.reach
 
     def note_interest(self) -> None:
-        """Record that a Devices page asked for the fleet.
-
-        A stamp, not a probe — this must stay I/O-free, because it runs inside a request
-        and "requests never probe a device" is what keeps six sleeping e-readers from
-        becoming a six-second page load. All it does is tell the background loop that a
-        slow retry would now be seen by somebody, which `_backoff` turns into a shorter
-        ceiling.
-        """
+        """Record that a Devices page asked for the fleet. A stamp, never I/O: it runs
+        inside a request. `_backoff` turns it into a shorter ceiling."""
         self._interest_at = time.time()
 
     @property
@@ -283,9 +239,7 @@ class DeviceProbe:
         return time.time() - self._interest_at < self.settings.watch_window
 
     def _backoff(self, failures: int) -> float:
-        """Exponential, capped. A node dead for an hour is not news every 10 seconds —
-        unless a Devices page is open on it, in which case that cap *is* the complaint:
-        it is the whole reason a device that came back stays red for five minutes."""
+        """Exponential, capped -- lower while somebody is watching."""
         delay = self.settings.probe_interval * (2 ** min(failures - 1, 8))
         ceiling = (
             self.settings.probe_backoff_watched
@@ -299,20 +253,15 @@ class DeviceProbe:
         reach = self._slot(device.id).reach
         if reach.next_probe_at <= now:
             return True
-        # `next_probe_at` was frozen at failure time, under whichever ceiling was in force
-        # then. A page opening now would otherwise have to wait out an appointment made
-        # while nobody was watching -- which is exactly the case being fixed -- so re-judge
-        # the wait against the ceiling that applies at this moment. Additive: this can only
-        # ever make a device more due, never less.
+        # Re-judged against the ceiling in force now, or a page opening would wait out an
+        # appointment made while nobody watched. Only ever makes a device more due.
         if reach.checked_at is not None and reach.failures:
             return now - reach.checked_at >= self._backoff(reach.failures)
         return False
 
     async def probe_all(self, force: bool = False) -> None:
-        """Probe every node that is due. Concurrent, so wall time is one timeout.
-
-        `force` ignores the backoff — that is what the Rescan button means.
-        """
+        """Probe every node that is due, concurrently; `force` (Rescan) ignores the backoff.
+        State changes go to subscribers, which is how a deferred job hears of its node."""
         devices = self.devices.config.devices
         if not devices:
             return
@@ -328,11 +277,7 @@ class DeviceProbe:
             self._notify(flipped)
 
     def rescan_soon(self, force: bool = True) -> None:
-        """Kick a probe sweep without making the caller wait for it.
-
-        Requests must never block on device I/O — a set of unreachable devices would
-        otherwise make the UI as slow as the slowest timeout.
-        """
+        """Kick a sweep without waiting for it."""
         if self._rescan is not None and not self._rescan.done():
             return
         self._rescan = asyncio.create_task(self.probe_all(force=force))
@@ -361,73 +306,53 @@ class DeviceProbe:
 
         slot.space_inflight = True
         # Cleared here, where the probe commits to the ssh, rather than beside each of the
-        # four places below that store a reading: every outcome -- parsed, unparsed, error,
+        # places below that store a reading: every outcome -- parsed, unparsed, error,
         # timeout -- writes a fresh `checked_at`, so age alone is enough to schedule the
         # next one, and one site cannot fall out of step with the others.
         slot.space_stale = False
         try:
-            target = shlex.quote(device.target)
-            # `-Pk` is the portable-output form on GNU coreutils, but Android's toybox df
-            # rejects both flags outright (exit 1) — and Termux is a primary target
-            # class. So try the strict form, then plain `df`, and judge by whether the
-            # output parses rather than by the exit code.
-            parsed = None
-            last_error = "df failed"
-            for command in (
-                _readings_script(device, f"df -Pk {target}"),
-                _readings_script(device, f"df {target}"),
-            ):
-                proc = await asyncio.create_subprocess_exec(
-                    *ssh_argv(device, self.settings),
-                    command,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
+            proc = await asyncio.create_subprocess_exec(
+                *ssh_argv(device, self.settings),
+                _readings_script(device),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            self._procs.add(proc)
+            try:
+                out, err = await asyncio.wait_for(proc.communicate(), timeout=15)
+            except asyncio.TimeoutError:
+                # kill() alone only asks; the transport stays open until something
+                # waits for the child. See procs.reap.
+                await reap([proc])
+                slot.space = FreeSpace(checked_at=time.time(), error="df timed out")
+                return slot.space
+            finally:
+                # Deregister only a child that has actually exited. On shutdown the await
+                # above raises CancelledError, and an unconditional discard here hands the
+                # proc back a moment before stop() reaps self._procs -- so the one process
+                # that needs reaping is the one missing from the set. Its transport then
+                # waits on an EOF nobody will read and is collected after the loop has
+                # closed, which is the nameless `RuntimeError: Event loop is closed`
+                # procs.py exists to prevent. Reproduced at roughly one run in three by
+                # exercising ~18 app lifecycles in one suite.
+                if proc.returncode is not None:
+                    self._procs.discard(proc)
+
+            text = out.decode(errors="replace")
+            if device.battery or device.battery_cmd:
+                self.adopt_battery(
+                    device.id, _section(text, "battery"), _section(text, "power")
                 )
-                self._procs.add(proc)
-                try:
-                    out, err = await asyncio.wait_for(proc.communicate(), timeout=15)
-                except asyncio.TimeoutError:
-                    # kill() alone only asks; the transport stays open until something
-                    # waits for the child. See procs.reap.
-                    await reap([proc])
-                    slot.space = FreeSpace(checked_at=time.time(), error="df timed out")
-                    return slot.space
-                finally:
-                    # Deregister only a child that has actually exited. On shutdown the
-                    # await above raises CancelledError, and an unconditional discard
-                    # here hands the proc back a moment before stop() reaps
-                    # self._procs -- so the one process that needs reaping is the one
-                    # missing from the set. Its transport then waits on an EOF nobody
-                    # will read and is collected after the loop has closed, which is the
-                    # nameless `RuntimeError: Event loop is closed` procs.py exists to
-                    # prevent. Reproduced at roughly one run in three by exercising ~18
-                    # app lifecycles in one suite.
-                    if proc.returncode is not None:
-                        self._procs.discard(proc)
-
-                stderr_tail = err.decode(errors="replace").strip().splitlines()
-                if stderr_tail:
-                    last_error = stderr_tail[-1]
-                text = out.decode(errors="replace")
-                # Recorded on every attempt, not only the one whose df parsed: a toybox
-                # node fails the first command and still reads its battery on it, and a
-                # node whose df never parses should not lose its battery figure too.
-                if device.battery or device.battery_cmd:
-                    self.adopt_battery(
-                        device.id,
-                        _section(text, "battery"),
-                        _section(text, "power"),
-                    )
-                parsed = _parse_df(_section(text, "df") or text)
-                if parsed is not None:
-                    break
-
+            df = _section(text, "df")
+            parsed = _parse_df(df)
             if parsed is None:
+                # The df's own complaint when it ran, ssh's when it did not.
+                said = df.strip().splitlines() or err.decode(errors="replace").strip().splitlines()
                 # Fall back to the declared capacity so the bar still renders.
                 slot.space = FreeSpace(
                     total=device.capacity_bytes,
                     checked_at=time.time(),
-                    error=last_error,
+                    error=said[-1] if said else "df failed",
                 )
             else:
                 total, used, free = parsed
@@ -441,28 +366,18 @@ class DeviceProbe:
         return slot.space
 
     def adopt_battery(self, device_id: str, text: str, power_text: str = "") -> None:
-        """Store what the battery source said. Never raises — a device that cannot answer
-        this must not cost us the `df` that came back on the same ssh.
+        """Store what the battery source said; never raises. Public, because the Test
+        button reads the same things on its own ssh.
 
-        Public and named to match `adopt_space`, because the connection test reads the
-        same two things over an ssh it has already opened and there is no reason for the
-        row behind it to keep an older figure for either.
-
-        `power_text` is the `# power` section, which only the file form produces: a
-        `battery_cmd` node's own JSON already carries `plugged` and `status`, so it falls
-        back to `text`. Falling back on emptiness rather than on a failed parse matters —
-        a `status` file that errored is not empty, and must not send us looking for a
-        charger in a bare integer.
+        `power_text` is the `# power` section; a `battery_cmd`'s JSON carries its own
+        charger, so an *empty* one falls back to `text` (an errored `status` is not empty).
         """
         percent = _parse_battery(text)
-        # The charge state is never carried forward, in either branch below. A percentage
-        # degrades gracefully with age -- it is a level, and levels move slowly -- but a
-        # bolt is a claim about *now*, and a stale one says a device is on a charger it may
-        # have been unplugged from minutes ago. Not read this time means no bolt.
+        # The charge state is never carried forward: a level ages gracefully, a bolt is a
+        # claim about *now*.
         power = _parse_power(power_text or text)
         if percent is None:
-            # Keep the last known figure rather than blanking the bar on one bad read;
-            # the error is what says the reading is no longer being refreshed.
+            # Keep the last figure; the error says it is no longer being refreshed.
             previous = self._slot(device_id).battery
             self._slot(device_id).battery = Battery(
                 percent=previous.percent,
@@ -476,44 +391,21 @@ class DeviceProbe:
         )
 
     def invalidate_space(self, device_id: str) -> None:
-        """Force the next space probe, e.g. right after a transfer landed.
-
-        The figures are kept — the cell must not blink empty for a tick — and so is their
-        `checked_at`, which is what dates them in the LAST SEEN column. Only the schedule
-        is touched.
-        """
+        """Force the next space probe (a transfer landed), keeping the figures and their
+        `checked_at` on screen meanwhile."""
         self._slot(device_id).space_stale = True
 
     def refresh_all(self) -> None:
-        """Drop every cached reading, so the next sweep re-reads the whole fleet.
-
-        For a devices.yaml edit. The config hot-reloads within a tick, but the readings
-        are cached quite independently of it, so adding a `battery:` line changed what we
-        would ask for while `freespace_interval` kept us from asking for up to five more
-        minutes — the new column sitting empty with nothing on the page to say why. Note
-        that this is the flat 5-minute `df` cache and not the reachability backoff, two
-        different settings that both happen to default to 300s.
-
-        Invalidates and lets `_loop` pick it up on its next tick rather than probing from
-        here: the loop already spawns one task per device and `space_inflight` keeps them
-        from overlapping, whereas an editor that saves twice in a second — write, chmod,
-        rename is one save — would otherwise start two sweeps over the same devices.
-        Reachability is kicked directly because it is a 2s connect, and `rescan_soon`
-        already refuses to start a second sweep while one is running.
-        """
+        """Re-read the whole fleet after a devices.yaml edit, or a new `battery:` line sat
+        empty for up to `freespace_interval`. Invalidates and lets `_loop` do the reading,
+        so an editor's multi-event save cannot start two sweeps."""
         for device in self.devices.config.devices:
             self.invalidate_space(device.id)
         self.rescan_soon(force=True)
 
     def adopt_space(self, device_id: str, text: str) -> bool:
-        """Take a `df` reading somebody else already paid for. True if it parsed.
-
-        The connection test runs the same `df -Pk <target>` this probe would, over an ssh
-        it has already opened, so asking the device again to learn what it has just been
-        told is a round trip for nothing. Worse, without this the row the test swaps out
-        of band renders the *previous* poll's figure while the dialog above it shows the
-        number just measured — the two disagreeing on screen at the same moment.
-        """
+        """Take a `df` reading the Test button already paid for, so the row it refreshes
+        agrees with its dialog. True if it parsed."""
         parsed = _parse_df(text)
         if parsed is None:
             return False
@@ -528,6 +420,8 @@ class DeviceProbe:
     # --- change notification ---------------------------------------------
 
     def subscribe(self) -> asyncio.Queue:
+        """Device ids whose reachability state just changed, a list per sweep. Read by
+        `JobRunner._watch_deferred`, so a deferred job starts when its dot goes green."""
         queue: asyncio.Queue = asyncio.Queue(maxsize=16)
         self._listeners.add(queue)
         return queue
@@ -550,25 +444,15 @@ class DeviceProbe:
                 await self.probe_all()
                 for device in self.devices.config.devices:
                     if self.status(device.id).online and self._space_stale(device.id):
-                        # Spawned, never awaited. A `df` is bounded at 15s and tried
-                        # twice, so awaiting it here put up to 30s per online node
-                        # between one reachability sweep and the next -- 30s in which
-                        # every dot on the page is whatever it was before.
+                        # Spawned, never awaited: it is bounded at 15 s, and every dot
+                        # would wait for it.
                         self.probe_space_soon(device)
-                    # Offline nodes are skipped entirely: probe_space already returns
-                    # early for them, and there is nothing to ask a dead host.
                 self._loop_error = None
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - a probe must never kill the loop
-                # Swallowed, but not silently. A body that raises every time leaves the
-                # whole fleet grey and /healthz reporting `online: 0`, which is exactly
-                # what a genuinely dark fleet looks like -- there is no way to tell the
-                # two apart from outside the process. Logged on the first occurrence and
-                # again only when the fault changes, so a permanent one does not write a
-                # line every probe_interval for as long as the service runs. No handler is
-                # configured anywhere in the app, so this reaches the journal through
-                # logging.lastResort; see the same posture in main.py.
+                # Logged when the fault changes: from outside, a loop that always raises
+                # looks exactly like a dark fleet.
                 current = f"{type(exc).__name__}: {exc}"
                 if current != self._loop_error:
                     self._loop_error = current
@@ -576,9 +460,7 @@ class DeviceProbe:
             await asyncio.sleep(self.settings.probe_interval)
 
     def _space_stale(self, device_id: str) -> bool:
-        """Whether a `df` is worth spawning. `probe_space` returns early on a fresh
-        reading anyway, so this only avoids creating a task per device per tick to do
-        nothing."""
+        """Whether a `df` is worth spawning a task for."""
         slot = self._slot(device_id)
         checked = slot.space.checked_at
         return (
@@ -593,23 +475,11 @@ class DeviceProbe:
             self._task = asyncio.create_task(self._loop(), name="device-probe")
 
     def load_cache(self) -> None:
-        """Restore last session's readings, with the ages they actually have.
+        """Restore last session's readings with their real ages, so each is simply due.
 
-        `checked_at` comes back untouched, so LAST SEEN says "4h ago" rather than
-        pretending to be fresh — and every staleness test already in this file then treats
-        the reading as due, so a restored figure schedules its own replacement instead of
-        suppressing one. That is the whole trick: nothing downstream needs to know these
-        came off disk.
-
-        `reach` is restored only in part, and the omissions are the point. `last_ok` is a
-        historical fact — when this node last answered — and it is what separates amber
-        `sleeping` from red `offline`, so without it every unreachable node reads as
-        half-an-hour-dead the moment the service comes back. `state` is a *measurement* and
-        must be taken now, so it is not restored; nor are `checked_at` and `next_probe_at`,
-        which would have the first sweep honour a backoff appointment made last session.
-
-        Never raises. A cache is a convenience, and a corrupt one must cost a cold fleet
-        rather than a start-up.
+        Of `reach` only `last_ok` returns: it separates amber from red, while `state` must
+        be measured now and a restored `next_probe_at` would honour an old backoff. Never
+        raises: a corrupt cache costs a cold fleet, not a start-up.
         """
         path = self.settings.probe_cache
         try:
@@ -617,8 +487,6 @@ class DeviceProbe:
         except (OSError, ValueError):
             return
         if not isinstance(blob, dict) or blob.get("version") != _CACHE_VERSION:
-            # Dropped rather than migrated: the file rebuilds itself within one probe
-            # interval, which is a cheaper price than a migration path for a cache.
             return
         for device_id, row in (blob.get("devices") or {}).items():
             if not isinstance(row, dict):
@@ -635,22 +503,9 @@ class DeviceProbe:
                 slot.reach = Reachability(last_ok=float(last_ok))
 
     def save_cache(self) -> None:
-        """Write the readings out so a restart does not blank the fleet.
-
-        At shutdown and nowhere else. Nothing reads this file while the process runs, so a
-        periodic flush would buy durability against an *unclean* exit only, and it would
-        cost a write every time a node answered — every 10s across six nodes, for data
-        nobody is going to read. A deploy is `systemctl restart`, which is SIGTERM, which
-        runs the lifespan shutdown, which calls this. That is the case that motivated it:
-        a deploy used to blank every node that happened to be asleep at that moment, and on
-        this fleet the Kobo can be asleep for days.
-
-        Temp file and rename, so a kill part-way through leaves the previous cache intact
-        rather than a half-written one that the loader would then have to distrust.
-
-        Never raises. This must not be able to fail a shutdown that still has real rsync
-        subprocesses to reap.
-        """
+        """Write the readings out, at shutdown only, so a restart does not blank a Kobo
+        that has been asleep for days. Nothing reads the file while running, so a periodic
+        flush would only cost writes. Temp file and rename; never raises."""
         path = self.settings.probe_cache
         devices = {}
         for device_id, slot in self._slots.items():
@@ -682,13 +537,8 @@ class DeviceProbe:
                     await task
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
-        # Between the cancels and the reap, deliberately. After the cancels, because no
-        # task can still be writing a reading, so what lands on disk is final. Before the
-        # reap, because reaping waits on real rsync subprocesses and a shutdown that runs
-        # long -- or gets killed for running long -- must not be what loses the cache.
+        # After the cancels, so the readings are final; before the reap, which can run long.
         self.save_cache()
-        # After the tasks, not before: reap() drains the pipes, and a cancelled task is
-        # one that has stopped reading them. See procs.reap.
         await reap(list(self._procs))
         self._procs.clear()
         self._task = None
@@ -696,29 +546,18 @@ class DeviceProbe:
         self._background.clear()
 
 
-def ssh_argv(device: Device, settings: Settings, timeout: int = 10) -> list[str]:
-    """The ssh command prefix shared by probes, tests and remote listings.
+def ssh_base(device: Device, connect_timeout: int = 10) -> list[str]:
+    """`ssh` and every option this program passes it, without the destination.
 
-    Built as an argv list, never a shell string. BatchMode guarantees a missing key
-    fails immediately instead of blocking the event loop on a password prompt.
+    The one place an ssh command is assembled -- the probe, Test, scans, every `-e`, a
+    pull's remote commands -- so none can drift on a keepalive or a timeout. BatchMode
+    makes a missing key fail at once instead of waiting on a prompt.
 
-    The keepalives are about ssh multiplexing, which the Pi's ~/.ssh/config turns on
-    (`ControlMaster auto`, `ControlPersist 3600`) and which this inherits, not passing
-    `-F none`. That is worth having: measured against the fleet, a fresh handshake to a
-    phone costs 680-850 ms and a multiplexed session 140-355 ms. The cost is that a
-    master outlives the connection under it — a phone that sleeps leaves one wedged, and
-    the next probe through it fails with `mux_client_request_session: read from master
-    failed: Broken pipe` rather than reconnecting.
-
-    ServerAlive is what makes the master notice. It only fires after `Interval` seconds
-    with *no data received at all*, so an active transfer resets it continuously and it
-    cannot kill a busy connection; 60 x 3 = 180 s of true silence. Under the 300 s
-    freespace_interval on purpose, so a woken device costs at most one failed reading
-    rather than three. Set explicitly rather than left to Debian's BatchMode default of
-    300 (x3 = 900 s, i.e. a quarter of an hour of stale storage and battery), and kept
-    well clear of values tight enough to drop a working link: at 5 x 1, five seconds of
-    ordinary jitter — rsync checksumming a large file, a stalled FAT write — is a
-    disconnect.
+    The keepalives are for the multiplexed master the Pi's ~/.ssh/config opens (a fresh
+    handshake to a phone is 680-850 ms, multiplexed 140-355 ms): a phone that sleeps leaves
+    the master wedged, and ServerAlive is what notices. It fires only on total silence, so
+    no busy transfer trips it; 60 x 3 = 180 s sits under the 300 s space interval, where
+    Debian's BatchMode default would be 900 s and 5 x 1 would drop a working link.
     """
     argv = ["ssh", "-p", str(device.effective_port)]
     if device.identity:
@@ -727,7 +566,7 @@ def ssh_argv(device: Device, settings: Settings, timeout: int = 10) -> list[str]
         "-o",
         "BatchMode=yes",
         "-o",
-        f"ConnectTimeout={timeout}",
+        f"ConnectTimeout={connect_timeout}",
         "-o",
         "StrictHostKeyChecking=accept-new",
         "-o",
@@ -738,24 +577,29 @@ def ssh_argv(device: Device, settings: Settings, timeout: int = 10) -> list[str]
     extra = device.effective_ssh_options
     if extra:
         argv += shlex.split(extra)
-    argv.append(f"{device.effective_user}@{device.host}")
     return argv
 
 
+def ssh_argv(device: Device, settings: Settings, timeout: int = 10) -> list[str]:
+    """`ssh … user@host`, for a caller that appends one remote command."""
+    return [*ssh_base(device, timeout), f"{device.effective_user}@{device.host}"]
+
+
+def rsync_e(device: Device, connect_timeout: int = 10) -> str:
+    """The same ssh as the single string rsync's `-e` takes.
+
+    rsync splits it on spaces itself and honours quotes, including the `'"'"'` shlex.join
+    writes for a quote inside a word, so an `identity:` path with a space survives. The
+    scan's copy of this joined without quoting and did not.
+    """
+    return shlex.join(ssh_base(device, connect_timeout))
+
+
 def battery_command(device: Device) -> str | None:
-    """The shell fragment that reads this device's charge, or None if it declares none.
+    """The shell fragment that reads this device's charge, or None.
 
-    One definition, because the quoting rule differs between the two forms and a second
-    copy of it would eventually get one wrong. `battery` is a path and is quoted as one.
-    `battery_cmd` is a command line and must *not* be: it is meant to be able to be a
-    pipeline, and quoting it would run the whole string as the name of one program.
-
-    That second case is a shell string built from config, which is exactly what
-    `build_argv` and `ssh_argv` refuse to do. The difference is that this value *is* a
-    command by declaration — written by whoever already has ssh to the device — rather
-    than a filename that ends up in one.
-
-    Shared by the background probe and the connection test, so the two cannot drift.
+    `battery` is a path and is quoted; `battery_cmd` is a command by declaration -- written
+    by someone who already has ssh to the device -- and may be a pipeline, so it is not.
     """
     if device.battery:
         return f"cat {shlex.quote(device.battery)} 2>&1"
@@ -767,35 +611,12 @@ def battery_command(device: Device) -> str | None:
 def charging_command(device: Device) -> str | None:
     """The shell fragment that reads whether this device is on a charger, or None.
 
-    Only the file form needs one. A `battery_cmd` node runs `termux-api BatteryStatus`,
-    whose JSON already carries `plugged` and `status` beside the percentage — asking twice
-    would be a second invocation for something we have already been told.
-
-    For the file form the answer is the `status` file in the same directory as the
-    declared `capacity`. That is a narrower guess than the one `Device.battery` exists to
-    avoid: the sysfs power-supply ABI fixes both names *within* one supply directory, so
-    the only thing being assumed is that whoever named `capacity` named a real supply. And
-    unlike a wrong percentage, a `status` that is not there fails the `cat` and draws
-    nothing — a blank, not a confident wrong claim.
-
-    Deliberately *not* the `online` file of some other supply, which looks like the more
-    direct question and is not answerable. Measured on lg (Android 6): `charger_controller`
-    reports `status: Charging` and `online: 1` permanently, while the phone is plainly
-    unplugged — `usb/present: 0`, battery `Discharging`, every other supply `online: 0`.
-    Its `usb` supply is also typed `Unknown` rather than `USB`, so "the non-battery supply
-    that is online" picks the liar and skips the truth on the same device. `status` was
-    correct on both nodes that were awake to ask.
-
-    A device may override the derivation with `charging:`, and one has to: the Nexus 10
-    reads its charge from a fuel gauge that exposes no `status`, while its charger is a
-    separate supply two directories away. That is also why the fallback is not the sign of
-    `POWER_SUPPLY_CURRENT_NOW`, which looks like a general answer and is not -- measured on
-    this fleet, lg and bk both report a *positive* current while `STATUS=Discharging`, the
-    opposite convention to the Nexus 10's. The sign is a per-driver accident; a declared
-    path is a fact.
-
-    Shared by the background probe and the connection test, for the same reason
-    `battery_command` is: one definition, so the two cannot drift.
+    A `battery_cmd`'s JSON already says. For a file it is the `status` beside the declared
+    `capacity`: sysfs fixes both names within one supply directory, and a missing one draws
+    no bolt rather than a wrong one. Never another supply's `online` file -- on lg,
+    `charger_controller` reports `online: 1` permanently while the phone is unplugged --
+    and never the sign of `CURRENT_NOW`, which lg and bk report positive while
+    discharging, the opposite of the Nexus 10. `charging:` overrides the derivation.
     """
     if device.charging:
         return f"cat {shlex.quote(device.charging)} 2>&1"
@@ -809,31 +630,41 @@ def charging_command(device: Device) -> str | None:
     return f"cat {shlex.quote(status)} 2>&1"
 
 
-def _readings_script(device: Device, df_command: str) -> str:
+def df_command(target: str) -> str:
+    """`df` of the target in one shell, whichever dialect the device speaks.
+
+    `-Pk` is the portable form on GNU coreutils, but Android's toybox rejects both flags,
+    and Termux is a primary target class. Captured first and retried only on empty output:
+    toybox prints its table anyway and exits non-zero, so `a || b` printed it twice, and a
+    second ssh -- what this used to cost every toybox node every five minutes -- is the
+    expensive half of a probe on a sleeping phone.
+    """
+    t = shlex.quote(target)
+    return f'd=`df -Pk {t} 2>/dev/null`; [ -n "$d" ] || d=`df {t} 2>&1`; echo "$d"'
+
+
+def _readings_script(device: Device) -> str:
     """One shell line that reads everything an ssh round trip can get us at once.
 
-    The battery reading rides along with `df` rather than opening a second connection: on
-    a sleeping Termux node the connection *is* the cost, and two probes on their own
+    The battery rides along with `df` rather than opening a second connection: on a
+    sleeping Termux node the connection *is* the cost, and two probes on their own
     schedules would also drift out of step in the row that shows both. Marked sections
     rather than positional parsing, because `df` output is one line on some devices and
-    two on others — see `_parse_df`.
+    two on others -- see `_parse_df`. The Test button runs this same script and more, so
+    the two cannot read different things.
     """
+    script = f'echo "# df"; {df_command(device.target)}'
     read = battery_command(device)
-    if read is None:
-        return df_command
-    script = f'echo "# df"; {df_command}; echo "# battery"; {read}'
-    charger = charging_command(device)
-    if charger is not None:
-        script += f'; echo "# power"; {charger}'
+    if read is not None:
+        script += f'; echo "# battery"; {read}'
+        charger = charging_command(device)
+        if charger is not None:
+            script += f'; echo "# power"; {charger}'
     return script
 
 
 def _section(text: str, name: str) -> str:
-    """The `# <name>` block of a marked transcript, up to the next marker.
-
-    Returns "" when the marker is absent, which is also what an unmarked single-command
-    transcript yields — callers fall back to the whole text for that case.
-    """
+    """The `# <name>` block of a marked transcript, up to the next marker; "" if absent."""
     lines = text.splitlines()
     start = next(
         (i + 1 for i, ln in enumerate(lines) if ln.strip() == f"# {name}"), None
@@ -846,25 +677,15 @@ def _section(text: str, name: str) -> str:
     return "\n".join(lines[start:end])
 
 
-#: JSON keys that mean "percent charged", most specific first. termux-api says
-#: `percentage`; upower and several sysfs-scraping wrappers say `capacity`; Android's own
-#: battery intent calls it `level`. Matched exactly and case-insensitively rather than by
-#: substring, so `percentage_design` or `level_raw` cannot answer for the charge.
+#: JSON keys meaning "percent charged" (termux-api, upower, Android's intent), matched
+#: whole so `percentage_design` cannot answer for the charge.
 _BATTERY_KEYS = ("percentage", "capacity", "level", "battery_level")
 
 
 def _parse_battery(text: str) -> int | None:
-    """A battery reading as a percentage, or None if it did not read like one.
-
-    Two shapes, because the source is either a file or a program. A sysfs file is a bare
-    integer and nothing else. `termux-api BatteryStatus` prints a JSON object, which is
-    what Android 12 forces: /sys/class/power_supply is unreadable from Termux there, so
-    there is nothing to cat.
-
-    Anything else fails rather than being pattern-matched out of a longer message. A
-    `cat` of a missing node prints "No such file or directory (2)", and pulling the 2 out
-    of that would report 2% charge -- a plausible wrong number is worse than a blank.
-    """
+    """A reading as a percentage: a bare integer (sysfs) or a JSON object (termux-api),
+    else None. Never fished out of a longer message: "No such file or directory (2)" is not
+    2% charge."""
     stripped = text.strip()
     if not stripped:
         return None
@@ -894,15 +715,9 @@ def _parse_battery(text: str) -> int | None:
     return None
 
 
-#: What a sysfs `status` file says, mapped to what the row draws. The kernel's set is
-#: fixed (`power_supply_sysfs.c`): Unknown, Charging, Discharging, Not charging, Full.
-#: Android's battery intent uses the same words in upper snake case, so one table serves
-#: both sources. `Full` and `Not charging` are both "on the charger, not taking" -- the
-#: second is a charger that has paused, usually on temperature -- and neither is reachable
-#: without a charger attached.
-#:
-#: `Unknown` is deliberately absent: it means the driver does not know, which is not a
-#: fact about the charger and must not be drawn as one.
+#: The kernel's `status` words (Android's intent uses the same, upper-snake), mapped to
+#: what the row draws. `Full` and `Not charging` both mean attached and not taking.
+#: `Unknown` is absent on purpose: the driver not knowing is not a fact about the charger.
 _POWER_WORDS = {
     "charging": "charging",
     "full": "plugged",
@@ -913,27 +728,15 @@ _POWER_WORDS = {
 
 
 def _parse_power(text: str) -> str | None:
-    """Whether the device is on a charger: "charging", "plugged", "unplugged" or None.
-
-    Two shapes again, and for the same reason as `_parse_battery` -- the source is either
-    a file or a program -- but the two carry different amounts of information. A sysfs
-    `status` file is one word. `termux-api BatteryStatus` prints both `plugged`, which is
-    the authority on whether a charger is attached, and `status`, which is the authority on
-    whether current is flowing; a payload holding only one of them falls back to it alone.
-
-    Anything unrecognised is None rather than a guess. A failed `cat` lands here, and so
-    does `Unknown` from a driver that does not know -- in both cases the honest answer is
-    to draw no bolt, which is also what an unplugged device gets. That is why the caller
-    keeps `None` and `"unplugged"` apart: only the tooltip can tell them apart, and it does.
-    """
+    """"charging", "plugged", "unplugged" or None, from a sysfs `status` word or
+    termux-api JSON -- where `plugged` says whether a charger is attached and `status`
+    whether current flows. Anything unrecognised is None, never a guess."""
     stripped = text.strip()
     if not stripped:
         return None
 
     if not stripped.startswith("{"):
-        # A status file holds one word and nothing else. Matched whole, so the error text
-        # of a failed `cat` -- which may well contain "charging" as part of the path it
-        # could not open -- cannot answer for the charger.
+        # One word, matched whole: a failed `cat`'s path may contain "charging".
         return _POWER_WORDS.get(stripped.splitlines()[0].strip().lower())
 
     try:
@@ -953,8 +756,6 @@ def _parse_power(text: str) -> str | None:
         if word == "UNPLUGGED":
             return "unplugged"
         if word.startswith("PLUGGED"):
-            # Attached for certain; `status` only decides which of the two bolts. An
-            # UNKNOWN or missing status on an attached charger is still attached.
             return "charging" if flowing == "charging" else "plugged"
         return None
 
@@ -962,12 +763,8 @@ def _parse_power(text: str) -> str | None:
 
 
 def _battery_error(text: str) -> str:
-    """Why a reading did not parse, in the few words a tooltip has room for.
-
-    A failed `cat` puts its complaint on the last line, which is the useful one. A JSON
-    object that simply lacks a charge key has `}` there instead, which says nothing — so
-    that case is named rather than quoted, with the keys we did see.
-    """
+    """Why a reading did not parse, in a tooltip's few words: a failed `cat`'s last line,
+    or the keys a JSON object had instead of a charge."""
     stripped = text.strip()
     if not stripped:
         return "no output"
@@ -984,25 +781,14 @@ def _battery_error(text: str) -> str:
 
 
 def _as_percent(value: int | float) -> int | None:
-    """A number that is a percentage, rounded, or None. Rounded because a JSON source may
-    report a float; out-of-range is rejected rather than clamped, since a figure outside
-    0..100 means the key was not the charge after all."""
+    """A percentage, rounded, or None when outside 0..100 (then it was not the charge)."""
     if not 0 <= value <= 100:
         return None
     return int(round(value))
 
 
 def _df_field(token: str) -> int | None:
-    """One df size field -> bytes.
-
-    Two dialects reach us and the column positions happen to agree, so only the value
-    format differs:
-
-        GNU `df -Pk`  ``/dev/mmcblk0p3  30408704  7969472  22439232  27% /mnt/onboard``
-        toybox `df`   ``/…/sd/Books      466.35G   302.90G   163.46G  32768``
-
-    A bare integer is a 1K block count; anything carrying a unit suffix is absolute.
-    """
+    """One df size field -> bytes: GNU `-Pk` prints 1K blocks, toybox `466.35G`."""
     token = token.strip().rstrip("%")
     if not token:
         return None
@@ -1044,5 +830,7 @@ __all__ = [
     "Reachability",
     "State",
     "ssh_argv",
+    "ssh_base",
+    "rsync_e",
     "parse_size",
 ]

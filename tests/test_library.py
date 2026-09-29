@@ -184,3 +184,58 @@ def test_ancestors_are_root_first_and_exclude_the_leaf(index):
     assert [e.path for e in index.ancestors("Science/Physics")] == ["Science"]
     assert index.ancestors("Science") == []
     assert index.ancestors("") == []
+
+
+async def test_a_failed_rebuild_says_so_in_the_index_chip(client, app, monkeypatch):
+    """The previous index keeps serving, so a failing rebuild looked merely old."""
+    def broken(*a, **k):
+        raise OSError("disk went away")
+
+    monkeypatch.setattr("libnodes.library._walk", broken)
+    app.state.lib.index.reindex()
+    chip = (await client.get("/lib/index-status")).text
+    assert "rebuild failed" in chip and "disk went away" in chip
+
+
+async def test_a_rebuild_asked_for_mid_walk_runs_again(app, monkeypatch):
+    """A pull that finishes while a walk is in flight must still end up indexed."""
+    import asyncio
+    import threading
+
+    lib = app.state.lib
+    release = threading.Event()
+    calls = []
+
+    def slow_reindex():
+        calls.append(1)
+        release.wait(5)
+
+    monkeypatch.setattr(lib.index, "reindex", slow_reindex)
+    lib.reindex_soon()
+    await asyncio.sleep(0.05)
+    lib.reindex_soon()  # the pull's ask, landing mid-walk
+    release.set()
+    await lib._reindex_task
+    assert len(calls) == 2
+
+
+def test_subtree_is_everything_below_and_nothing_beside(index, library):
+    """One range query in place of a per-directory walk, so it has to return exactly what
+    that walk did -- and not a sibling whose name merely starts the same way."""
+    (library / "Science-Fiction").mkdir()
+    (library / "Science-Fiction" / "Solaris.epub").symlink_to(
+        "../.data/" + next(p.name for p in (library / ".data").iterdir() if p.is_file())
+    )
+    index.reindex()
+
+    def walk(path):
+        out = []
+        for child in index.children(path, limit=100_000):
+            out.append(child.path)
+            if child.is_dir:
+                out.extend(walk(child.path))
+        return out
+
+    for path in ("Science", "Fiction", "Science/Physics"):
+        assert sorted(e.path for e in index.subtree(path)) == sorted(walk(path))
+    assert "Science-Fiction/Solaris.epub" not in {e.path for e in index.subtree("Science")}

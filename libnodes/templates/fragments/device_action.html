@@ -1,14 +1,6 @@
-{# One row of the device Actions dialog: the button, what it means, and the exact
-   command it runs. Expects `act` with `method` + `url`.
-
-   NOT `act.get` — Jinja resolves attributes before keys, so a key named `get` returns
-   dict.get, the bound method, and the button renders
-   hx-get="<built-in method get of dict object ...>". Same trap for `items`, `keys`,
-   `values`, `pop`, `update`.
-
-   All buttons look the same on purpose. Styling one as primary makes it the obvious
-   thing to press, and the heaviest action here (a 250 GB Full Sync) is the last thing
-   that should be inviting. #}
+{# One action: the button, what it means, and the exact command. Expects `act`.
+   Not `act.get` -- Jinja resolves attributes first, so a key named `get` renders
+   dict.get. All buttons look alike: the heaviest action should not invite. #}
 <div class="action">
   <div class="action-head">
     <button class="btn btn-default" type="button"
@@ -17,24 +9,18 @@
             hx-swap="{{ act.swap }}"
             hx-disabled-elt="this"
             {% if act.confirm %}hx-confirm="{{ act.confirm }}"{% endif %}
-            {# Close AFTER the response lands. Removing the dialog in onclick tears the
-               triggering element out of the DOM mid-flight, and htmx abandons the
-               request. #}
+            {# Close after the response lands; closing in onclick abandons the request. #}
             {% if act.close %}hx-on::after-request="document.getElementById('device-menu')?.remove()"
-            {# Same slot, for an action that has something else to do once the reply is
-               in — the extras dialog re-requests itself so it comes back knowing a scan
-               is running. Same reason it is not `onclick`. #}
+            {# Same slot, for an action with its own follow-up. #}
             {% elif act.after %}hx-on::after-request="{{ act.after }}"{% endif %}
     >{{ act.label }}</button>
     <span class="action-note">{{ act.note }}</span>
   </div>
 
   {% if act.cmds %}
-    {# An action that is more than one command, which so far means Pull. Showing only its
-       transfer would hide the steps that carry the risk: the rsync has no --delete and no
-       -L and writes nothing to the far end, while steps 3 to 5 stop a service and
-       overwrite a database. One <code> each, each separately copyable, in the same slot a
-       single command uses so the dialog still reads as one list. #}
+    {# An action that is more than one command: Pull and Replicate. Showing only the
+       transfer would hide the steps that stop a service or overwrite a database. One <code>
+       each, separately copyable, in the slot a single command uses. #}
     {% for cmd in act.cmds %}
       <div class="action-cmd">
         <code>{{ cmd }}</code>

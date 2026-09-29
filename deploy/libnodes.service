@@ -36,12 +36,9 @@ Environment=LIBNODES_LOCAL_SERVICE=urantia-library.service
 # deploy.sh syncs with --delete without excluding .env, so a .env password is removed by
 # the next deploy. The leading `-` makes the file optional. See deploy/README.md §Access.
 EnvironmentFile=-/etc/default/libnodes
-# Port 8090, and 0.0.0.0 rather than 127.0.0.1 on purpose. nginx proxies
-# https://proxyai.ddns.net/ to this port (deploy/libnodes.nginx), but binding loopback
-# would then be the only way in — and from inside the LAN that name resolves to the public
-# IP, so a hairpinned request arrives at nginx from 192.168.1.x and the allowlist rejects
-# it. 8090 is not forwarded on the router and LIBNODES_PASSWORD guards it, so keeping
-# http://pi5:8090/ reachable on the LAN is a feature, not a second public door.
+# Port 8090 on 0.0.0.0: LibNodes is LAN-only, reached directly at http://pi5:8090/ with
+# nothing in front. 8090 is not forwarded on the router, and LIBNODES_PASSWORD is the whole
+# guard. deploy/README.md §Access says why there is no public vhost.
 ExecStart=/home/tigran/libnodes/.venv/bin/uvicorn libnodes.main:app \
     --host 0.0.0.0 --port 8090 --workers 1 --loop uvloop --http httptools
 Restart=on-failure

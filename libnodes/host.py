@@ -1,11 +1,5 @@
-"""Host telemetry for the rail footer.
-
-The Devices/Library rails show uptime, load and library-disk usage; the Jobs rail swaps
-to live net/cpu/temp. All of it comes from /proc and /sys, is cheap, and is cached for
-a couple of seconds so a 10s poll plus an SSE stream cannot turn it into real work.
-
-Every reader degrades to None rather than raising: not every host has a thermal_zone0
-(pi5 does, an x86_64 workstation did not), and the interface name differs per machine.
+"""Host telemetry for the rail footer, from /proc and /sys, cached for two seconds.
+Every reader degrades to None: not every host has a thermal zone or the same NIC name.
 """
 
 from __future__ import annotations

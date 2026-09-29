@@ -1,14 +1,11 @@
 <!doctype html>
-{# data-theme is rendered server-side from the cookie, so the correct palette is in
-   place on first paint -- no flash of the other theme. #}
+{# data-theme comes from the cookie server-side, so first paint has the right palette. #}
 <html lang="en"{% if theme == 'light' %} data-theme="light"{% endif %}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}LibNodes{% endblock %}</title>
-{# asset() stamps each URL with the file's mtime. Plain /static/app.css is cached by
-   heuristic freshness — no Cache-Control is sent — so a deployed change stays invisible
-   for ~10% of the file's age. See the docstring in templating.py. #}
+{# asset() stamps each URL with the file's mtime; see templating.asset. #}
 <link rel="stylesheet" href="{{ asset('fonts.css') }}">
 <link rel="stylesheet" href="{{ asset('app.css') }}">
 <link rel="icon" href="{{ asset('icon.svg') }}" type="image/svg+xml">
@@ -48,8 +45,7 @@
       {% block rail_foot %}
       <div class="stat"><span>{{ host.hostname }}</span><b>{{ host.uptime_label }}</b></div>
       <div class="stat"><span>load</span><b>{{ host.load_label }}</b></div>
-      {# The library and the disk it lives on are two different numbers. Showing the
-         filesystem's usage under a /Books label claimed 894G for a 248G library. #}
+      {# The library and its disk are two numbers: the disk holds more than /Books. #}
       <div class="stat">
         <span>{{ library_root }}</span>
         <b title="library size, summed by the index">{{ library_bytes|hsize_short }}</b>
@@ -71,13 +67,9 @@
       </div>
       <div class="topbar-right">
         {% block topbar_right %}{% endblock %}
-        {# Outside the block above, beside the theme toggle, for the same reason it is:
-           page templates override topbar_right (devices_yaml.html does), and anything
-           inside it disappears on those pages. A plain form, so logging out does not
-           depend on htmx or on script at all.
-           An icon rather than the words, which were 80 of the 363 px a 412px phone has
-           for this bar and left the index chip ~165 px to elide into. SVG for the theme
-           toggle's reason below: a glyph is a bet on the Nexus 10's fonts. #}
+        {# Outside the block above, because every page overrides topbar_right. A plain
+           form, so logging out needs no script. An icon: the words took 80 of the 363 px a
+           412px phone has for this bar. SVG for the theme toggle's reason below. #}
         {% if auth_enabled %}
         <form method="post" action="/logout" style="display:contents">
           <button class="btn btn-icon logout" type="submit" title="Log out" aria-label="Log out">
@@ -90,14 +82,8 @@
           </button>
         </form>
         {% endif %}
-        {# Drawn as SVG rather than ☾/☼, and for a measured reason: U+263E is in none
-           of the Nexus 10's 91 /system/fonts (cmaps checked, Android 5.1), so that tablet
-           drew a tofu box here for as long as the glyph did. Its only moon is U+1F319 in
-           NotoColorEmoji -- the colour-emoji trap the login page's eye already documents.
-           U+263C survives only because NotoSansSymbols-Subsetted and NotoSerif carry it,
-           which is why the sun looked fine and the moon did not.
-           Which of the two is drawn is CSS keyed off data-theme (see .theme-toggle in
-           app.css), so the pair is written once here and not re-rendered by app.js. #}
+        {# SVG, not ☾/☼: U+263E is in none of the Nexus 10's fonts and drew as tofu.
+           Which one shows is CSS keyed off data-theme. #}
         <button class="btn btn-icon theme-toggle" type="button"
                 data-theme-toggle
                 title="Switch to {{ 'dark' if theme == 'light' else 'light' }} theme"

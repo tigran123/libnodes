@@ -1,10 +1,6 @@
 <!doctype html>
-{# The one full page that does not extend base.html. See routes/auth.py for why: the
-   shell would assemble the rail, the dock, host telemetry and the device list, and none
-   of that may be built for someone who has not logged in.
-
-   data-theme is stamped server-side from the existing theme cookie, exactly as
-   base.html:4 does, so the login screen is already in the right palette on first paint. #}
+{# The one page that does not extend base.html, whose context would show a visitor
+   the fleet (see routes/auth.py). It loads no htmx. #}
 <html lang="en"{% if theme == 'light' %} data-theme="light"{% endif %}>
 <head>
 <meta charset="utf-8">
@@ -13,10 +9,7 @@
 <link rel="stylesheet" href="{{ asset('fonts.css') }}">
 <link rel="stylesheet" href="{{ asset('app.css') }}">
 <link rel="icon" href="{{ asset('icon.svg') }}" type="image/svg+xml">
-{# app.js only, and only for the reveal eye -- no htmx, nothing to swap. The form itself
-   is a plain post, so the lock still works with scripting off; the eye simply does not
-   appear (see .pw-reveal in app.css). Loading it here also warms the cache for the page
-   you land on a moment later. #}
+{# app.js only for the reveal eye; the form is a plain POST. #}
 <script src="{{ asset('app.js') }}" defer></script>
 </head>
 <body>
@@ -35,10 +28,7 @@
       {# autofocus so the only control on the page already has the caret. #}
       <input type="password" id="password" name="password" autocomplete="current-password"
              autofocus required>
-      {# type="button" is load-bearing: a bare <button> inside a form defaults to submit,
-         so without it pressing the eye posts the half-typed password instead of showing
-         it. Drawn as SVG rather than a glyph because there is no eye character without
-         an emoji presentation -- the same trap the theme toggle documents. #}
+      {# type="button", or the eye would submit the form. #}
       <button class="pw-reveal" type="button" data-pw-reveal aria-controls="password"
               aria-pressed="false" aria-label="Show password" title="Show password">
         <svg class="pw-show" viewBox="0 0 16 16" width="15" height="15" fill="none"

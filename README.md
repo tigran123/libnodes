@@ -270,6 +270,7 @@ infer from its label is a bad action.
 | `watch.py` | inotify on `devices.yaml`, so edits appear without polling |
 | `host.py` | `/proc` telemetry for the rail footer |
 | `cardprefs.py` | which parts of a GRID card this browser draws; the Settings ticks |
+| `libpos.py` | where in the Library this browser was, for the rail's link back |
 | `routes/` | one module per view; full pages return the shell, everything else a fragment |
 
 Outside the package, `tools/shot.py` photographs and interrogates the running UI over the
@@ -318,7 +319,7 @@ not `.env`, which an rsync deploy to another host would delete.
 
 ## Testing notes
 
-514 tests, ~20 s on the Pi 5, no network required. Two fixtures encode lessons that cost
+About 730 tests, ~30 s on the Pi 5, no network required. Two fixtures encode lessons that cost
 real debugging:
 
 - `tests/data_rsync_human.log` — verbatim output from a real transfer. `-avhP` includes

@@ -200,7 +200,7 @@ async def test_a_path_that_is_not_a_cookie_value_still_survives(app):
     test ever caught. The fixture library is ASCII, so this is checked directly."""
     from fastapi.responses import Response
 
-    from libnodes.libpos import POS_COOKIE, remember
+    from libnodes.libpos import remember
 
     for path in ("Fiction/Perov, L/Book 1965", "Художественная/Перов"):
         response = Response()

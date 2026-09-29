@@ -1,6 +1,5 @@
-{# One panel: the file table is the navigator. A directory name goes in, a breadcrumb
-   segment comes back out, and both swap this whole element so the listing, the crumb and
-   the selection change together — the same thing a tree click used to do. #}
+{# One panel, and the file table is the navigator: a directory name goes in, the
+   breadcrumb comes back out, and both swap this whole element. #}
 <div class="lib" id="lib">
 
   <div class="filterbar">
@@ -37,16 +36,11 @@
 
   <div class="lib-body">
 
-    {# The crumb and the selection bar stick together, as one group. Separately they
-       cannot: .lib-body is the scroller, the crumb is already pinned at its top, and the
-       crumb's height is not a constant — the segments wrap. So a sticky #selbar would
-       need a `top:` nobody can write down. See .lib-sticky in app.css. #}
+    {# The crumb and the selection bar are pinned as one group, because the crumb
+       wraps and no `top:` could follow it. See .lib-sticky. #}
     <div class="lib-sticky">
 
-    {# The only way back up now that the tree is gone. Each ancestor carries the same htmx
-       quartet the tree links did, and the `href` alone is a working navigation with no
-       JS at all. Only `p` is carried: entering or leaving a directory is a fresh
-       listing, which is exactly what a tree click did. #}
+    {# The only way back up. Each link works without JS, and carries `p` alone. #}
     <nav class="pathline" aria-label="Location">
       <span class="crumbs">
         {% if path %}
@@ -66,8 +60,7 @@
           <span class="sep" aria-hidden="true">/</span>
           <span class="leaf" aria-current="page">{{ entry.name }}</span>
         {% else %}
-          {# At the root there is nothing above to link to, so the root *is* the leaf. A
-             link to where you already are is a control that does nothing. #}
+          {# At the root the root is the leaf; a link to where you are does nothing. #}
           <span class="leaf" aria-current="page">{{ library_root }}</span>
         {% endif %}
       </span>
@@ -77,22 +70,14 @@
       </span>
     </nav>
 
-    {# Empty until something is ticked, and it stays this element through every swap:
-       /lib/selection replaces its innerHTML, not the div. #}
+    {# /lib/selection replaces this div's contents, never the div. #}
     <div id="selbar"></div>
 
     </div>
 
-    {# hx-disinherit, and it is load-bearing rather than tidiness. hx-include is an
-       inherited attribute, so every element inside this form was silently adding
-       `#lib-params` — that is `p=<the directory we are in>` — to its own request. On a
-       directory link that made `hx-get="/lib/pane?p=Science/Aviation"` arrive as
-       `?p=Science/Aviation&p=Science`; FastAPI binds the last value, so the server
-       answered with the directory you were already in while hx-push-url had already
-       written the new URL to the address bar. Measured with tools/shot.py on
-       htmx:configRequest: path `/lib/pane?p=Science/Aviation`, parameters `{p: Science}`.
-       The form reading its *own* hx-include is untouched — disinheritance only applies to
-       descendants — so the selection bar still posts exactly the checked boxes. #}
+    {# hx-disinherit is load-bearing: hx-include is inherited, and every link inside
+       would otherwise add `p=<this directory>` -- so the server answered with the
+       directory you were in while the address bar showed the new one. #}
     <form id="sel-form" data-selectable
           hx-get="/lib/selection"
           hx-trigger="change, selection-changed"
@@ -102,11 +87,8 @@
           hx-disinherit="hx-include">
       <div class="panel">
         <div class="thead file-grid">
-          {# Deliberately unnamed: it sits inside #sel-form, and the selection bar is
-             nothing but an hx-include of the checked boxes — a name here would post a
-             phantom `path=on` alongside the real ones. It owns the rows currently in
-             the table, so with a filter active it selects the filtered set: what you
-             can see, which is the only set it can honestly claim. #}
+          {# Unnamed, or the selection would post a phantom `path=on`. It selects what the
+             filter shows. #}
           <div class="cell-check">
             <input class="check" type="checkbox" data-select-all
                    aria-label="Select every row below"
@@ -116,13 +98,8 @@
           <div>Format</div>
           <div class="cell-r">Size</div>
           <div>Modified</div>
-          {# The map's legend, and the only thing that makes it readable without a
-             tooltip: one label per slot, in the same flex with the same gap and the
-             same cell padding, so label N sits over slot N on every row below. Rotated
-             because fifteen abbreviations do not fit across a 210px track any other
-             way, and dropped for the plain heading below 1300px, where the track is
-             squeezed too narrow to hold them side by side. Below 1089px there is no
-             .thead at all -- the row stacks and the strip's dialog is the legend. #}
+          {# The map's identity legend: one label per slot, in the same flex, gap and
+             padding, so label N stands over slot N. Dropped below 1300px. #}
           <div class="pmap-head">
             <span class="pmap-head-plain">Present on</span>
             {% for dev in fleet %}
@@ -140,11 +117,7 @@
     <div class="statusline">
       <span>a directory's name opens it · the rest of the row ticks it</span>
       <span>|</span>
-      {# What the colours mean, which is the one thing the header above cannot say: it
-         carries identity, this carries state, and neither duplicates the other. Real
-         swatches rather than words for them -- a legend that describes a colour in prose
-         is a legend you have to translate, and these are the same .p-* classes the slots
-         themselves use, so the legend cannot drift from what it explains. #}
+      {# The state legend, drawn with the slots' own .p-* classes so it cannot drift. #}
       <span class="legend">
         PRESENT ON:
         <b><span class="pslot p-ok"></span> has it</b>

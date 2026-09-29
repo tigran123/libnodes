@@ -1,25 +1,17 @@
 """Transfer jobs: the queue, the rsync process, and the progress stream.
 
-Design constraints this module exists to satisfy:
-
-* **Nothing blocks.** A push returns a job id immediately; progress reaches the browser
-  over SSE. The only blocking dialog in the app is the offline-push confirmation, and
-  that is a template, not a wait.
-* **One rsync at a time** (`concurrency`, default 1). The Pi's NIC shares the USB 2.0
-  bus with the disk holding the library, so two transfers do not go twice as fast —
-  they go half as fast each and spike load.
-* **`-L` is mandatory.** The library is symlinks into a content-addressed vault; without
-  `--copy-links` a device receives 100-byte dangling links instead of books.
-* **Cheap progress.** `--info=progress2` emits one aggregate line rather than a line per
-  file, and we throttle what reaches the browser to ~2 Hz.
-
-Durable job history lives in SQLite; the live bits (current file, rate, terminal ring
-buffer) stay in memory, with the full transcript on disk under `var/logs/`.
+Nothing blocks: a push returns a job at once and its progress reaches the browser over SSE.
+History lives in SQLite; the live bits (current file, rate, the terminal ring) stay in
+memory, and the whole transcript goes to `var/logs/<id>.log`. The rsync flags are the
+program's, not the config's -- each one's reason is beside BASE_FLAGS or in `build_argv`.
 """
 
 from __future__ import annotations
 
 import asyncio
+import codecs
+import contextlib
+import inspect
 import json
 import logging
 import os
@@ -34,7 +26,7 @@ from pathlib import Path
 from typing import Literal, Sequence
 
 from .config import PULL_EXCLUDES, SKIP_TOPLEVEL, Settings
-from .probe import SERVER_ALIVE_COUNT_MAX, SERVER_ALIVE_INTERVAL, DeviceProbe
+from .probe import DeviceProbe, rsync_e, ssh_base
 from .procs import reap
 from .library import LibraryIndex, blob_from_link
 from .manifests import Manifests
@@ -44,9 +36,8 @@ log = logging.getLogger(__name__)
 
 JobState = Literal["queued", "running", "done", "failed", "aborted", "deferred"]
 
-#: Which direction a job moves bytes. Not a flag on the device -- a device can only be one
-#: thing, but the *job* is what the runner branches on, and history has to keep saying
-#: which a finished job was.
+#: Which direction a job moves bytes. On the job rather than read off the device, because
+#: history has to keep saying what a finished job was.
 JobKind = Literal["push", "pull"]
 
 TERMINAL_STATES = frozenset({"done", "failed", "aborted"})
@@ -90,42 +81,23 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS ix_jobs_state ON jobs(state);
 """
 
-# The byte column has two formats and the default flags produce the second one:
-#   plain  (-P)     `        1,234,567  45%   11.34MB/s    0:00:12 (xfr#3, to-chk=9/12)`
-#   human  (-avhP)  `           734.38K   1%  334.56MB/s    0:00:00 (xfr#1, to-chk=13/16)`
-# `-h` is in `defaults.rsync_flags`, so matching only the plain form would silently
-# report 0 bytes for every real transfer.
+# Two byte formats: plain `1,234,567` and -h's `734.38K`. We never pass -h, but a parser
+# that took only digits once reported 0 bytes for every real transfer
+# (tests/data_rsync_human.log), so both are read.
 PROGRESS_RE = re.compile(
     r"^\s*([\d,]+(?:\.\d+)?[KMGTP]?)\s+(\d+)%\s+(\S+)\s+(\d+:\d\d:\d\d)"
     r"(?:\s+\(xfr#(\d+),\s+(?:ir-chk|to-chk)=(\d+)/(\d+)\))?"
 )
 
-# The closing line `stats1` buys us, and the only place rsync says what actually crossed
-# the network:
-#   `sent 2,491,047 bytes  received 4,203,364 bytes  25,997.71 bytes/sec`
-# The progress counter above is the *logical* size of the files rsync handled; when the
-# delta algorithm matches an existing copy, the two differ by orders of magnitude. A real
-# push of 98 files reported 4,379,115,438 bytes against 6.7 MB on the wire — `speedup is
-# 1,482.40`. Both numbers are true and only one of them is what the link carried.
+# rsync's closing tally (from stats1), and the only figure that is bytes on the wire rather
+# than bytes of file: one push handled 4,379,115,438 bytes of files and sent 6.7 MB.
 SUMMARY_RE = re.compile(r"^sent ([\d,]+) bytes\s+received ([\d,]+) bytes")
 
-# rsync exit 23 is "some files/attrs were not transferred" -- one code for two outcomes
-# that could not be further apart. Every diagnostic it emits is a line starting `rsync:`,
-# so the two are separable: if all of them are attribute failures then no file's *data*
-# was missed, and the push delivered everything it was asked to.
-#
-# This is not a corner case, it is the standing outcome for any target on Android's
-# *emulated* storage. `/sdcard` is not a filesystem but a FUSE shim (`/dev/fuse`) with
-# nothing underneath, and its daemon does not implement utimensat: EPERM to everyone, root
-# included. Measured on nexus10 (Android 5.1) -- `touch -t` fails there as root, and job #1
-# delivered both files byte-exact (5,117,977 and 1,002,176, verified with stat on the
-# device) and still exited 23 with nothing but two `failed to set times` lines. It was
-# drawn as a red TRANSFER FAILED. A physical card is the other case and does not do this:
-# see Device.stores_times.
-#
-# The role tag is optional because it is the *receiver* that reports this, and the rsync
-# on the far side is whatever the device ships: 3.2+ prints `rsync: [generator] failed to
-# set times on ...`, older builds print `rsync: failed to set times on ...`.
+# Exit 23 is "some files/attrs were not transferred". Every diagnostic starts `rsync:`, so
+# when all of them are attribute failures no file's data was missed. That is the standing
+# outcome on Android's emulated storage, a FUSE shim with no utimensat: job #1 on nexus10
+# delivered both files byte-exact and still exited 23. The `[generator]` tag is optional
+# because the device's rsync may predate 3.2. See Device.stores_times.
 _RSYNC_PROBLEM_RE = re.compile(r"^rsync: ", re.MULTILINE)
 _ATTR_PROBLEM_RE = re.compile(
     r"^rsync: (?:\[[^\]]+\] )?failed to set \w+", re.MULTILINE
@@ -134,136 +106,70 @@ _ATTR_PROBLEM_RE = re.compile(
 _MULT = {"": 1, "K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4, "P": 1024**5}
 _SIZE_TOKEN_RE = re.compile(r"^([\d,]+(?:\.\d+)?)([KMGTP]?)$")
 
-# We tell rsync exactly how to announce each file rather than guessing which of its
-# lines is a filename. `--out-format` takes escapes (see the log format section of
-# rsyncd.conf(5)): %i itemized change flags, %l length, %n name. The leading marker is
-# ours, so a file event can never be confused with progress output or a summary line —
-# which a filename with a % or a percentage in it otherwise could be.
-#
-#   @>f+++++++++|3000000|Science/Chess/Tal.pdf
-#   @cd+++++++++|4096|Science/Chess/
-#
-# %i is deliberately NOT included. The manpage warns that adding it "increases the
-# logging of names to mention any item that is changed in any way" — and on a FAT target
-# every file differs in permissions for ever, so a no-op run logged 24,616 lines instead
-# of nothing, and one dry run wrote 2.3 MB. Without it rsync mentions only genuine
-# updates. Directories are recognisable by their trailing slash.
+# Each file announced in a shape we chose -- `@<length>|<name>`, a directory with a trailing
+# slash -- so a filename with a % in it cannot pass for progress. No %i: on a FAT target
+# every file differs in permissions for ever, and a no-op run logged 24,616 lines of it.
 OUT_FORMAT = "@%l|%n"
 FILE_RE = re.compile(r"^@(?P<size>\d*)\|(?P<name>.*)$")
 
-# A deletion carries no `--out-format`, so it is the one event we have to recognise by
-# rsync's own wording: `deleting <path>`, with a trailing slash when it is a directory.
-#
-# It reaches us at all only because `--out-format` is set: rsync gates the message on
-# INFO_DEL, which `-v` raises and which naming an out-format raises too. Verified against
-# sigmaai.au with exactly the flags this program sends -- INFO_FLAGS names no `del`, and
-# the three `deleting` lines came out regardless. The `*deleting` spelling in the manpage
-# is the `-i` form, which we deliberately do not pass (see OUT_FORMAT), so the marker is
-# absent here and the regex must not expect it.
+# A deletion has no out-format, so it is matched on rsync's own wording. It reaches us at all
+# because naming an out-format raises INFO_DEL (verified against sigmaai.au with exactly
+# these flags). The manpage's `*deleting` is the -i form, which we never pass.
 DELETE_RE = re.compile(r"^deleting (?P<name>.+)$")
 
-# Suppress what we do not parse. flist0 drops "sending incremental file list", misc0 the
-# housekeeping chatter; stats1 keeps the closing summary, which is worth having in the
-# log. These come after the user's own flags, so they win over -v.
+# Only what we parse: one aggregate progress line and the closing stats, no chatter.
 INFO_FLAGS = "progress2,flist0,misc0,stats1"
 
-#: The transfer flags are LibNodes', not the user's. The program depends on their exact
-#: effect: -L because the library is symlinks into a CAS vault, -R so a source keeps its
-#: path on the device, --info/--out-format because the progress parser reads them. A
-#: hand-edited devices.yaml that dropped one would break the app in ways that look like
-#: bugs rather than misconfiguration, so `rsync_flags` is no longer a config key.
+#: A push's flags, which are the program's: the parser reads --info/--out-format, and a
+#: config that could drop one would break the app in ways that look like bugs.
 #:
-#: -L is the one member that is conditional, and only on a whole different kind of target:
-#: a `sync_mode: mirror` node wants the symlinks *kept*, so `build_argv` drops it there.
-#: For every reader -- which is every device this program had until then -- it is
-#: mandatory. Dropping it is only safe together with the other half of that mode: a mirror
-#: sends the whole root, so .data/ travels with the links and they still resolve on the far
-#: side. See Device.sync_mode.
-#:
-#: -h is absent on purpose: it exists to make rsync's own output pleasant for a human
-#: reading a terminal, and we format every number for display ourselves. Plain byte
-#: counts are one less thing to parse.
-#:
-#: -O (--omit-dir-times) is there for the log, not the transfer. Without it rsync wants
-#: to stamp every directory's mtime, counts each as "touched", and reports it: a dry run
-#: against an already-synced device listed 3,839 directories around the 4 files that
-#: actually mattered. Directory timestamps are meaningless on a FAT card anyway.
+#: -L is mandatory for a reader: the library is symlinks into a CAS vault, and without it a
+#: device receives dangling links while rsync reports success. A mirror drops it, which is
+#: safe only because it also sends the whole root, vault included (`build_argv`).
+#: -R keeps a source's path on the device. -O stops rsync stamping and reporting every
+#: directory: 3,839 of them around 4 real files in one dry run. No -h: we format numbers.
 BASE_FLAGS = ["-a", "-O", "--partial", "-L", "-R"]
 
-#: The same idea for the other direction, and it is a separate list because three of the
-#: five above are wrong on a pull rather than merely unnecessary:
+#: A pull's flags. Three of BASE_FLAGS are wrong in this direction, not merely unneeded:
 #:
-#: -L goes, for the mirror's reason reached from the far side. The books *are* symlinks,
-#: so dereferencing on the way in would replace 20.8k links with a second literal copy of
-#: the vault -- ~2x the disk, and the content-addressed store destroyed in the process.
-#: -a implies -l, which is what recreates them as links; verified against sigmaai.au,
-#: `cL+++++++++ Science/Geology/Vegener/…pdf -> ../../../.data/53f8…`.
+#: -L: the books *are* symlinks, and dereferencing would replace them with a second copy of
+#: the vault. -a's -l recreates them as links.
+#: -R: with a *remote* source it makes the remote's path part of the destination. Measured
+#: against sigmaai.au, `rsync -aR … host:/Books/ /Books/` wanted all 20,793 blobs under
+#: /Books/Books/, every link there dangling -- no error, no warning.
+#: --partial becomes --partial-dir: plain --partial renames an interrupted file to its final
+#: name, which in the vault is a blob that does not hash to its own name.
 #:
-#: -R goes, and this one fails silently in the worst possible way. It sends the source
-#: path as written, so with a *remote* source `-R` makes the remote's own path a component
-#: of the destination. Measured 2026-09-14 against sigmaai.au:
-#:
-#:     rsync -a -O -n -i -R --exclude=/.data/ … tigran@sigmaai.au:/Books/ /Books/
-#:     cd+++++++++ Books/
-#:     cd+++++++++ Books/.data/
-#:     >f+++++++++ Books/.data/00001b57bae9…        (and all 20,793 blobs)
-#:
-#: A whole second library at /Books/Books/, every symlink in it dangling because
-#: `../../.data/<blob>` no longer resolves -- and it broke the exclude's anchoring on the
-#: way past. No error, no warning, and nobody reads a 45,000-line dry run. A pull has
-#: exactly one source, so a plain `src/ dst/` pair is both correct and readable.
-#:
-#: --partial becomes --partial-dir, which is the deliberate deviation. On interruption
-#: plain --partial renames the partial file to its *final* name. On a device that is an
-#: accepted cost; in the vault it is a blob whose contents do not hash to the blake2b name
-#: it is sitting under, and every symlink pointing at it serves a truncated book until
-#: something notices. Same resume, and rsync auto-excludes the directory it uses.
-#:
-#: -a's -o/-g stay. The receiver here is this host, running as an ordinary user: rsync
-#: only attempts chown as super-user, and the group it would set is one we are already in
-#: (/Books is tigran:tigran on both ends). This is the one place in the program where the
-#: ownership flags are harmless, and it is because the destination is local.
-#:
-#: --delete is *not* here, and its absence from this list is not the absence it used to be:
-#: `build_pull_argv` adds it, with `--max-delete` beside it. It is kept out of the constant
-#: because this list means "always right for this direction" and a destructive flag should
-#: be read at the call site, next to the cap that bounds it.
+#: -o/-g stay: the receiver is this host as an ordinary user, so rsync never chowns.
+#: --delete is added by `build_pull_argv`, beside the cap that bounds it.
 PULL_FLAGS = ["-a", "-O", "--partial-dir=.rsync-partial"]
 
-#: How often a `--info=progress2` line is kept in the *log file*. The dock still gets
-#: every one of them — `_apply_progress` runs on all of them and the SSE push is its own
-#: 2 Hz throttle — but the log is a record a person reads afterwards, and progress2 emits
-#: a line per file-list update whether or not anything moved.
-#:
-#: Measured on job #19, a pull that had nothing left to fetch: 3,855 progress lines
-#: against 16 that said anything, in 275 KB. Every one of them read
-#: `0   0%    0.00kB/s    0:00:00 (xfr#0, ir-chk=1011/58460)` — rsync walking a 58k-entry
-#: file list and transferring nothing.
-#:
-#: 30 s rather than something finer, because the worst case is the one that matters: a
-#: cold 250 GB pull over a slow link runs for hours, and one line every 30 s is ~600 for a
-#: five-hour transfer where 5 s would be 3,600. The final line of every stream is kept
-#: regardless (see `_stream`), so a phase shorter than the interval still shows its
-#: totals rather than nothing at all.
+#: How often a progress line is kept in the *log* (the dock still gets every one). progress2
+#: prints a line per file-list update whether anything moved or not: job #19 logged 3,855 of
+#: them against 16 lines that said anything. 30 s keeps a five-hour pull to ~600, and the
+#: last line of every stream is kept regardless.
 LOG_PROGRESS_INTERVAL = 30.0
+
+#: How often a job's file-name lines reach the browser, as one batch. The dock shows the
+#: last 200 lines of a terminal; four refreshes a second is more than an eye can follow.
+LINE_BATCH = 0.25
 
 
 def _log_note(log, text: str) -> None:
-    """One of *our* lines in the job log: a command header or a phase marker.
+    """One of *our* lines in the job log -- a command or a phase marker -- timestamped.
 
-    Timestamped, because a six-phase pull spans minutes and "which step took the time"
-    is the first question anyone asks of it. Only these lines carry a clock -- rsync's
-    own output must stay exactly as rsync wrote it, because `_ATTR_PROBLEM_RE` anchors
-    on `^rsync:` with re.MULTILINE and a prefix would silently stop the exit-23 split
-    from ever finding an attribute failure. That would repaint a complete push red and
-    put it back through the retry ladder.
+    Only ours: rsync's own lines must stay as written, because `_ATTR_PROBLEM_RE` anchors on
+    `^rsync:`, and a prefix would turn every attrs-only exit 23 back into a failure.
     """
     log.write(f"[{time.strftime('%H:%M:%S')}] {text}\n")
 
-#: How many delivered filenames one job may hold in memory, so an interrupted push can
-#: still tell the manifest what landed (`_note_sent`). The whole library is 24,616 files;
-#: this clears that with room to spare, at ~60 bytes a path.
+#: Delivered names one job keeps, so an interrupted push can still credit what landed. The
+#: library is ~24.6k files.
 SENT_CAP = 50_000
+
+#: What `_stream` returns when a command cannot be spawned at all -- the shell's own "command
+#: not found". Never retried: three more attempts would fail to find the same binary.
+SPAWN_FAILED = 127
 
 
 def parse_size_token(token: str) -> int:
@@ -285,34 +191,25 @@ class Job:
     created_at: float = 0.0
     started_at: float | None = None
     finished_at: float | None = None
-    #: Transfers rsync *completed*, from the highest `xfr#N` it reported. Not the count
-    #: of @-lines: rsync prints the name when it starts a file, so the last @-line of an
-    #: interrupted run names a file that never landed.
+    #: Completed transfers, the highest `xfr#N` seen -- not the @-lines, which rsync prints
+    #: when a file *starts*.
     files_sent: int = 0
-    #: Files in the selection, from the index. Set once at submit and never overwritten,
-    #: so the denominator means the same thing in the dock, the file table and the
-    #: manifest.
+    #: Files selected, from the index at submit and never overwritten, so it means the same
+    #: in every view.
     files_total: int = 0
-    #: Files this job removed -- from the device on a mirror push, from *this host's*
-    #: library on a pull. Counted from rsync's own `deleting <path>` lines, files only:
-    #: a directory row would put a number that is not a file count under a FILES heading.
-    #: Persisted, because history has to be able to say that a job deleted something.
+    #: Files this job pruned, at either end, from rsync's `deleting` lines. Directories are
+    #: not files.
     files_deleted: int = 0
-    #: File-list entries rsync has walked past, directories included. `to-chk` counts
-    #: `Audio/` and its 9 subdirectories alongside its 234 files, which is why this is
-    #: 244 where files_total is 234 — and why the two must never share a widget.
+    #: File-list entries walked (`to-chk`), directories included -- 244 where files_total is
+    #: 234 -- so never shown as files.
     entries_done: int = 0
     entries_total: int = 0
-    #: Logical size of the files rsync has handled — progress2's counter, which is the
-    #: running sum of the @%l sizes (measured: 259,124,497 at xfr#14, byte-for-byte the
-    #: 14 preceding @ sizes). Skipped files contribute nothing. It is *not* what the
-    #: network carried: see bytes_wire.
+    #: Size of the files handled: progress2's counter, the running sum of the @-line sizes.
+    #: Not network traffic -- see bytes_wire.
     bytes_done: int = 0
     bytes_total: int = 0
-    #: What actually crossed the link, from rsync's closing `sent … received …` line, so
-    #: it only exists once the job has finished. Delta-matching makes this far smaller
-    #: than bytes_done whenever the device already holds a copy — 6.7 MB against
-    #: 4,379,115,438 on one measured push.
+    #: What crossed the link, from the closing summary, so only once finished. Delta
+    #: matching makes it far smaller than bytes_done: 6.7 MB against 4.4 GB on one push.
     bytes_wire: int = 0
     pct: float = 0.0
     exit_code: int | None = None
@@ -320,36 +217,23 @@ class Job:
     argv: list[str] = field(default_factory=list)
     attempt: int = 0
     dry_run: bool = False
-    #: Deferred, but the user asked us NOT to start it automatically. The watcher
-    #: leaves these alone; they wait for an explicit Start.
+    #: Deferred, and waiting for an explicit Start however reachable the node becomes.
     hold: bool = False
-    #: An adoption run: reconcile metadata for files the device already has, moving no
-    #: data. Recorded so the Jobs table can label it and history stays truthful.
+    #: An Adopt: repair metadata on files the device already has, moving no data.
     adopt: bool = False
-    #: This push owes the replica a catalog once its files have landed. True for a mirror
-    #: Replicate and nothing else: a reader has no catalog, and an Adopt exists to repair
-    #: metadata rather than to move a database.
+    #: A mirror Replicate, which owes the replica its catalog once the files have landed.
     catalog: bool = False
-    #: This push was the whole library, not a selection out of it — Full Sync, or its
-    #: Dry run. It is what lets `Device.prune` mean `--delete`, and it is persisted for
-    #: the reason `dry_run` is: `retry` replays a stored row, and a retry that quietly
-    #: dropped the prune would report a different transfer under the same label.
+    #: The whole library rather than a selection: half of what lets `Device.prune` add
+    #: --delete. Persisted so `retry` re-derives the same transfer.
     full_library: bool = False
-    #: Which direction this job moves bytes. "push" is every job this program had until
-    #: `sync_mode: upstream`; "pull" reads from the device and writes into library_root,
-    #: in six phases rather than one rsync. Persisted because history has to say what a
-    #: job *was* -- and because `retry` re-derives from it.
+    #: "push", or "pull" -- six phases, writing into library_root. Persisted for history
+    #: and for `retry`.
     kind: JobKind = "push"
 
     # Live-only, never persisted.
-    #: Set when a transfer delivered its files but could not refresh the catalog beside
-    #: them — in either direction. The dock draws amber for it: the transfer really did
-    #: land, and a green banner over a stale catalog is the same small lie a plain green
-    #: SYNC COMPLETE over exit 23 would be.
+    #: The files landed but the catalog beside them was not refreshed; the dock draws amber.
     catalog_warning: str = ""
-    #: Which of a pull's six phases is running, for the dock. Deliberately separate from
-    #: `pct`, which keeps meaning the transfer and nothing else: a bar reading 100% with
-    #: three phases to go is the same class of lie as labelling `to-chk` "files".
+    #: The phase running, for the dock. Separate from `pct`, which means the transfer only.
     phase: str = ""
     current_file: str = ""
     rate: str = ""
@@ -371,28 +255,17 @@ class Job:
 
     @property
     def command(self) -> str:
-        return " ".join(shlex.quote(a) for a in self.argv)
-
-    @property
-    def state_badge(self) -> str:
-        return {
-            "running": "badge-accent",
-            "queued": "badge",
-            "deferred": "badge-warn",
-            "done": "badge-ok",
-            "failed": "badge-err",
-            "aborted": "badge-err",
-        }[self.state]
+        return shlex.join(self.argv)
 
 
 @dataclass
 class JobEvent:
     """A change worth pushing to the browser. Rendered to HTML by the route layer."""
 
-    kind: Literal["progress", "line", "done", "dock", "devices"]
+    kind: Literal["progress", "line", "done", "dock"]
     job_id: int | None = None
-    text: str = ""
-    css: str = ""
+    #: For `line`: the terminal lines since the last one, as `(css, text)`.
+    lines: list[tuple[str, str]] = field(default_factory=list)
 
 
 class JobStore:
@@ -404,13 +277,9 @@ class JobStore:
         conn = self._connect()
         try:
             conn.executescript(SCHEMA)
-            # Additive migrations for databases created by an earlier version. SQLite
-            # has no ADD COLUMN IF NOT EXISTS, so ask first.
-            #
-            # files_sent/entries_* replaced a single files_done that conflated "files
-            # transferred" with "file-list entries examined". The old column is left
-            # alone rather than migrated: its rows hold the entry count, and quietly
-            # relabelling those as transfers is the exact confusion being fixed here.
+            # Additive migrations for older databases; SQLite has no ADD COLUMN IF NOT
+            # EXISTS. The retired `files_done` is left alone: it held entry counts, and
+            # relabelling them as transfers is the confusion files_sent fixed.
             existing = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
             for column, ddl in (("hold", "INTEGER DEFAULT 0"),
                                 ("adopt", "INTEGER DEFAULT 0"),
@@ -582,50 +451,28 @@ def _job_from_row(row: sqlite3.Row) -> Job:
         argv=json.loads(row["argv"] or "[]"),
         attempt=row["attempt"] or 0,
         dry_run=bool(row["dry_run"]),
-        hold=bool(row["hold"] if "hold" in row.keys() else 0),
-        adopt=bool(row["adopt"] if "adopt" in row.keys() else 0),
-        kind=(row["kind"] if "kind" in row.keys() else None) or "push",
-        catalog=bool(row["catalog"] if "catalog" in row.keys() else 0),
-        full_library=bool(
-            row["full_library"] if "full_library" in row.keys() else 0
-        ),
+        # The columns always exist: JobStore.__init__ adds any an older database lacks.
+        hold=bool(row["hold"]),
+        adopt=bool(row["adopt"]),
+        kind=row["kind"] or "push",
+        catalog=bool(row["catalog"]),
+        full_library=bool(row["full_library"]),
     )
+
+
+def _connect_timeout(device: Device, defaults) -> int:
+    return min(device.timeout_with(defaults), 30)
 
 
 def _ssh_transport(device: Device, defaults) -> list[str]:
     """The `-e <ssh command>` pair, shared by every rsync this module composes.
 
-    Extracted so the push and the pull cannot drift on it. They are two builders because
-    almost every *transfer* flag means something different in each direction, but the
-    transport means the same thing both ways, and a keepalive that applied to pushes only
-    would be the kind of difference nobody notices until a pull wedges behind a dead
-    master. Pinned by tests/test_ssh_keepalive.py.
+    The same ssh the probe uses (`probe.ssh_base`), keepalives included: both ride the one
+    multiplexed master the Pi's ssh config opens per device, so a transfer that disagreed
+    with the probe would either inherit its settings anyway or wedge behind a dead master.
+    Pinned by tests/test_ssh_keepalive.py.
     """
-    timeout = device.timeout_with(defaults)
-    ssh_bits = ["ssh", "-p", str(device.effective_port)]
-    if device.identity:
-        ssh_bits += ["-i", str(device.identity)]
-    ssh_bits += [
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        f"ConnectTimeout={min(timeout, 30)}",
-        "-o",
-        "StrictHostKeyChecking=accept-new",
-        # The same keepalives the probe uses, and for the same reason: both ride the one
-        # multiplexed master the Pi's ssh config creates per device, so a transfer that
-        # disagreed with the probe about it would either inherit the probe's settings
-        # anyway (whoever opened the master wins) or wedge behind a dead one. Only fires
-        # on total silence, which a running transfer never produces. See ssh_argv.
-        "-o",
-        f"ServerAliveInterval={SERVER_ALIVE_INTERVAL}",
-        "-o",
-        f"ServerAliveCountMax={SERVER_ALIVE_COUNT_MAX}",
-    ]
-    extra = device.effective_ssh_options
-    if extra:
-        ssh_bits += shlex.split(extra)
-    return ["-e", " ".join(shlex.quote(b) if " " in b else b for b in ssh_bits)]
+    return ["-e", rsync_e(device, _connect_timeout(device, defaults))]
 
 
 def build_argv(
@@ -637,33 +484,21 @@ def build_argv(
     adopt: bool = False,
     whole_library: bool = False,
 ) -> list[str]:
-    """Compose the rsync command as an argv list — never a shell string.
+    """Compose a push as an argv list, never a shell string.
 
-    Run with `cwd=library_root` and `-R`, so a source of `Science/Philology/` lands at
-    `<target>/Science/Philology/` and several sources can share one invocation while
-    keeping the library's shape on the device.
+    Run with `cwd=library_root` and `-R`, so `Science/Philology/` lands at
+    `<target>/Science/Philology/` and several sources share one invocation. The mode is
+    read off the device, so every caller -- the Actions previews included -- gets it.
 
-    The mode is read off the device rather than passed in, so every caller — including the
-    three preview renders in `routes/devices.py` — gets it without opting in.
-
-    `whole_library` is the one thing a caller must say, because it is not a fact about the
-    device: it means "these sources are the entire library", which is what a reader's
-    `prune` needs before it may add `--delete`. It defaults to False, so the direction a
-    forgetful caller falls in is the one that deletes nothing — the opposite of the reason
-    the pull is a separate function.
+    `whole_library` is the one thing a caller must say: "these sources are the entire
+    library", which a reader's `prune` needs before --delete. Its default is the side that
+    deletes nothing.
     """
     defaults = config.defaults
 
-    # First, above everything, because this is the only guard that no caller can opt out
-    # of: `JobRunner.submit` composes the argv for every writing path there is, so a route
-    # that was never taught about upstream -- or `retry`, which replays a stored job's
-    # sources long after the routes were fixed -- still cannot get a transfer aimed at the
-    # library's source. `_preview` already turns a ValueError into "unavailable — …", so
-    # the Actions dialog degrades readably rather than 500ing.
-    #
-    # This is also why the pull is `build_pull_argv` and not `build_argv(direction=...)`:
-    # a parameter's default would be the dangerous direction, and a caller that forgot the
-    # keyword would compose a push.
+    # First, because no caller can opt out of it: `JobRunner.submit` composes every writing
+    # path, `retry` and restart re-adoption included, so a route never taught about
+    # upstream still cannot aim a transfer at the library's source.
     if device.is_upstream:
         raise ValueError(
             f"{device.id}: sync_mode upstream is a pull source — "
@@ -673,9 +508,7 @@ def build_argv(
     mirror = device.is_mirror
 
     if mirror:
-        # Both guards exist because of --delete below. In books mode a wrong source list
-        # transfers the wrong thing; here it *removes* the right thing, so neither case
-        # may be allowed to reach rsync.
+        # With --delete below, a wrong source list or a root target is data loss.
         if not sources:
             raise ValueError(
                 f"{device.id}: refusing a mirror push with no sources — "
@@ -687,12 +520,10 @@ def build_argv(
                 "--delete needs a target below the root"
             )
 
-    # LibNodes owns the transfer flags. See BASE_FLAGS.
     argv = [
         "rsync",
-        # A mirror keeps the CAS shape, so the one flag that translates it comes out. See
-        # BASE_FLAGS: this is the only place -L is ever absent, and it is only safe because
-        # the source below is the whole root, vault included.
+        # The only place -L is ever absent: safe because a mirror's source is the whole
+        # root, vault included.
         *(f for f in BASE_FLAGS if not (mirror and f == "-L")),
         f"--info={INFO_FLAGS}",
         f"--out-format={OUT_FORMAT}",
@@ -700,73 +531,33 @@ def build_argv(
     if dry_run:
         argv.append("-n")
 
-    # The live catalog never rides in the bulk pass. lib.db, lib.db-wal and lib.db-shm are
-    # one WAL-mode database that this host's own urantia-library is writing, and rsync
-    # reads the three at three different instants -- a checkpoint landing between them
-    # hands the replica a catalog that is torn or missing its most recent commits. The
-    # same fact the pull established, pointed the other way. `_replicate_catalog` sends a
-    # `Connection.backup` snapshot instead, which is consistent by construction.
-    #
-    # Named one by one rather than excluding /.data/db/, so `backups/` and anything else
-    # that lives there still replicates.
+    # The live catalog never rides in the bulk pass; `_replicate_catalog` sends a
+    # consistent snapshot afterwards.
     if mirror:
-        rel = catalog_rel(settings)
-        if rel:
-            argv.append(f"--exclude=/{rel}")
-            for side in CATALOG_SIDECARS:
-                argv.append(f"--exclude=/{rel}{side}")
-            argv.append(f"--exclude=/{rel}{REPLICATE_SUFFIX}")
+        argv += _catalog_excludes(settings, REPLICATE_SUFFIX)
 
-    # A replica that keeps what the Pi dropped is not a replica. Deliberately kept under
-    # -n as well: a mirror dry run is the only way to read what a prune would remove
-    # before it removes it, which makes it the safety feature rather than the hazard.
-    #
-    # Not on an adopt. That run exists to repair timestamps on files already in place --
-    # pairing "change nothing" with "delete whatever does not match" would be a trap.
+    # A replica keeps nothing the origin dropped. Kept under -n too: the dry run is the only
+    # preview of a prune. Never on an Adopt, whose promise is "change nothing".
     if mirror and not adopt:
         argv.append("--delete")
 
-    # The third place in this program that emits --delete, and the only one aimed at a
-    # reader. Four things have to be true at once, and each rules out a different way of
-    # arriving here with the wrong scope:
+    # The only --delete aimed at a reader, and four facts must hold at once: the node asked
+    # (`prune`), it takes the whole library (`full_sync`, re-checked for `retry`), *these*
+    # sources are the library rather than a subtree (a Push of `Science/` must never prune
+    # Science/), and it is not an Adopt.
     #
-    #   device.prune       the node said so in devices.yaml. Off by default, because the
-    #                      promise Full Sync has made until now is "adds and updates only"
-    #                      and a node that has not opted in keeps it.
-    #   device.full_sync   the node takes the whole library at all. Checked again here
-    #                      rather than trusted from the route, for `retry`'s sake.
-    #   whole_library      *these sources* are the library, not a selection out of it. A
-    #                      subtree Push must never carry this: --delete prunes the
-    #                      directories in the transfer, so a push of `Science/` would mean
-    #                      "and remove everything under Science/ that is not in the
-    #                      library" under a button that says Push.
-    #   not adopt          an Adopt is --size-only: "change nothing" paired with "delete
-    #                      whatever does not match" is a trap, exactly as for a mirror.
-    #
-    # Scope, and it is the mirror's lesson read the other way round: rsync prunes only
-    # inside the directories it is transferring, and a reader's sources are the *named*
-    # top-level categories, so the destination root is never scanned. That is why this one
-    # is not `./`. A name the device holds and the library has never had -- `Websites/` on
-    # s4l, koreader's own directories on a device whose target is not a dedicated Books
-    # tree -- survives untouched, and only divergence *inside* the library's own shape is
-    # pruned. Measured against s4l 2026-09-20: 20 `deleting` lines, 19 of them the `.sdr`
-    # sidecars KOReader writes beside each book, 1 a book genuinely retired from the
-    # library. That ratio is why `excludes` is half the feature: rsync never deletes what
-    # an --exclude matched, so `*.sdr/` in devices.yaml takes the same run to exactly 1.
-    #
-    # No --max-delete, unlike the pull. The cap there exists because a pull prunes *this
-    # host's library* -- the original -- and a half-mounted upstream reads as "delete
-    # everything". Here, as on a mirror, the thing at risk is a replica of a
-    # content-addressed library that this host still holds in full, and the honest preview
-    # is the Dry run, which carries the flag for exactly that reason.
+    # The sources are the named top-level categories, so rsync never scans the destination
+    # root: a name the library never had (`Websites/` on s4l) survives, and only divergence
+    # inside the library's shape is pruned. Inside it, `excludes` survive -- measured against
+    # s4l on 2026-09-20: 20 `deleting` lines, 19 of them KOReader's `.sdr` sidecars; with
+    # `*.sdr/` excluded, 1. No --max-delete, unlike a pull: what is at risk is a replica of
+    # a library this host still holds in full, and the Dry run is the preview.
     prune = (
         whole_library and device.prune and device.full_sync and not mirror and not adopt
     )
     if prune:
-        # The same two refusals as a mirror's, and for the same reason: with --delete on,
-        # a wrong source list or a target that normalises to the root is data loss rather
-        # than a wrong transfer. An empty `sources` is what `full_sync_sources` returns
-        # when it cannot read the library root at all.
+        # A mirror's two refusals, for its reason. An empty list is what
+        # `full_sync_sources` returns when it cannot read the library root.
         if not sources:
             raise ValueError(
                 f"{device.id}: refusing a pruning full sync with no sources — "
@@ -779,94 +570,41 @@ def build_argv(
             )
         argv.append("--delete")
 
-    # The target filesystem decides, not the device type: an ext4 Linux node keeps full
-    # archive semantics, a FAT card does not get chmod attempts it can only fail.
-    #
-    # All three, because a filesystem with no permission bits has no owner or group
-    # either -- FAT takes both from the mount's uid=/gid= (the Kobo's /mnt/onboard is
-    # `vfat rw,noatime,fmask=0022,dmask=0022`, no uid= at all), so there is nothing on
-    # disk for -a's -o and -g to write. Left in, rsync -- as root, which is every node
-    # here but the ThinkPad -- calls chown on every directory and every temp file, and
-    # the vfat driver returns EPERM to root like everyone else.
-    #
-    # The exit 23 is the cheap half. The expensive half is that a file whose chown
-    # failed never gets its mtime stamped either, so it is left carrying the *transfer*
-    # time, fails the next push's size+mtime quick check, and is re-sent -- for ever,
-    # exactly like the FAT rounding --modify-window exists to stop, reached from the
-    # other side. Measured against the live Kobo on 5 books already byte-identical:
-    #
-    #   --no-perms                              xfr#5, 105,310 B wire, exit 23
-    #   --no-perms --no-owner --no-group        xfr#5, 103,915 B wire, exit 0   (repairs)
-    #   ... and again                           xfr#0,     415 B wire, exit 0
-    #
-    # Three runs, because the middle one is the repair: the mtimes it finally wrote are
-    # what makes the third quiet. Job #9 had gone the other way -- 5 books delivered
-    # byte-for-byte, 8 `rsync: chown ... failed: Operation not permitted (1)` lines,
-    # exit 23, retried to attempt=3, and the whole transfer queued to happen again next
-    # time.
-    #
-    # Not caught by is_attrs_only, and deliberately not taught to it: that whitelist
-    # only knows `failed to set <attr>`, and forgiving the exit would have left the
-    # re-send loop untouched. The fix for a syscall that cannot succeed on this
-    # filesystem is to stop making it.
-    #
-    # Android's emulated storage is why this took until now to show up: sdcardfs fakes
-    # chown as a silent no-op, so every nexus10 push in the log has 0 of these lines.
-    # A real FAT driver is the honest one.
+    # The target filesystem decides, not the device type. All three flags, because a
+    # filesystem with no permission bits has no owner either -- FAT takes both from the
+    # mount -- and rsync as root otherwise chowns every file, which vfat refuses. A file
+    # whose chown failed never gets its mtime stamped, so it is re-sent on every push.
+    # Measured against the Kobo on 5 byte-identical books: `--no-perms` alone xfr#5 and exit
+    # 23; all three xfr#5 and exit 0 (the repair); again xfr#0, 415 B. Deliberately not
+    # forgiven in `is_attrs_only` instead: that would hide the re-send loop, not end it.
     if not device.fs_profile.perms:
         argv += ["--no-perms", "--no-owner", "--no-group"]
 
-    # FAT stores the seconds field in units of two, so a timestamp rsync wrote reads back
-    # up to a second earlier and rsync's exact comparison calls the file changed. Left
-    # uncompensated this re-sent 8,786 of 24,620 files on every push to a real FAT32 SD
-    # card; --modify-window=1 took that to 0. It is per-filesystem for the same reason
-    # --no-perms is: on ext4 the timestamps are exact and worth comparing exactly.
+    # FAT's seconds come in twos, so a stamped time reads back up to a second early:
+    # 8,786 of 24,620 files re-sent on every push to a FAT32 card, 0 with the window.
+    # Per filesystem, because on ext4 the exact comparison is the point.
     if device.fs_profile.modify_window:
         argv.append(f"--modify-window={device.fs_profile.modify_window}")
 
     if adopt:
-        # Adoption: the device already holds the files, but they carry the mtimes of
-        # however they were copied there, so rsync's default size+mtime check wants to
-        # re-send all of them. --size-only makes it trust matching sizes and skip the
-        # transfer, while -a still repairs the mtimes on those skipped files. Measured
-        # against a real device: 51.6 MB / 14 files reconciled in 0.66s, 0 bytes moved,
-        # after which an ordinary sync itemises nothing at all.
-        #
-        # Only --size-only. Permissions are the filesystem's business, decided above:
-        # forcing --no-perms here too would quietly weaken an adopt onto ext4, where
-        # the permissions are real and worth repairing.
+        # The files are there with the wrong mtimes; --size-only skips them while -a still
+        # repairs the times. Measured: 51.6 MB / 14 files reconciled in 0.66 s, 0 bytes
+        # moved, and an ordinary sync itemises nothing afterwards.
         argv.append("--size-only")
 
-    # A target that cannot store an mtime at all — Android's emulated storage, declared
-    # with `stores_times: false` (a path fact, not a platform one: see Device.stores_times,
-    # where the physical-card case that works is written down beside it). Both flags,
-    # because neither works alone and each fixes a different half of the same fact.
-    # Measured on nexus10 against files byte-identical to the source, with `-n -i`:
+    # A target that cannot store an mtime (see Device.stores_times) needs both flags.
+    # Measured on nexus10 against byte-identical files, `-n -i`:
     #
     #   -a                 <f..t......   re-sends every push   exit 23
     #   -a --no-times      <f..T......   re-sends every push   exit 0
     #   -a --size-only     .f..t......   sends nothing         exit 23
     #   -a --size-only --no-times        sends nothing         exit 0
     #
-    # `<` is data on its way; `.` is nothing sent. --size-only stops rsync comparing an
-    # mtime that can never match, and --no-times stops it then trying to write one it can
-    # never write — which is what the remaining exit 23 in row three is. Only the pair
-    # gives a clean run, which is why this is not two independent settings.
-    #
-    # --size-only is Adopt's alone everywhere else, and deliberately so: sizes usually
-    # match precisely *because* content diverged in place. The exception is confined to a
-    # node that has declared it cannot store the alternative, and the library being
-    # content-addressed is what makes it affordable — a changed book gets a new blake2b
-    # blob, and `scan`/Adopt compares those hashes rather than sizes.
-    #
-    # --modify-window is still emitted above and is inert here, times being uncompared.
-    # It stays: it is a fact about the filesystem, this is a fact about the mount, and
-    # tangling the two would make each harder to reason about than the dead flag is.
+    # The one exception to "--size-only is Adopt's": affordable because a changed book gets
+    # a new blob, which a scan compares. --modify-window above is inert here and stays.
     if not device.stores_times:
         argv.append("--no-times")
-        if not adopt:
-            # Adopt has already added it, and rsync would take it twice happily enough;
-            # an argv that says a thing once is easier to read in the log header.
+        if not adopt:  # Adopt already added it
             argv.append("--size-only")
 
     bandwidth = device.bandwidth_with(defaults)
@@ -879,13 +617,9 @@ def build_argv(
 
     root = Path(settings.library_root)
     if mirror:
-        # One source, the root itself, and it has to be this way round: --delete only
-        # prunes directories that are part of the transfer. Hand rsync the top-level names
-        # and it cleans inside each of them while never once scanning the destination root,
-        # so a file or a whole directory that exists only on the device outlives every
-        # replicate. `./` makes the transfer root the destination root, which is what a
-        # replica means. `.` rather than `""`: an empty relative source appends a bare "/"
-        # and defeats -R.
+        # The root itself: --delete prunes only directories in the transfer, so with the
+        # top-level names enumerated a stray top-level file outlives every replicate
+        # (measured on a local pair). `./`, not `""`, which would defeat -R.
         argv.append("./")
     else:
         for src in sources:
@@ -913,82 +647,43 @@ def full_sync_sources(settings: Settings) -> list[str]:
 
 
 def mirror_sources(settings: Settings) -> list[str]:
-    """Every top-level entry, with nothing held back. The mirror counterpart.
+    """Every top-level entry, sorted, with nothing held back: the mirror's whole root.
 
-    Three differences from `full_sync_sources`, and each is the point rather than an
-    oversight:
+    No SKIP_TOPLEVEL -- the vault is mandatory when the symlinks are kept, `Recommended/`
+    costs a few hundred bytes as links, and urantia-library/ is the mode's declared cost --
+    and files as well as directories.
 
-    * **No SKIP_TOPLEVEL.** `.data/` stops being optional and becomes mandatory — a
-      mirror keeps the symlinks, so without the vault beside them every one of them
-      dangles, which is the exact failure `-L` exists to prevent, reached from the other
-      side. `urantia-library/` goes because a replica of the Pi's /Books is what was
-      asked for; that is the mode's whole cost, and it is confined to nodes that name it.
-    * **`Recommended/` too.** It is skipped for a reader *because* `-L` would expand its
-      companion symlinks into a second full copy of every recommended book. Preserved as
-      links they cost a few hundred bytes, so the reason not to send it does not apply.
-    * **Files as well as directories**, so CLAUDE.md, exclude.txt and the dotfiles at the
-      root are replicated rather than silently dropped.
-
-    Note what these names are *for*. They are the job's logical sources — what
-    `_estimate` prices, what `_update_manifest` records, what the row says was pushed —
-    and not what rsync is handed. `build_argv` passes a mirror one source, `./`, because
-    `--delete`'s scope is the directories in the transfer: with the names enumerated,
-    rsync prunes inside `Science/` but never looks at the destination root, so a stray
-    top-level file survives every replicate for ever. Measured on a local pair — an
-    enumerated run left `Leftover.pdf` and a whole orphaned `OldCat/` in place, `./`
-    removed both. An empty list here therefore still means "refuse", because the guard is
-    about whether we know what the library holds, not about argv length.
-
-    Sorted, so the job's source list is stable between runs and diffable in the log.
+    These are the job's *logical* sources, what `_estimate` prices and `_update_manifest`
+    records; rsync itself is handed `./` (see `build_argv`). An empty list still means
+    "refuse": it says we could not read the library.
     """
     root = Path(settings.library_root)
     try:
         return sorted(e.name for e in os.scandir(root))
     except OSError:
-        # build_argv refuses an empty mirror source list rather than running --delete
-        # against nothing. Returning [] here is what hands it that decision.
         return []
 
 
 def _ssh_command(device: Device, defaults, remote: str) -> list[str]:
-    """`ssh … user@host <one already-quoted remote command>`.
+    """`ssh … user@host <remote>`, with `remote` **one** already-quoted word.
 
-    The transport is split back out of `_ssh_transport` rather than assembled a second
-    time, so the two ssh invocations a pull makes -- the catalog snapshot and its cleanup
-    -- travel the same keepalives and BatchMode as the transfer beside them.
-
-    `remote` is **one** element, and that is the whole point of this function existing.
-    ssh does not pass argv through: it joins everything after `user@host` with single
-    spaces and hands the result to a shell on the far side, so a tidy-looking argv list
-    arrives *unquoted* and is re-split on whitespace. Measured, job #18 -- the snapshot
-    script went out as a list and came back:
-
-        File "<string>", line 1
-            import
-                  ^
-        SyntaxError: Expected one or more names after 'import'
-        bash: -c: line 2: syntax error near unexpected token `('
-
-    The log is no help, because `_stream` writes the argv back out shlex-quoted, so it
-    printed the command as it should have been sent rather than as it was. Quote here,
-    pass one string, exactly as `probe._readings_script` has always done.
+    ssh does not pass argv through: it joins everything after `user@host` with spaces for a
+    shell on the far side, so a list arrives unquoted and re-split. Job #18's snapshot script
+    came back as `SyntaxError` and `bash: syntax error near unexpected token` -- while its log
+    showed the command correctly quoted, because the log re-quotes the argv.
     """
-    _, transport = _ssh_transport(device, defaults)
     return [
-        *shlex.split(transport),
+        *ssh_base(device, _connect_timeout(device, defaults)),
         f"{device.effective_user}@{device.host}",
         remote,
     ]
 
 
 def catalog_rel(settings: Settings) -> str | None:
-    """Where the catalog sits *inside* the library, as a relative path — or None.
+    """The catalog's path inside the library, or None if `catalog_db` lies outside it.
 
-    An upstream node is the same tree shape as we are, which is what makes this derivable
-    rather than another thing to configure: the remote copy is `<target>/<this>`. If
-    `catalog_db` has been pointed somewhere outside `library_root`, there is no honest
-    answer and this says so rather than guessing — the caller then runs the transfer and
-    reports the catalog phase as unavailable.
+    A CAS node has our tree's shape, so the remote copy is `<target>/<this>` with nothing
+    to configure. None makes the catalog phase report itself unavailable.
     """
     try:
         return str(Path(settings.catalog_db).relative_to(Path(settings.library_root)))
@@ -996,36 +691,60 @@ def catalog_rel(settings: Settings) -> str | None:
         return None
 
 
-#: rsync only ever transfers the database itself. The -wal and -shm beside it belong to
-#: whichever process last had the file open and are meaningless next to a snapshot, so the
-#: catalog phase deletes the local pair rather than copying the remote one.
+def _require_catalog_rel(settings: Settings) -> str:
+    """`catalog_rel`, for a builder that has nothing to build without it."""
+    rel = catalog_rel(settings)
+    if rel is None:
+        raise ValueError(
+            f"catalog_db {settings.catalog_db} is not inside library_root "
+            f"{settings.library_root} — there is no remote path to derive"
+        )
+    return rel
+
+
+def _catalog_excludes(settings: Settings, snapshot_suffix: str) -> list[str]:
+    """Keep the live catalog out of a bulk pass: the database, its WAL pair and the named
+    snapshot, one by one. rsync reads a WAL database's three files at three instants, so a
+    checkpoint between them hands over a torn catalog; it travels in its own phase instead.
+    By name rather than `/.data/db/`, so anything else living there still moves."""
+    rel = catalog_rel(settings)
+    if not rel:
+        return []
+    return [f"--exclude=/{rel}{side}" for side in ("", *CATALOG_SIDECARS, snapshot_suffix)]
+
+
+def _one_file_rsync(device: Device, config: DevicesFile, dry_run: bool = False) -> list[str]:
+    """The head of an rsync that moves one named file. No -R (see PULL_FLAGS) and
+    --partial-dir, so an interrupted catalog never lands under the real name."""
+    argv = [
+        "rsync",
+        "-a",
+        "--partial-dir=.rsync-partial",
+        f"--info={INFO_FLAGS}",
+        f"--out-format={OUT_FORMAT}",
+    ]
+    if dry_run:
+        argv.append("-n")
+    return argv + _ssh_transport(device, config.defaults)
+
+
+#: A WAL database's sidecars. Never transferred -- they belong to whichever process last
+#: had the file open -- and removed before a new catalog lands.
 CATALOG_SIDECARS = ("-wal", "-shm")
 
-#: The snapshot the upstream takes of its own live catalog, beside the catalog. Not in
-#: `.data/staging/` — that is the far end's upload area and not ours to write into.
+#: Where the upstream snapshots its own catalog: beside it, not in the far end's staging.
 SNAPSHOT_SUFFIX = ".pull-snapshot"
 
-#: Taken with the remote's webapp still serving. `Connection.backup` reads a WAL database
-#: without blocking its writer and yields a consistent copy as of the moment it starts,
-#: which is the entire reason production is never stopped for a pull. Measured against the
-#: live catalog on sigmaai.au, service up, into `:memory:` so nothing was written:
-#: 82 tables, 7,224 pages, 1.07 s.
-#:
-#: python3 rather than the sqlite3 CLI because sigmaai.au has no sqlite3 binary and does
-#: have python3 3.14.4 / sqlite 3.46.1. The source is opened read-write on purpose: a
-#: read-only connection to a WAL database still has to map the -shm, and this script
-#: issues no writes.
-#:
-#: One line, no newlines. It has to survive being handed to a remote shell as a quoted
-#: word (see `_ssh_command`), and a single line is also the one that reads back sensibly
-#: in the job log, where it appears beside six other commands.
+#: The upstream's snapshot, taken with its webapp still serving: `Connection.backup` reads a
+#: WAL database without blocking its writer (82 tables, 7,224 pages, 1.07 s on sigmaai.au).
+#: python3 because that host has no sqlite3 binary. Opened read-write because a read-only
+#: WAL connection still maps the -shm; it writes nothing. One line, so it survives the
+#: remote shell as one quoted word and reads back in the log.
 _SNAPSHOT_PY = (
     "import sqlite3,sys,os; "
     "s=sqlite3.connect(sys.argv[1]); d=sqlite3.connect(sys.argv[2]); "
     "s.backup(d); d.close(); s.close(); "
-    # Double quotes inside, single quotes outside: shlex wraps the whole script in single
-    # quotes, so a single quote *in* it comes back as the unreadable '"'"' dance in every
-    # log line that carries the command.
+    # Double quotes inside, because shlex wraps the script in single ones.
     'print("# snapshot %d bytes" % os.path.getsize(sys.argv[2]))'
 )
 
@@ -1036,52 +755,21 @@ def build_pull_argv(
     settings: Settings,
     dry_run: bool = False,
 ) -> list[str]:
-    """Compose the long pass of a pull: the remote's whole library, into ours.
+    """Compose a pull's long pass: the remote's whole library, into ours.
 
-    The counterpart to `build_argv`, and a separate function rather than a `direction`
-    parameter on it. Almost every branch in that one is a fact about *the device as a
-    destination* — `--no-perms --no-owner --no-group` from its filesystem, `--modify-window`
-    from FAT's two-second resolution, `--size-only`/`--no-times` from a mount with no
-    utimensat — and on a pull the destination is this host's ext4, so all of them are wrong
-    or inert. Threading a direction through would mean guarding each with `if not pull`
-    inside a function whose comments are its documentation. The disqualifying part is the
-    default: a `direction=` parameter's default would be the dangerous direction, and a
-    caller who forgot the keyword would compose a push.
+    A separate function, not `build_argv(direction=…)`: that one's branches are facts about
+    the device *as a destination* (perms, FAT's window, --no-times), all wrong here, and a
+    `direction` parameter's default would be the dangerous direction. The fixture's upstream
+    declares `fs: vfat` and `stores_times: false` so their absence is proved by construction.
 
-    Absence here is structural, not conditional. None of those flags is emitted, on any
-    node, whatever it declares — pinned by giving the fixture an upstream node with
-    `fs: vfat` and `stores_times: false` and asserting none appear, which proves absence by
-    construction rather than by luck.
-
-    **`--delete` is here, and it is the only flag in the program that removes files from
-    *this* host.** It was absent for a year, deliberately, and that was wrong in a way that
-    only showed up slowly: an upstream is the library's source of truth, so a book it
-    deletes is a book that should go -- and without the flag /Books here only ever grew,
-    holding the stale symlink, its blob and its cover for ever while the Library view
-    showed a book production had retired. Measured against sigmaai.au on 2026-09-19, after
-    four months of pulls: three objects, `Number of created files: 0`.
-
-    Three things bound it, and none of them is a branch that could be got wrong:
-
-    * **The excludes protect themselves.** rsync does not delete what an `--exclude`
-      matched, so /Unsorted/ (55 GB), /urantia-library/ (this host's own secrets.env),
-      /.data/staging/ and the catalog files survive a prune without anything here saying
-      so twice. Confirmed by the same dry run, which left all of them alone.
-    * **`--max-delete`**, from `Settings.pull_max_delete`. The failure this exists for is
-      an upstream that is only half there: an unmounted /Books presents an almost empty
-      file list, and the honest reading of that is "delete everything". See the setting for
-      why the cap is 1000 and why a negative value, not zero, is what removes it.
-    * **The dry run is the preview**, exactly as it is for a mirror -- and `--max-delete`
-      applies under `-n` too, so a prune too large to allow is refused *before* it is run.
-
-    The mirror's `--delete` still points outward and this one points inward; neither is a
-    key a devices.yaml can invent, and `build_catalog_argv` has no `--del` of any kind
-    because it names one file on both sides.
+    `--delete` is the only flag that removes files from *this* host: an upstream is the
+    source of truth, and without it /Books only grew (three stale objects after four months,
+    measured 2026-09-19). Bounded by the excludes, which rsync never deletes; by
+    `--max-delete` (see `Settings.pull_max_delete`), for an upstream that is half mounted;
+    and by the dry run, under which the cap applies too.
     """
     if not device.is_upstream:
-        # The reverse of build_argv's refusal, and the pair is the point: one function can
-        # only aim at a device, the other can only read from a source, and neither can be
-        # talked into the other's direction.
+        # The reverse of build_argv's refusal: neither can be talked into the other's direction.
         raise ValueError(
             f"{device.id}: only a sync_mode upstream node is pulled from"
         )
@@ -1099,19 +787,9 @@ def build_pull_argv(
     for pattern in device.pull_excludes_with(PULL_EXCLUDES):
         argv.append(f"--exclude={pattern}")
 
-    # The catalog files by name, not the directory that holds them: excluding /.data/db/
-    # wholesale would mean anything else living there is never pulled at all, and the point
-    # of the phasing is to confine the quiet window to exactly the file that needs one.
-    rel = catalog_rel(settings)
-    if rel:
-        argv.append(f"--exclude=/{rel}")
-        for side in CATALOG_SIDECARS:
-            argv.append(f"--exclude=/{rel}{side}")
-        argv.append(f"--exclude=/{rel}{SNAPSHOT_SUFFIX}")
+    argv += _catalog_excludes(settings, SNAPSHOT_SUFFIX)
 
-    # After every --exclude, so the two are read together: the excludes are what keeps
-    # this from being a whole-library prune, and rsync protects a path it was told to skip
-    # rather than needing --filter=P rules of its own.
+    # After the excludes, which are what keeps this from being a whole-library prune.
     argv.append("--delete")
     if settings.pull_max_delete >= 0:
         argv.append(f"--max-delete={settings.pull_max_delete}")
@@ -1145,22 +823,8 @@ def build_catalog_argv(
     place, so the swap itself is atomic; the service stop exists so nothing holds the old
     file open and so the stale -wal beside it can go first.
     """
-    rel = catalog_rel(settings)
-    if rel is None:
-        raise ValueError(
-            f"catalog_db {settings.catalog_db} is not inside library_root "
-            f"{settings.library_root} — there is no remote path to derive"
-        )
-    argv = [
-        "rsync",
-        "-a",
-        "--partial-dir=.rsync-partial",
-        f"--info={INFO_FLAGS}",
-        f"--out-format={OUT_FORMAT}",
-    ]
-    if dry_run:
-        argv.append("-n")
-    argv += _ssh_transport(device, config.defaults)
+    rel = _require_catalog_rel(settings)
+    argv = _one_file_rsync(device, config, dry_run=dry_run)
     target = device.target.rstrip("/")
     argv.append(f"{device.effective_user}@{device.host}:{target}/{rel}{SNAPSHOT_SUFFIX}")
     argv.append(str(settings.catalog_db))
@@ -1169,9 +833,7 @@ def build_catalog_argv(
 
 def snapshot_argv(device: Device, config: DevicesFile, settings: Settings) -> list[str]:
     """Ask the upstream to snapshot its own live catalog, without stopping it."""
-    rel = catalog_rel(settings)
-    if rel is None:
-        raise ValueError("catalog_db is not inside library_root")
+    rel = _require_catalog_rel(settings)
     target = device.target.rstrip("/")
     return _ssh_command(
         device,
@@ -1195,9 +857,7 @@ def cleanup_argv(device: Device, config: DevicesFile, settings: Settings) -> lis
     and would turn up in the next scan's backlog, which is the list that is supposed to
     mean "books you have not pulled".
     """
-    rel = catalog_rel(settings)
-    if rel is None:
-        raise ValueError("catalog_db is not inside library_root")
+    rel = _require_catalog_rel(settings)
     target = device.target.rstrip("/")
     # Quoted for the same reason, even though nothing in this one has a space today: the
     # target comes out of a hand-edited devices.yaml, and "it happens to contain no shell
@@ -1218,14 +878,9 @@ REPLICATE_SUFFIX = ".replicate-snapshot"
 def snapshot_catalog(settings: Settings, dest: Path) -> int:
     """Copy this host's live catalog to `dest`, consistently. Returns its size.
 
-    `sqlite3.Connection.backup` reads a WAL database without blocking its writer and
-    yields a copy as of the moment it starts, so urantia-library here keeps serving
-    throughout -- the same property that lets a pull snapshot production without stopping
-    it, used from the other end. Measured against a live catalog: 82 tables, 7,224 pages,
-    1.07 s.
-
-    In-process rather than a `python3 -c` subprocess, because here the database is local
-    and there is no shell in the way. The caller runs it off the event loop.
+    `Connection.backup`, as the pull's `_SNAPSHOT_PY` does on the far end, so this host's
+    reader keeps serving. In-process because the database is local; the caller runs it off
+    the event loop.
     """
     src = sqlite3.connect(str(settings.catalog_db))
     try:
@@ -1244,17 +899,8 @@ def replicate_catalog_argv(
     device: Device, config: DevicesFile, settings: Settings
 ) -> list[str]:
     """Send one file: our snapshot, landing on the replica as its `lib.db`."""
-    rel = catalog_rel(settings)
-    if rel is None:
-        raise ValueError("catalog_db is not inside library_root")
-    argv = [
-        "rsync",
-        "-a",
-        "--partial-dir=.rsync-partial",
-        f"--info={INFO_FLAGS}",
-        f"--out-format={OUT_FORMAT}",
-    ]
-    argv += _ssh_transport(device, config.defaults)
+    rel = _require_catalog_rel(settings)
+    argv = _one_file_rsync(device, config)
     argv.append(f"{settings.catalog_db}{REPLICATE_SUFFIX}")
     argv.append(f"{device.effective_user}@{device.host}:{device.target.rstrip('/')}/{rel}")
     return argv
@@ -1265,18 +911,13 @@ def remote_reader_argv(
 ) -> list[str]:
     """Ask the replica whether anything there is reading the catalog right now.
 
-    The unit name comes from `local_service`, which is documented as this host's -- and is
-    reused deliberately, because it names the *application*, not the machine. A replica
-    that has never heard of the unit answers `inactive`, which is the right answer: nothing
-    there is reading the file, so the swap is safe. `|| true` so a systemd-less target does
-    not turn a question into a failure.
+    `local_service` names the application, so the same unit name is asked about there. A
+    replica that never heard of it answers `inactive`, which is right; `|| true` keeps a
+    systemd-less target's answer a question rather than a failure.
     """
     unit = settings.local_service
     if not unit:
-        # Refuse rather than compose `systemctl is-active ''`, which asks nothing and
-        # answers `inactive` — a false all-clear. `_replicate_catalog` guards on the same
-        # value; this is so a future caller that forgets cannot get the reassuring answer
-        # by accident.
+        # `systemctl is-active ''` asks nothing and answers `inactive`: a false all-clear.
         raise ValueError("no LIBNODES_LOCAL_SERVICE declared — there is no unit to ask about")
     return _ssh_command(
         device,
@@ -1288,14 +929,9 @@ def remote_reader_argv(
 def remote_sidecar_argv(
     device: Device, config: DevicesFile, settings: Settings
 ) -> list[str]:
-    """Drop the replica's stale -wal/-shm, before its new catalog lands.
-
-    Same ordering rule as the pull's: applying a write-ahead log belonging to the old file
-    over a fresh one is how this loses a catalog rather than merely failing.
-    """
-    rel = catalog_rel(settings)
-    if rel is None:
-        raise ValueError("catalog_db is not inside library_root")
+    """Drop the replica's stale -wal/-shm before its new catalog lands: an old WAL applied
+    over a new database is how a catalog is lost rather than merely not refreshed."""
+    rel = _require_catalog_rel(settings)
     target = device.target.rstrip("/")
     return _ssh_command(
         device,
@@ -1307,17 +943,9 @@ def remote_sidecar_argv(
 def service_argv(verb: str, settings: Settings) -> list[str]:
     """`systemctl <verb> <unit>` for the unit on *this* host.
 
-    No sudo. `deploy/libnodes.service` sets NoNewPrivileges=yes, which makes sudo's setuid
-    bit inert — it refuses outright, with a different message from the "password required"
-    one people expect — so the privilege comes from polkit instead and the unit keeps its
-    hardening. See deploy/50-libnodes-urantia.rules.
-
-    `--no-ask-password` for the same reason BatchMode=yes is on every ssh in this program:
-    a headless service must fail fast rather than discover what the bus does about an
-    authentication prompt with no agent to answer it.
-
-    The unit name carries its `.service` suffix so what we invoke and what the polkit rule
-    matches cannot drift apart.
+    No sudo: the unit's NoNewPrivileges=yes makes it inert, so polkit authorises this
+    (deploy/50-libnodes-urantia.rules). `--no-ask-password` fails fast with no agent, like
+    BatchMode on ssh. The unit keeps its `.service` suffix so it matches the rule exactly.
     """
     return ["systemctl", "--no-ask-password", verb, settings.local_service]
 
@@ -1333,11 +961,9 @@ class JobRunner:
         devices,
         on_library_changed=None,
     ) -> None:
-        #: Called once after a pull reaches a terminal state, because a pull is the only
-        #: job that changes `library_root`. A callback rather than an import of AppState:
-        #: the runner is constructed by it, not the other way round, and defaulting to
-        #: None keeps every existing construction -- the whole test suite's included --
-        #: working untouched.
+        #: Rebuilds the index after a pull, the only job that changes `library_root`; may be
+        #: async, in which case the pull waits for it. A callback, because AppState
+        #: constructs the runner and not the other way round.
         self._on_library_changed = on_library_changed
         self.settings = settings
         self.store = store
@@ -1349,30 +975,32 @@ class JobRunner:
         self._live: dict[int, Job] = {}
         self._terms: dict[int, deque[tuple[str, str]]] = {}
         self._procs: dict[int, asyncio.subprocess.Process] = {}
-        #: Names off the @-lines, in rsync's order, so a run that dies part-way can still
-        #: say which files it delivered. Bounded by SENT_CAP; `None` marks a job that
-        #: overflowed and whose list is therefore no longer a complete prefix.
+        #: Names off the @-lines, in rsync's order, so a run that dies part-way can say what
+        #: it delivered. `None` once past SENT_CAP: a truncated list is no longer a prefix.
         self._sent: dict[int, list[str] | None] = {}
-        #: The same, for rsync's `deleting <path>` lines, so `_debit` can retract the
-        #: manifest rows that claimed the upstream still held them. Separate from `_sent`
-        #: because the two are answers to opposite questions and a single list would have
-        #: to carry a sign.
+        #: The same for `deleting` lines, so `_debit` can retract those manifest rows.
         self._deleted: dict[int, list[str] | None] = {}
+        #: Terminal lines not yet sent to the browser, and when each job last sent some.
+        #: See `_append_line`.
+        self._unsent_lines: dict[int, list[tuple[str, str]]] = {}
+        self._lines_at: dict[int, float] = {}
         self._queue: asyncio.Queue[int] = asyncio.Queue()
         self._workers: list[asyncio.Task] = []
         self._subs: set[asyncio.Queue] = set()
         self._watcher: asyncio.Task | None = None
-        #: Set means "no pull is rewriting the library, pushes may run". Cleared for the
-        #: duration of one, because concurrency is 3 on pi5 and a push carries -L: it
-        #: dereferences the symlinks as it goes, so one running beside a pull can read a
-        #: blob that has not landed yet (exit 24, "file has vanished") or one still in
-        #: .rsync-partial. The CAS makes a *finished* blob safe to read at any moment;
-        #: it says nothing about one mid-flight.
-        self._pull_gate = asyncio.Event()
-        self._pull_gate.set()
-        #: Short-lived question processes (`_capture`). Separate from `_procs`, which holds
-        #: at most one *transfer* per job and is what `abort` terminates; these are reaped
-        #: by `stop()` alongside it so none is left for the garbage collector.
+        #: Who may run at once -- see `_admit`. Pushes share admission, a pull takes it
+        #: alone, and a waiting pull holds new pushes back so a busy fleet cannot starve it.
+        self._admission = asyncio.Condition()
+        self._pushes = 0
+        self._pulling = False
+        self._pulls_waiting = 0
+        #: One job per device at a time. Two rsyncs into one target race on its temp files
+        #: -- a pruning run's --delete removes the other's in-flight `.name.XXXXXX` -- and
+        #: two pulls would both rewrite the vault and both take the local service down.
+        self._device_locks: dict[str, asyncio.Lock] = {}
+        #: Children `abort` must not reach -- `_capture`'s questions and the pull's
+        #: `systemctl` calls -- reaped by `stop()` like `_procs`, which holds at most one
+        #: abortable transfer per job.
         self._probe_procs: set = set()
 
     # --- accessors --------------------------------------------------------
@@ -1425,15 +1053,34 @@ class JobRunner:
             try:
                 q.put_nowait(event)
             except asyncio.QueueFull:
-                # A stalled reader must not stall the transfer.
-                pass
+                # A stalled reader must not stall the transfer, so a progress tick or a
+                # terminal line is simply dropped. A `dock` or `done` must not be: SSE mode
+                # does not poll, and a lost `done` left the card reading "running" until the
+                # page reconnected. The backlog goes instead, replaced by one `dock`, which
+                # repaints every card -- finished ones included -- from scratch.
+                if event.kind in ("dock", "done"):
+                    while not q.empty():
+                        q.get_nowait()
+                    q.put_nowait(JobEvent("dock"))
 
     def _append_line(self, job: Job, text: str, css: str = "") -> None:
         ring = self._terms.setdefault(
             job.id, deque(maxlen=self.settings.term_ring)
         )
         ring.append((css, text))
-        self._emit(JobEvent("line", job.id, text=text, css=css))
+        self._unsent_lines.setdefault(job.id, []).append((css, text))
+        # File names arrive by the thousand -- a Replicate or a first pull prints ~45k --
+        # and one event each was one render and one SSE frame per open tab apiece. They go
+        # in batches. Every other kind of line is rare and flushes at once, so an error,
+        # a phase or a summary is never the one left waiting.
+        if css or time.monotonic() - self._lines_at.get(job.id, 0.0) >= LINE_BATCH:
+            self._flush_lines(job.id)
+
+    def _flush_lines(self, job_id: int) -> None:
+        lines = self._unsent_lines.pop(job_id, None)
+        if lines:
+            self._lines_at[job_id] = time.monotonic()
+            self._emit(JobEvent("line", job_id, lines=lines))
 
     # --- submission -------------------------------------------------------
 
@@ -1476,9 +1123,8 @@ class JobRunner:
             hold=hold and deferred,
             adopt=adopt,
             full_library=whole_library,
-            # A Replicate, and only a Replicate. An Adopt sends the same root but exists to
-            # repair timestamps, so handing it a database swap would be a trap; a reader
-            # has no catalog to swap at all.
+            # A Replicate only: an Adopt sends the same root to repair timestamps, and a
+            # reader has no catalog.
             catalog=device.is_mirror and not adopt,
         )
         self.store.create(job)
@@ -1497,18 +1143,11 @@ class JobRunner:
         deferred: bool = False,
         dry_run: bool = False,
     ) -> Job:
-        """Queue a pull from an upstream node. The mirror image of `submit`.
+        """Queue a pull from an upstream node.
 
-        No `_estimate`. That prices `sources` from the *local* index, which by definition
-        cannot know what the far end holds -- before the first pull it would be pricing a
-        different library, and after a successful one it would be pricing the answer as
-        the question. It costs nothing to omit: `_apply_progress` derives the bar from
-        rsync's own `to-chk`, and `files_total` is read only by the queued card and the
-        Jobs table. The templates guard on it so they say nothing rather than zero.
-
-        `sources` is the remote root, recorded as one name so the Jobs table has something
-        truthful to show. It is never passed to `_resolve`, and `build_pull_argv` does not
-        read it.
+        No `_estimate`: the local index cannot price what the far end holds, and the bar
+        comes from rsync's `to-chk` anyway. `sources` is the remote root, recorded for the
+        Jobs table only; `build_pull_argv` does not read it.
         """
         config = self.devices.config
         argv = build_pull_argv(device, config, self.settings, dry_run=dry_run)
@@ -1517,8 +1156,7 @@ class JobRunner:
             device_id=device.id,
             sources=[device.target.rstrip("/") + "/"],
             label="(pull · whole root)",
-            # The destination of a pull is us. dock_meta reads this, and pointing it at
-            # the device would have the arrow the wrong way round.
+            # A pull's destination is this host; the dock's arrow reads it.
             dest=f"{str(self.settings.library_root).rstrip('/')}/",
             state="deferred" if deferred else "queued",
             created_at=time.time(),
@@ -1538,18 +1176,10 @@ class JobRunner:
     def _estimate(
         self, sources: Sequence[str], *, mirror: bool = False
     ) -> tuple[int, int]:
-        """Pre-flight totals from the index, so the dock has numbers before rsync does.
+        """Totals from the index, so the dock has numbers before rsync does.
 
-        Sources the index does not know contribute nothing, which is silent by design --
-        most of them are simply not there. A mirror is the case where that silence would
-        mislead: it sends `.data/` and `urantia-library/` as paths, and neither is indexed.
-
-        For a mirror the two numbers therefore need opposite corrections. The *bytes* are
-        already close, because a symlink's indexed size is the blob it dereferences to --
-        exactly what moves -- so counting the vault again would double it; the vault is
-        added for its *file count* only, and its bytes are the same bytes. Without that
-        count the bar would claim ~24.6k files for a run rsync sees as roughly twice that,
-        and a count that is not the number of files is the thing CLAUDE.md forbids.
+        A mirror also sends the vault, which is not indexed: its files are added to the
+        count, but not its bytes, because a link's indexed size already is its blob's.
         """
         files = 0
         size = 0
@@ -1584,12 +1214,8 @@ class JobRunner:
         return job
 
     def dismiss(self, job_id: int) -> None:
-        """Drop a job from the dock, leaving its history row alone.
-
-        Works for unfinished jobs too — a deferred job whose device is never coming
-        back must be removable, and refusing to dismiss it (as this once did) leaves a
-        card the user cannot get rid of.
-        """
+        """Drop a job from the dock, leaving its history row. An unfinished job is aborted
+        first: a deferred job whose device never returns must still be removable."""
         job = self._live.get(job_id)
         if job is None:
             return
@@ -1598,11 +1224,14 @@ class JobRunner:
             job.finished_at = time.time()
             job.error = job.error or "dismissed"
             self.store.save(job)
-        self._live.pop(job_id, None)
-        self._terms.pop(job_id, None)
-        self._sent.pop(job_id, None)
-        self._deleted.pop(job_id, None)
+        self._forget(job_id)
         self._emit(JobEvent("dock"))
+
+    def _forget(self, job_id: int) -> None:
+        """Drop everything held in memory for one job."""
+        for per_job in (self._live, self._terms, self._sent, self._deleted,
+                        self._unsent_lines, self._lines_at):
+            per_job.pop(job_id, None)
 
     def start_now(self, job_id: int) -> Job | None:
         """Release a held job (or push a deferred one through) immediately."""
@@ -1632,10 +1261,7 @@ class JobRunner:
                     await asyncio.sleep(0.05)
                     if self._live.get(job_id) is None or self._live[job_id].finished:
                         break
-            self._live.pop(job_id, None)
-            self._terms.pop(job_id, None)
-            self._sent.pop(job_id, None)
-            self._deleted.pop(job_id, None)
+        self._forget(job_id)
 
         removed = self.store.delete(job_id)
         log = self.settings.logs_dir / f"{job_id}.log"
@@ -1670,47 +1296,32 @@ class JobRunner:
 
     @property
     def _service_hold(self) -> Path:
-        """Breadcrumb saying "LibNodes stopped the local service and owes it a start".
+        """Breadcrumb: "LibNodes stopped the local service and owes it a start".
 
-        The `finally` in `_run_pull` covers a failed phase and an abort, because both of
-        those are ordinary returns. What it cannot cover is the process going away:
-        `JobRunner.stop()` cancels the workers, and `sudo systemctl restart libnodes` is
-        the routine dev loop on this host (CLAUDE.md §Commands) -- land one of those in
-        the catalog window and the site stays down with nothing running to bring it back.
-        `asyncio.shield` does not help; the loop closes underneath it.
-
-        So the durable half is a file, checked by `start()`. Same shape as var/probe.json:
-        written for exactly the case where an unclean exit is the thing that went wrong.
+        The `finally` in `_run_pull` cannot cover this process going away inside the window
+        -- a restart, the routine dev loop here -- and `asyncio.shield` does not help once the
+        loop closes. So the durable half is a file, read by `start()`.
         """
         return self.settings.state_dir / "service-hold.json"
 
-    async def _service(self, job: Job, verb: str, log) -> int | None:
+    async def _service(self, job: Job, verb: str, log) -> int:
         return await self._stream(
-            job, service_argv(verb, self.settings), log, track=False
+            job, service_argv(verb, self.settings), log, track=False, abortable=False
         )
 
     def _phase(self, job: Job, text: str, log=None) -> None:
         job.phase = text
         self._append_line(job, f"— {text}", "info")
         if log is not None:
-            # The log gets them too, and this is most of what makes a pull's log readable:
-            # without the markers it is six bare `$` lines and you have to know the phase
-            # order by heart to tell which rsync is the catalog swap.
             _log_note(log, f"— {text}")
         self._emit(JobEvent("progress", job.id))
 
     async def _replicate_catalog(self, job: Job, log) -> None:
         """Give a replica a consistent catalog, after its files have landed.
 
-        Never changes the job's exit code. The books are what a Replicate is for and they
-        really did arrive; a catalog it could not refresh is an amber note, not a failure
-        -- the same judgement the exit-23 split makes about a push that delivered every
-        byte and could not stamp a timestamp.
-
-        Four steps and no privilege anywhere: ask the replica whether anything is reading
-        the file, snapshot ours (which needs no service stop *here*, because that is what
-        Connection.backup is for), drop the replica's stale write-ahead log, send the
-        snapshot in as lib.db.
+        Never changes the exit code: the books did arrive, and a stale catalog is an amber
+        note. No privilege anywhere -- ask whether the replica is reading the file, snapshot
+        ours, drop its stale WAL, send the snapshot in as lib.db.
         """
         device = self.devices.config.by_id.get(job.device_id)
         if device is None:
@@ -1731,11 +1342,8 @@ class JobRunner:
         self._phase(job, "2/2 · catalog", log)
 
         if self.settings.local_service:
-            # Refuse rather than overwrite a database something is reading. There is no
-            # stop here by design: this is an interactive machine, and taking its services
-            # down from another host is a bigger claim than a replicate should make. A
-            # target that has never heard of the unit answers `inactive`, which is the
-            # right answer -- nothing there is reading the file.
+            # Refuse rather than overwrite a database being read. No remote stop: taking a
+            # machine's services down from another host is more than a replicate may claim.
             reader = await self._capture(remote_reader_argv(device, config, self.settings))
             if reader is not None and reader.strip().startswith("active"):
                 job.catalog_warning = (
@@ -1771,11 +1379,8 @@ class JobRunner:
             snapshot.unlink(missing_ok=True)
 
     async def _capture(self, argv: list[str]) -> str | None:
-        """Run a short command and return its stdout. None if it could not run.
-
-        Used for the one question a replicate asks rather than answers. Registered in
-        `_procs` like everything else, so `stop()` reaps it.
-        """
+        """Run a short command and return its stdout, or None if it could not run. In
+        `_probe_procs`, so `stop()` reaps it and `abort()` leaves it alone."""
         try:
             proc = await asyncio.create_subprocess_exec(
                 *argv,
@@ -1788,38 +1393,49 @@ class JobRunner:
         try:
             out, _ = await proc.communicate()
         finally:
-            self._probe_procs.discard(proc)
+            # Only a child that has exited, or `stop()` cannot reap it (see procs.py).
+            if proc.returncode is not None:
+                self._probe_procs.discard(proc)
         return out.decode("utf-8", errors="replace")
 
-    async def _run_pull(self, job: Job, log) -> int | None:
-        """The six phases of a pull, in one coroutine so one `finally` can span them.
+    async def _run_pull(self, job: Job, log) -> int:
+        """A preflight and six phases, in one coroutine so one `finally` spans them.
 
-        Chained jobs were the obvious alternative and are disqualified by exactly that:
-        "the local service comes back whatever happens" is a try/finally, and a finally
-        cannot span two jobs. A separate orchestrator outside JobRunner is disqualified by
-        procs.reap -- it would need its own registry, its own cancel-then-reap ordering,
-        its own log and SSE fan-out, and `JobRunner.stop()` would not reap its children.
-
-        Abort works here without special handling, and it is worth knowing why: `abort`
-        terminates the subprocess but does not cancel this task, so `_stream` returns
-        143/-15 as an ordinary value, the machine stops advancing, and the `finally` runs
-        because it is a return rather than an exception.
+        "The local service comes back whatever happens" is a try/finally, which cannot span
+        chained jobs. Abort needs no special handling: it terminates the child without
+        cancelling this task, so `_stream` returns an ordinary exit code and the `finally`
+        runs.
         """
         device = self.devices.config.by_id.get(job.device_id)
         if device is None:
             self._append_line(job, f"unknown device {job.device_id}", "err")
             return 1
         config = self.devices.config
+        unit = self.settings.local_service
+
+        if unit and not job.dry_run and catalog_rel(self.settings) is not None:
+            # May this process manage the unit at all? A missing polkit rule used to surface
+            # at phase 3, after the whole transfer. `start` on a running unit is a no-op on
+            # the same authorisation path as `stop`; an inactive unit is left alone.
+            self._phase(job, f"preflight · {unit}", log)
+            if await self._service(job, "is-active", log) == 0:
+                probe = await self._service(job, "start", log)
+                if probe != 0:
+                    self._append_line(
+                        job,
+                        f"not authorised to manage {unit} — install "
+                        "/etc/polkit-1/rules.d/50-libnodes-urantia.rules (deploy/README.md). "
+                        "Nothing was transferred.",
+                        "err",
+                    )
+                    return probe
 
         self._phase(job, "1/6 · library", log)
         code = await self._stream(job, job.argv, log)
-        if code is None:
-            return None
         if code != 0:
             return code
         if job.dry_run:
-            # Checked before the snapshot, not after: a preview must never write a file
-            # onto the upstream and must never stop a service.
+            # Before the snapshot: a preview writes nothing there and stops nothing here.
             self._append_line(
                 job,
                 "dry run · nothing written, no snapshot taken, no service stopped",
@@ -1855,32 +1471,35 @@ class JobRunner:
 
         stopped = False
         try:
-            self._phase(job, "3/6 · stopping " + self.settings.local_service, log)
-            self._service_hold.parent.mkdir(parents=True, exist_ok=True)
-            self._service_hold.write_text(
-                json.dumps({"unit": self.settings.local_service, "job": job.id,
-                            "at": time.time()}),
-                encoding="utf-8",
-            )
-            if await self._service(job, "stop", log) != 0:
-                # Nothing is down: do not run `start` on the way out, or a pull would
-                # start a service somebody had deliberately stopped.
-                self._service_hold.unlink(missing_ok=True)
-                job.catalog_warning = (
-                    f"catalog not refreshed — could not stop "
-                    f"{self.settings.local_service}. Install "
-                    f"/etc/polkit-1/rules.d/50-libnodes-urantia.rules; see deploy/README.md"
+            self._phase(job, f"3/6 · stopping {unit}", log)
+            # Asked again: hours may have passed since the preflight.
+            if await self._service(job, "is-active", log) != 0:
+                # Nothing reads the catalog, so no quiet window -- and no start afterwards of
+                # a service somebody stopped.
+                self._append_line(
+                    job, f"{unit} is not running · swapping without a stop", "prog"
                 )
-                self._append_line(job, job.catalog_warning, "err")
-                return code
-            stopped = True
+            else:
+                self._service_hold.parent.mkdir(parents=True, exist_ok=True)
+                self._service_hold.write_text(
+                    json.dumps({"unit": unit, "job": job.id, "at": time.time()}),
+                    encoding="utf-8",
+                )
+                if await self._service(job, "stop", log) != 0:
+                    # Nothing is down, so nothing to start on the way out.
+                    self._service_hold.unlink(missing_ok=True)
+                    job.catalog_warning = (
+                        f"catalog not refreshed — could not stop {unit}. Install "
+                        "/etc/polkit-1/rules.d/50-libnodes-urantia.rules; see "
+                        "deploy/README.md"
+                    )
+                    self._append_line(job, job.catalog_warning, "err")
+                    return code
+                stopped = True
 
             self._phase(job, "4/6 · catalog", log)
-            # The stale write-ahead log goes *before* the new database lands, and the
-            # order is where the corruption lives: applying a WAL belonging to the old
-            # file over a fresh one is the one way this loses a catalog rather than
-            # merely failing. A clean stop checkpoints and unlinks them already; this is
-            # belt and braces.
+            # The stale WAL goes *before* the new database lands: an old WAL applied over a
+            # new file loses the catalog. A clean stop has usually removed it already.
             for side in CATALOG_SIDECARS:
                 Path(str(self.settings.catalog_db) + side).unlink(missing_ok=True)
             cat = await self._stream(
@@ -1891,13 +1510,13 @@ class JobRunner:
                 self._append_line(job, job.catalog_warning, "err")
         finally:
             if stopped:
-                self._phase(job, "5/6 · starting " + self.settings.local_service, log)
+                self._phase(job, f"5/6 · starting {unit}", log)
                 if await self._service(job, "start", log) == 0:
                     self._service_hold.unlink(missing_ok=True)
                 else:
                     job.catalog_warning = (
-                        f"{self.settings.local_service} DID NOT RESTART — this host's "
-                        "site is down. Start it by hand."
+                        f"{unit} DID NOT RESTART — this host's site is down. "
+                        "Start it by hand."
                     )
                     self._append_line(job, job.catalog_warning, "err")
 
@@ -1905,12 +1524,8 @@ class JobRunner:
         return code
 
     async def _cleanup(self, job: Job, device: Device, config, log) -> None:
-        """Remove the snapshot from the upstream. Never fatal, and run on failure too.
-
-        An abandoned .pull-snapshot is 30 MB of somebody else's disk, and it would turn up
-        in the next scan's backlog -- the list that is supposed to mean "books you have
-        not pulled yet".
-        """
+        """Remove the snapshot from the upstream, on failure too and never fatally: an
+        abandoned one is 30 MB of somebody else's disk, and would show in the backlog."""
         self._phase(job, "6/6 · cleanup", log)
         try:
             await self._stream(
@@ -1920,47 +1535,30 @@ class JobRunner:
             self._append_line(job, f"could not remove the remote snapshot: {exc}", "warn")
 
     async def _stream(
-        self, job: Job, argv: list[str], log, *, track: bool = True
-    ) -> int | None:
-        """Run one subprocess to completion, pumping its output into log, dock and ring.
+        self, job: Job, argv: list[str], log, *, track: bool = True, abortable: bool = True
+    ) -> int:
+        """Run one subprocess to completion, feeding its output to the log, dock and ring.
 
-        Extracted from `_run` so a job can own several subprocesses *in sequence* — which
-        is what a pull is: transfer, snapshot, stop, catalog, start, cleanup. For a push
-        it is a pure extraction and nothing about it changed.
+        `track=False` keeps a later phase from *redefining* the job's numbers, which are
+        assignments: job #31's library phase moved 15.3 MB across 63,518 entries and was
+        recorded as the 29.7 MB catalog swap four phases later. Its output still reaches the
+        log and the terminal in full.
 
-        `track=False` is what keeps those later phases from *redefining* the job's numbers.
-        Every counter here is an assignment, not an accumulation, so the last rsync to run
-        used to win: job #31 was a pull whose library phase moved 15,263,475 bytes over the
-        wire across 63,518 entries, and it was recorded as `bytes_wire=445,181`,
-        `entries=1/1`, `bytes_done=29,663,232` — the 29.7 MB catalog swap four phases
-        later, described as though it were the transfer. A mirror Replicate had the same
-        shape through `_replicate_catalog`. Untracked output still reaches the log and the
-        terminal ring in full, because a phase that says nothing is worse than one that
-        says something that is not the headline; only the job's own figures are protected.
-        `_note_sent` is deliberately *not* gated: it is already filtered by SKIP_TOPLEVEL,
-        which is what keeps the catalog snapshot from ever becoming a library row.
+        `self._procs[job.id]` holds at most one process at any instant -- `abort`, `cancel`
+        and `stop` assume so. `abortable=False` registers it where only `stop()` reaches:
+        killing a `systemctl stop` client does not cancel the stop, so an Abort there left
+        the service down with the runner believing it had never gone.
 
-        The load-bearing property is that `self._procs[job.id]` holds **at most one**
-        process at any instant, and is cleared before the next phase starts. `abort`,
-        `cancel` and `stop`'s `await reap(self._procs.values())` all assume exactly that;
-        a phase machine that registered two would leave one of them unreaped, which is the
-        `RuntimeError: Event loop is closed` procs.py exists to describe.
-
-        Returns the exit code, or None if the spawn itself failed — in which case the job
-        has already been marked failed and its events emitted, because there is nothing
-        for a caller to add.
+        Returns the exit code; a command that cannot be spawned is 127, and the caller
+        decides what that means, as for any other code.
         """
-        # An ssh argv ends in one word that is a *shell command for the far side*, and
-        # rendering it as one more quoted element is both unreadable and misleading: it
-        # comes out as `'python3 -c '"'"'import…'"'"' …'`, which is correct and tells you
-        # nothing. Print the connection, then the remote command exactly as the remote
-        # shell will see it — which is the thing worth reading when it goes wrong. Job #18
-        # was a quoting bug whose log showed the command re-quoted into looking right.
+        # An ssh argv ends in one word that is a shell command for the far side; print it as
+        # the remote shell will see it, not re-quoted (job #18's log hid a quoting bug so).
         if argv and argv[0] == "ssh" and len(argv) > 1:
-            _log_note(log, f"$ {' '.join(shlex.quote(a) for a in argv[:-1])}")
+            _log_note(log, f"$ {shlex.join(argv[:-1])}")
             log.write(f"           remote: {argv[-1]}\n")
         else:
-            _log_note(log, f"$ {' '.join(shlex.quote(a) for a in argv)}")
+            _log_note(log, f"$ {shlex.join(argv)}")
         try:
             proc = await asyncio.create_subprocess_exec(
                 *argv,
@@ -1969,22 +1567,18 @@ class JobRunner:
                 stderr=asyncio.subprocess.STDOUT,
             )
         except OSError as exc:
-            job.state = "failed"
-            job.error = str(exc)
-            job.finished_at = time.time()
-            self.store.save(job)
-            self._append_line(job, str(exc), "err")
-            self._emit(JobEvent("done", job.id))
-            self._emit(JobEvent("dock"))
-            return None
+            log.write(f"{exc}\n")
+            self._append_line(job, f"cannot run {argv[0]}: {exc}", "err")
+            return SPAWN_FAILED
 
-        self._procs[job.id] = proc
+        if abortable:
+            self._procs[job.id] = proc
+        else:
+            self._probe_procs.add(proc)
         last_push = 0.0
         last_term = 0.0
         last_log = 0.0
-        #: The most recent progress line *not* written to the log, so the end of the
-        #: stream can flush it. Without this a phase that finishes inside
-        #: LOG_PROGRESS_INTERVAL leaves no progress in the log at all.
+        #: The latest progress line held back from the log, flushed at the end.
         pending = ""
 
         assert proc.stdout is not None
@@ -1992,20 +1586,12 @@ class JobRunner:
             now = time.time()
             match = PROGRESS_RE.match(chunk)
             if match:
-                # rsync does not always terminate a progress line before writing its next
-                # message, and `_iter_lines` can only split on the separators that are
-                # there. Measured against sigmaai.au: two of the three deletions in a real
-                # pull arrived as
-                #   `0 0% 0.00kB/s 0:00:00 (xfr#0, ir-chk=18084/38898)deleting .data/…`
-                # -- no \r, no \n, just concatenated. PROGRESS_RE is unanchored at its
-                # end, so the whole thing matched as progress and the deletion was never
-                # seen by anything. So the progress prefix is peeled off and whatever
-                # follows it is handled as the line it is.
+                # rsync does not always end a progress line before its next message: two of
+                # three deletions in a real pull arrived as `…(xfr#0, ir-chk=…)deleting …`.
+                # So the progress prefix is peeled off and the rest handled as its own line.
                 head, tail = chunk[: match.end()], chunk[match.end():].strip()
 
-                # Throttled into the log, unthrottled into the job. The two are different
-                # audiences: the dock is watched live and wants every update, the file is
-                # read afterwards and wants a record. See LOG_PROGRESS_INTERVAL.
+                # Throttled into the log, unthrottled into the job: see LOG_PROGRESS_INTERVAL.
                 if now - last_log >= LOG_PROGRESS_INTERVAL:
                     last_log = now
                     pending = ""
@@ -2026,22 +1612,14 @@ class JobRunner:
             if chunk.strip():
                 text = chunk.rstrip()
                 event = FILE_RE.match(text)
-                # Everything that is not a progress tick: the @-lines, rsync's own
-                # diagnostics and its closing summary. All of it goes to the log, because
-                # all of it says something that happened once.
-                #
-                # A held-back progress line is flushed first, so `sent … received …` stays
-                # the last word of its phase rather than being overtaken by the tick the
-                # throttle was sitting on. Not before an @-line, though: those are one per
-                # file, and flushing there would put a progress line between every pair of
-                # them — undoing the whole point of the throttle on a real push.
+                # Everything else goes to the log. A held-back progress line goes first, so the
+                # closing summary stays last -- but not before an @-line, or the throttle
+                # would put one between every pair of files.
                 if pending and event is None:
                     log.write(pending + "\n")
                     pending = ""
                 log.write(text + "\n")
                 if event is not None:
-                    # A file or directory rsync actually touched. Directories carry
-                    # a trailing slash and are noise in the "current file" readout.
                     name = event.group("name")
                     if not name.endswith("/"):
                         job.current_file = name
@@ -2052,19 +1630,14 @@ class JobRunner:
                         pretty = f"{name}  {int(size):,}"
                     self._append_line(job, pretty, "")
                 elif deleted := DELETE_RE.match(text):
-                    # A prune: outward on a mirror, inward on a pull. Directories are not
-                    # counted -- rsync removes a directory once its contents have gone, and
-                    # a FILES column that counted those would be the `to-chk` mistake
-                    # again, a number that is not a file count under a heading that says
-                    # files. The path is kept so the manifest can retract its claim.
+                    # A prune, at either end. Directories are not files; the path is kept so
+                    # the manifest can retract its claim.
                     name = deleted.group("name")
                     if not name.endswith("/"):
                         job.files_deleted += 1
                         self._note_deleted(job, name)
                     self._append_line(job, text, "warn")
                 elif summary := SUMMARY_RE.match(text):
-                    # rsync's closing tally, and the only figure here that is bytes
-                    # on the wire rather than bytes of file.
                     if track:
                         job.bytes_wire = sum(
                             int(g.replace(",", "")) for g in summary.groups()
@@ -2080,40 +1653,67 @@ class JobRunner:
                     )
                     self._append_line(job, text, css)
 
-        # The last progress line, if the throttle above was still holding it. This is what
-        # keeps a phase shorter than the interval from logging no progress at all, and it
-        # is also the one worth having on a long transfer: it carries the final xfr# and
-        # byte counter, beside rsync's own closing summary.
+        # The last progress line, so even a short phase logs its final counters.
         if pending:
             log.write(pending + "\n")
+        self._flush_lines(job.id)
 
         code = await proc.wait()
-        self._procs.pop(job.id, None)
+        if abortable:
+            self._procs.pop(job.id, None)
+        else:
+            self._probe_procs.discard(proc)
         return code
 
     async def _run(self, job_id: int) -> None:
         job = self._live.get(job_id)
         if job is None or job.state not in ("queued", "deferred"):
             return
+        lock = self._device_locks.setdefault(job.device_id, asyncio.Lock())
+        async with lock, self._admit(job):
+            # Again, after the wait: an Abort, a ✕ or a second enqueue may have landed while
+            # it waited. Checking only on the way in ran a push the user had cancelled.
+            if self._live.get(job_id) is not job or job.state not in ("queued", "deferred"):
+                return
+            await self._execute(job)
 
-        if job.kind == "pull":
-            # Take the gate and let the pushes already in flight finish. `concurrency` is
-            # 3 here, so without this a Kobo push could be dereferencing symlinks into a
-            # vault a pull is still filling.
-            self._pull_gate.clear()
-            while any(
-                j.state == "running" and j.kind != "pull" for j in self._live.values()
-            ):
-                await asyncio.sleep(0.2)
-        else:
-            await self._pull_gate.wait()
+    @contextlib.asynccontextmanager
+    async def _admit(self, job: Job):
+        """Pushes run together; a pull runs alone.
 
+        A push dereferences the vault as it goes, so beside a pull it can read a blob not yet
+        landed (exit 24) or one still in .rsync-partial. A waiting pull holds back pushes
+        that arrive after it, or a busy fleet could keep it waiting for ever.
+        """
+        cond = self._admission
+        pull = job.kind == "pull"
+        async with cond:
+            if pull:
+                self._pulls_waiting += 1
+                try:
+                    await cond.wait_for(lambda: not self._pulling and not self._pushes)
+                finally:
+                    self._pulls_waiting -= 1
+                    cond.notify_all()
+                self._pulling = True
+            else:
+                await cond.wait_for(lambda: not self._pulling and not self._pulls_waiting)
+                self._pushes += 1
+        try:
+            yield
+        finally:
+            async with cond:
+                if pull:
+                    self._pulling = False
+                else:
+                    self._pushes -= 1
+                cond.notify_all()
+
+    async def _execute(self, job: Job) -> None:
         job.state = "running"
         job.started_at = time.time()
         job.attempt += 1
-        # A retry restarts rsync from scratch, so both the xfr# counter and the list of
-        # delivered names start over with it. --partial means the retry is cheap, not
-        # that the previous attempt's tally still applies.
+        # A retry restarts rsync, and its tallies with it.
         job.files_sent = 0
         job.files_deleted = 0
         self._sent[job.id] = []
@@ -2124,43 +1724,25 @@ class JobRunner:
         log_path = self.settings.logs_dir / f"{job.id}.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # buffering=1 (line buffered). Without it Python holds up to 8 KB, so "Open log"
-        # on a running job showed an empty file — which is exactly when you most want to
-        # read it. A long transfer wrote nothing to disk until it finished.
-        try:
-            with log_path.open(
-                "w", encoding="utf-8", errors="replace", buffering=1
-            ) as log:
-                if job.kind == "pull":
-                    code = await self._run_pull(job, log)
-                else:
-                    if job.catalog:
-                        self._phase(job, "1/2 · library", log)
-                    code = await self._stream(job, job.argv, log)
-                    # After the files, never instead of them, and never on a dry run: a
-                    # preview must not write a snapshot or touch the replica's database.
-                    if code == 0 and job.catalog and not job.dry_run:
-                        await self._replicate_catalog(job, log)
-        finally:
-            # In a `finally`, and unconditional: an exception on the way out of a pull
-            # must not wedge every push in the fleet behind a gate nobody will ever set
-            # again. Setting an already-set Event is a no-op, so a push may run this too.
-            self._pull_gate.set()
-
-        if code is None:
-            # The spawn itself failed; _stream has already marked the job and emitted.
-            return
+        # Line buffered, or "Open log" on a running job shows an empty file.
+        with log_path.open("w", encoding="utf-8", errors="replace", buffering=1) as log:
+            if job.kind == "pull":
+                code = await self._run_pull(job, log)
+            else:
+                if job.catalog:
+                    self._phase(job, "1/2 · library", log)
+                code = await self._stream(job, job.argv, log)
+                # After the files, and never on a dry run.
+                if code == 0 and job.catalog and not job.dry_run:
+                    await self._replicate_catalog(job, log)
 
         self._procs.pop(job.id, None)
         job.exit_code = code
         job.finished_at = time.time()
         self._emit(JobEvent("progress", job.id))
 
-        # See _ATTR_PROBLEM_RE: exit 23 says "files/attrs", and when it is only the attrs
-        # the transfer did everything a transfer is for. Marking it failed cost more than
-        # a wrong colour -- a failed job takes _record_partial, which credits the manifest
-        # with `files_sent` names only, so a push that delivered a whole directory was
-        # recorded as whatever rsync happened to have counted when it gave up.
+        # See _ATTR_PROBLEM_RE. Failing an attrs-only 23 also mis-credited the manifest with
+        # `files_sent` names only, and retried a complete transfer twice.
         attrs_only = code == 23 and _attrs_only(log_path)
 
         if code == 0 or attrs_only:
@@ -2176,31 +1758,16 @@ class JobRunner:
                 for hint in _hints(log_path, code):
                     self._append_line(job, f"hint: {hint}", "warn")
             if job.dry_run:
-                # This line used to sit outside the guard, so a dry run signed off with
-                # "manifest updated" having updated nothing — the one job that cannot
-                # change a device claiming it had recorded one. PRESENT ON then stayed
-                # put, which reads as the manifest being broken rather than untouched.
                 self._append_line(
                     job, "dry run · nothing sent, manifest unchanged", "prog"
                 )
             elif job.kind == "pull":
-                # The manifest is written below by `_credit_pull`, on every terminal
-                # outcome rather than only this one, and it is deliberately not
-                # `_update_manifest`: that walks the *local* index for each source, which
-                # after a pull is inverted, and it would run before the reindex -- so it
-                # would record the pre-pull index as a claim about the far end. What a
-                # pull knows instead is which files it received, each of them evidence
-                # about the node it received them from.
-                #
-                # No invalidate_space either: a pull does not change the *upstream's* disk
-                # usage. The figure that moved is this host's, which the rail reads live.
+                # `_credit_pull` writes its manifest below, on every outcome; and a pull
+                # does not change the upstream's disk usage, so no invalidate_space.
                 self._append_line(job, "pull complete", "prog")
             else:
                 self._update_manifest(job)
                 self.probe.invalidate_space(job.device_id)
-                # "· index re-scanned" was in this line too and nothing ever re-scanned
-                # it: the library index is rebuilt on its own schedule (library.py) and
-                # never by a job. A push records what the device now holds; that is all.
                 self._append_line(job, "✓ manifest updated", "prog")
         elif code in (15, -15, 143, 20):
             job.state = "aborted"
@@ -2209,20 +1776,19 @@ class JobRunner:
                 self._record_partial(job)
         else:
             job.state = "failed"
-            job.error = f"rsync exited {code}"
-            self._append_line(job, f"rsync error: exit {code}", "err")
+            # Only the transfer is rsync; a pull's preflight is systemctl.
+            what = "rsync" if not job.phase or job.phase.startswith("1/") else job.phase
+            job.error = f"{what} exited {code}"
+            self._append_line(job, f"{what} error: exit {code}", "err")
             for hint in _hints(log_path, code):
                 self._append_line(job, f"hint: {hint}", "warn")
-            # Before the retry, not after it: each attempt starts rsync from scratch, so
-            # attempt 2 skips what attempt 1 delivered and never names those files again.
-            # Credit them now or lose them.
+            # Before the retry: the next attempt skips what this one delivered and never
+            # names it again.
             if job.kind != "pull":
                 self._record_partial(job)
             retries = self._retries_for(job)
             if code == 25:
-                # The prune hit --max-delete and rsync stopped deleting. Three more full
-                # traversals of a 63,518-entry file list would find the same divergence and
-                # refuse it the same way; what this needs is a person reading the dry run.
+                # --max-delete refused the prune; a retry meets the same cap.
                 self._append_line(
                     job,
                     "not retried: the cap refused the prune, and a retry would meet the "
@@ -2231,11 +1797,15 @@ class JobRunner:
                     "warn",
                 )
                 retries = 0
+            elif code == SPAWN_FAILED:
+                self._append_line(
+                    job, "not retried: a command that cannot be started will not start "
+                    "on the next attempt either", "warn",
+                )
+                retries = 0
             elif job.kind == "pull" and not job.phase.startswith("1/"):
-                # A pull retries itself only while it is still in the long transfer, where
-                # --partial-dir makes a retry cheap and nothing has been taken down. Past
-                # that, `retries: 2` would mean three stop/start cycles of the local
-                # service chasing a failure a human needs to look at.
+                # A pull retries only its transfer, where a retry is free; past it,
+                # retries would cycle the local service chasing a failure a human must read.
                 self._append_line(
                     job,
                     f"not retried: the failure was in {job.phase or 'a later phase'}, "
@@ -2244,7 +1814,6 @@ class JobRunner:
                 )
                 retries = 0
             if job.attempt <= retries:
-                # --partial is in the default flags, so the retry resumes byte-accurate.
                 self._append_line(
                     job, f"--partial kept the transfer · retry {job.attempt}/{retries}", "warn"
                 )
@@ -2257,31 +1826,34 @@ class JobRunner:
                 return
 
         if job.kind == "pull" and not job.dry_run:
-            # Before the reindex, and for the same "every terminal outcome" reason: an
-            # interrupted pull has still received files, and the node that sent them still
-            # holds them. It reads the filesystem rather than the index, so it does not
-            # care that the reindex has not run yet.
+            # Every outcome: an interrupted pull still received files. It reads the
+            # filesystem, not the index, so it may run before the reindex.
             self._credit_pull(job)
 
         if not job.dry_run:
-            # Both directions, because the manifest is wrong in the same way whichever end
-            # the prune happened at. A pull's --delete removes books from this host; a
-            # mirror Replicate's and a pruning Full Sync's remove them from the device, and
-            # a row still claiming the device holds one inflates the numerator of every
-            # PRESENT ON fraction over it. A job that deleted nothing finds an empty list
-            # and does nothing, which is every push the program made before now.
+            # A prune at either end leaves rows claiming files that are gone.
             self._debit(job)
 
         if job.kind == "pull" and not job.dry_run and self._on_library_changed:
-            # Every terminal outcome, failure and abort included: an interrupted pull has
-            # still written files, and an index that does not know about them makes those
-            # books invisible in the Library view *and* unpushable, because `_resolve`
-            # admits only what the index vouches for. After the catalog phase, never
-            # before it: LibraryIndex reads catalog_db for title/author, so reindexing
-            # first would bake the old catalog in. This is the only thing in the program
-            # that reindexes because of an event rather than a schedule.
+            # Every outcome, abort included: books the index does not know are invisible
+            # and unpushable. After the catalog phase, whose titles the index reads.
+            # Awaited, so the job ends saying how it went rather than on a line that reads
+            # as still in progress -- and, the pull still holding the queue, no push starts
+            # against an index that has not heard of the books it brought.
             self._append_line(job, "· reindexing the library", "prog")
-            self._on_library_changed()
+            pending = self._on_library_changed()
+            if inspect.isawaitable(pending):
+                await pending
+                meta = self.index.meta()
+                if meta.error:
+                    self._append_line(job, f"reindex failed: {meta.error}", "warn")
+                else:
+                    took = f" in {meta.duration:.1f} s" if meta.duration is not None else ""
+                    self._append_line(
+                        job,
+                        f"✓ library reindexed · {meta.entry_count:,} entries{took}",
+                        "prog",
+                    )
 
         self.store.save(job)
         self._emit(JobEvent("done", job.id))
@@ -2295,20 +1867,11 @@ class JobRunner:
         return device.retries_with(self.devices.config.defaults)
 
     def _note_sent(self, job: Job, name: str) -> None:
-        """Remember a name off an @-line, for `_record_partial` and `_credit_pull`.
-
-        Bounded because this is per-job memory, but generously: the whole library is
-        24,616 files, so SENT_CAP holds the worst real case at roughly 3 MB of strings.
-        Overflow sets the entry to None rather than dropping the oldest name — a
-        truncated list is no longer a prefix of what rsync sent, and a manifest is worth
-        nothing if it is only mostly right about which files exist.
-        """
+        """Remember a name off an @-line, for `_record_partial` and `_credit_pull`, up to
+        SENT_CAP. Past it the entry becomes None, not a list missing its oldest names."""
         if job.kind == "pull" and name.split("/", 1)[0] in SKIP_TOPLEVEL:
-            # A whole-root pull prints ~45k @-lines and only 20.8k of them are books: the
-            # rest is the vault, `Recommended/` and the catalog snapshot, none of which a
-            # PRESENT ON chip is ever about. SKIP_TOPLEVEL is precisely the set the index
-            # walk drops at depth 0, so what survives here is what `presence` can ask
-            # about -- and the survivors fit SENT_CAP with room to spare.
+            # The vault, Recommended/ and the snapshot are ~24k of a pull's ~45k @-lines,
+            # and never a library row.
             return
         sent = self._sent.get(job.id)
         if sent is None:
@@ -2319,13 +1882,8 @@ class JobRunner:
         sent.append(name)
 
     def _note_deleted(self, job: Job, name: str) -> None:
-        """Remember a name off a `deleting` line, for `_debit`.
-
-        No SKIP_TOPLEVEL filter, unlike `_note_sent`: those names were never manifest rows,
-        so retracting them is a no-op and testing for it would cost more than the DELETE.
-        The SENT_CAP discipline is the same and for the same reason -- a truncated list of
-        retractions leaves the manifest claiming files the node has just lost.
-        """
+        """Remember a name off a `deleting` line, for `_debit`, under the same cap.
+        Unfiltered: retracting a row that never existed costs nothing."""
         gone = self._deleted.get(job.id)
         if gone is None:
             return
@@ -2337,15 +1895,9 @@ class JobRunner:
     def _record_partial(self, job: Job) -> None:
         """Credit an interrupted push with the files it did deliver.
 
-        Without this, aborting a transfer discards everything it achieved: a run that
-        placed 14 of 234 files left PRESENT ON reading the pre-push count, so the UI
-        described a device state that had not been true for hours.
-
-        Truncated to `files_sent` — the `xfr#` count — because rsync prints a file's name
-        when it *starts* sending it. The trailing @-line of an interrupted run names the
-        file that was in flight, which `--partial` may well have left on the device
-        truncated under its final name. Recording that one would be worse than recording
-        nothing: a size-mismatched row still reads as present.
+        Truncated to `files_sent`, the `xfr#` count: rsync prints a name when a file
+        *starts*, so the last @-line names one in flight, perhaps left truncated by
+        --partial -- and a row for it would read as present.
         """
         if job.dry_run:
             return
@@ -2366,8 +1918,6 @@ class JobRunner:
             entry = self.index.entry(path)
             if entry is None or entry.is_dir:
                 continue
-            # Blob and size come from the index, exactly as the clean-exit path takes
-            # them, so a partial row is as trustworthy as a whole-push row.
             recorded.append((entry.path, entry.blob, entry.size, entry.mtime, 0))
         if not recorded:
             return
@@ -2380,21 +1930,11 @@ class JobRunner:
     def _credit_pull(self, job: Job) -> None:
         """Credit an upstream with the files it just sent us.
 
-        A pull cannot take `_update_manifest`: that walks the *local* index for each
-        source, which after a pull is inverted in direction, and it would run before the
-        reindex — recording the pre-pull index as a claim about the far end. But the
-        transfer holds better evidence than any inference. rsync names every file it
-        received, and a file we received from a node is a file that node has; for a CAS
-        upstream the name arrives with its blake2b target, which is the same content
-        claim a scan makes rather than the size guess a push manifest settles for.
-
-        The *filesystem* decides, not the @-line. rsync prints a name when it starts
-        sending it, so the last line of an interrupted run names a file that never
-        landed, and `--partial-dir` keeps that one out of its final name. So a path that
-        is not there now is simply not credited, which is what makes this safe to run on
-        an abort as well as a clean exit. `_record_partial`'s `files_sent` truncation
-        cannot do that job here: the `.data/` lines `_note_sent` filters out still
-        counted toward `xfr#`, so the surviving list is no longer a prefix of anything.
+        Not `_update_manifest`, which reads the *local* index: after a pull that describes
+        this host, not the far end. A file we received is a file that node has. The
+        filesystem decides, not the @-line -- `--partial-dir` keeps an interrupted file out
+        of its final name -- which is what makes this safe after an abort. (`files_sent`
+        cannot truncate here: the filtered vault lines still counted toward `xfr#`.)
         """
         if job.dry_run:
             return
@@ -2416,10 +1956,7 @@ class JobRunner:
             except OSError:
                 continue
             if os.path.islink(full):
-                # Size through the vault, exactly as a scan of a CAS node resolves it:
-                # the link's own 140 bytes would be a lie about the book. With the blob
-                # recorded `_compare` never reaches the size anyway -- it is here for the
-                # link whose target is not a blob, where the size is all there is.
+                # The book's size through the vault, not the link's own bytes.
                 blob = blob_from_link(os.readlink(full))
                 try:
                     size = os.stat(full).st_size
@@ -2441,22 +1978,11 @@ class JobRunner:
         )
 
     def _debit(self, job: Job) -> None:
-        """Retract what the prune just removed. The other half of `_credit_pull`.
+        """Retract the manifest rows for what a prune just removed, at either end.
 
-        `--delete` fires because the *other* end no longer has the file, so the manifest
-        row saying it does is wrong from that moment — and unlike a credit this needs no
-        filesystem check, because the evidence *is* the deletion: rsync prints `deleting`
-        after the unlink, not before it.
-
-        Which end differs and the retraction does not. A pull prunes this host's library
-        and the rows are the upstream's claim; a mirror Replicate and a `prune: true` Full
-        Sync prune the device, and the rows are that device's. Both are rows under the same
-        `device_id`, both stop being true at the same instant, so this is one function.
-
-        Runs after the credit, on every terminal outcome and never on a dry run, on the
-        same reasoning: an interrupted prune still pruned what it got to. Left undone, the
-        stale rows inflate the directory fractions `presence` computes — see
-        `Manifests.retract`.
+        No filesystem check: rsync prints `deleting` after the unlink. Every outcome but a
+        dry run, since an interrupted prune still pruned what it reached. See
+        `Manifests.retract` for why a stale row is wrong, not merely untidy.
         """
         if job.dry_run:
             return
@@ -2487,25 +2013,12 @@ class JobRunner:
             entry = self.index.entry(src)
             if entry is None:
                 continue
+            recorded.append(_manifest_row(entry))
             if entry.is_dir:
-                # The directory itself as well as its contents: rsync -R creates it, and
-                # an empty one leaves no other trace that it made it across.
-                recorded.append((entry.path, None, 0, entry.mtime, 1))
-                recorded.extend(self._descend_manifest(src))
-            else:
-                recorded.append((entry.path, entry.blob, entry.size, entry.mtime, 0))
+                # The directory too: an empty one leaves no other trace.
+                recorded.extend(_manifest_row(e) for e in self.index.subtree(entry.path))
         if recorded:
             self.manifests.record(job.device_id, recorded, source="push")
-
-    def _descend_manifest(self, path: str) -> list[tuple]:
-        out: list[tuple] = []
-        for child in self.index.children(path, limit=20000):
-            if child.is_dir:
-                out.append((child.path, None, 0, child.mtime, 1))
-                out.extend(self._descend_manifest(child.path))
-            else:
-                out.append((child.path, child.blob, child.size, child.mtime, 0))
-        return out
 
     def _prune_logs(self) -> None:
         try:
@@ -2525,31 +2038,39 @@ class JobRunner:
     # --- deferred watcher -------------------------------------------------
 
     async def _watch_deferred(self) -> None:
-        """Promote deferred jobs the moment their node answers."""
-        while True:
-            await asyncio.sleep(60)
-            try:
-                for job in list(self._live.values()):
-                    if job.state != "deferred" or job.hold:
-                        # `hold` is the user having unticked "run automatically"; such a
-                        # job waits for an explicit Start, however reachable the node is.
-                        continue
-                    if self.probe.status(job.device_id).online:
-                        job.state = "queued"
-                        self.store.save(job)
-                        self._queue.put_nowait(job.id)
-                        self._emit(JobEvent("dock"))
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001
-                pass
+        """Promote a deferred job the moment its node answers, woken by the probe's own
+        state changes. The five-minute sweep is only a backstop for a dropped notice."""
+        changes = self.probe.subscribe()
+        try:
+            while True:
+                try:
+                    flipped = set(await asyncio.wait_for(changes.get(), timeout=300))
+                except asyncio.TimeoutError:
+                    flipped = None
+                try:
+                    self._promote(flipped)
+                except Exception:  # noqa: BLE001 - the watcher must outlive a bad job
+                    log.exception("could not promote deferred jobs")
+        finally:
+            self.probe.unsubscribe(changes)
+
+    def _promote(self, device_ids: set[str] | None) -> None:
+        """Queue every deferred job whose node is online, among `device_ids` (None: any)."""
+        for job in list(self._live.values()):
+            if job.state != "deferred" or job.hold:
+                continue  # held: waits for an explicit Start
+            if device_ids is not None and job.device_id not in device_ids:
+                continue
+            if self.probe.status(job.device_id).online:
+                job.state = "queued"
+                self.store.save(job)
+                self._queue.put_nowait(job.id)
+                self._emit(JobEvent("dock"))
 
     # --- lifecycle --------------------------------------------------------
 
     def start(self) -> None:
-        # Before anything else, and synchronously: if we died inside a pull's catalog
-        # window, the local service is stopped and nobody else is going to start it. See
-        # `_service_hold` for why the `finally` cannot cover this case.
+        # First, and synchronously: a death inside a pull's window left the service down.
         hold = self._service_hold
         if hold.exists():
             try:
@@ -2569,14 +2090,15 @@ class JobRunner:
                 )
             hold.unlink(missing_ok=True)
 
-        # A job that was running when the process died cannot be resumed in place;
-        # mark it failed so the history is honest and the user can retry.
+        # A running job cannot resume in place; one that had not started can wait on.
         for job in self.store.unfinished():
             if job.state == "running":
                 job.state = "failed"
                 job.error = "interrupted by restart"
                 job.finished_at = time.time()
                 self.store.save(job)
+            elif job.id not in self._live:
+                self._readopt(job)
 
         if not self._workers:
             for i in range(max(1, self.settings.concurrency)):
@@ -2587,6 +2109,45 @@ class JobRunner:
             self._watcher = asyncio.create_task(
                 self._watch_deferred(), name="deferred-watcher"
             )
+
+    def _readopt(self, job: Job) -> None:
+        """Take back a queued or deferred job the previous process left behind.
+
+        Its argv is rebuilt against the devices.yaml loaded *now*, so a node that has since
+        become `upstream` is refused as a retry would be; a job that no longer builds is
+        failed with the reason. Ignored, as they once were, they read QUEUED for ever.
+        """
+        device = self.devices.device(job.device_id)
+        config = self.devices.config
+        try:
+            if device is None:
+                raise ValueError(f"{job.device_id} is no longer in devices.yaml")
+            if job.kind == "pull":
+                argv = build_pull_argv(device, config, self.settings, dry_run=job.dry_run)
+            else:
+                argv = build_argv(
+                    device,
+                    config,
+                    job.sources,
+                    self.settings,
+                    dry_run=job.dry_run,
+                    adopt=job.adopt,
+                    whole_library=job.full_library,
+                )
+        except ValueError as exc:
+            job.state = "failed"
+            job.error = f"not resumed after a restart: {exc}"
+            job.finished_at = time.time()
+            self.store.save(job)
+            return
+        job.argv = argv
+        self.store.save(job)
+        self._live[job.id] = job
+        self._terms[job.id] = deque(maxlen=self.settings.term_ring)
+        self._append_line(job, f"$ {job.command}", "cmd")
+        self._append_line(job, "resumed after a restart", "info")
+        if job.state == "queued":
+            self._queue.put_nowait(job.id)
 
     async def stop(self) -> None:
         for task in [*self._workers, self._watcher]:
@@ -2600,18 +2161,15 @@ class JobRunner:
                     pass
         self._workers.clear()
         self._watcher = None
-        # Readers first, rsync second. This used to call terminate() and return, which
-        # only asks the child to go and leaves its transport open for a garbage collector
-        # that runs after the loop has closed. See procs.reap.
+        # Readers first, then the children. See procs.reap.
         await reap(self._procs.values())
         self._procs.clear()
         await reap(self._probe_procs)
         self._probe_procs.clear()
 
 
-# rsync's own diagnostics are accurate but rarely name the actual cause. These are the
-# failures that actually happen against e-readers and phones, each paired with the thing
-# worth checking. Mirrors the `hint:` lines the design shows in the connection-test strip.
+# What rsync's diagnostics rarely say: the likely cause, for the failures that actually
+# happen on this fleet. A more specific needle comes before a general one it contains.
 _HINTS: list[tuple[str, str]] = [
     (
         "no such file or directory",
@@ -2657,6 +2215,11 @@ _HINTS: list[tuple[str, str]] = [
         "connection unexpectedly closed",
         "the device went away mid-transfer; retry when it is back",
     ),
+    (
+        "interactive authentication required",
+        "polkit refused to let this service manage the unit — install "
+        "deploy/50-libnodes-urantia.rules to /etc/polkit-1/rules.d/",
+    ),
     ("kex_exchange_identification", "dropbear may not offer a KEX this ssh accepts — "
      "pin one in ~/.ssh/config or in the node's extra ssh options"),
 ]
@@ -2665,11 +2228,8 @@ _HINTS: list[tuple[str, str]] = [
 def is_attrs_only(text: str) -> bool:
     """True when rsync's exit 23 was about attributes alone, and every byte landed.
 
-    Deliberately conservative: it needs at least one diagnostic (an exit 23 with none at
-    all is not something we understand, so it stays a failure) and *every* one of them
-    has to be an attribute failure. A vanished source file, an unreadable book, a full
-    device -- each also exits 23, each prints an `rsync:` line that is not `failed to
-    set`, and each is a genuinely partial transfer that must keep saying so.
+    Conservative: at least one diagnostic, and every one a `failed to set`. A vanished
+    file, an unreadable book or a full device also exits 23 and must stay a failure.
     """
     problems = _RSYNC_PROBLEM_RE.findall(text or "")
     if not problems:
@@ -2679,8 +2239,16 @@ def is_attrs_only(text: str) -> bool:
 
 def hints_for_text(text: str, code: int) -> list[str]:
     """Likely causes for a failure, from whatever the command said."""
+    if code == SPAWN_FAILED:
+        # Alone: the spawn error's "No such file or directory" would blame the target.
+        return ["a command this job runs is not installed on this host"]
     tail = (text or "")[-4096:].lower()
-    found = [hint for needle, hint in _HINTS if needle in tail]
+    found = []
+    for needle, hint in _HINTS:
+        if needle in tail:
+            found.append(hint)
+            # Consumed, so "permission denied (publickey)" is not also a write problem.
+            tail = tail.replace(needle, "")
     if not found and code == 255:
         found.append("ssh itself failed — the node is probably unreachable")
     return found[:2]
@@ -2705,30 +2273,18 @@ def _attrs_only(log_path: Path) -> bool:
 def _apply_progress(job: Job, match: re.Match) -> None:
     """Read one `--info=progress2` line into the job.
 
-    Three numbers, three different meanings, and the bug this function is the fix for
-    was reading them as one. Measured against a real aborted push of 234 files:
-
-    * `xfr#N` is the count of transfers rsync has **finished** — 14 when the log already
-      held 15 `@` lines, because the name is printed when a file starts.
-    * `to-chk=r/t` counts **file-list entries**, directories included and skipped files
-      included: 244 for a directory holding 234 files and 9 subdirectories. It walked
-      35 of them while sending 15, so reporting it as "35 files" was a straight
-      overstatement of the work done.
-    * the leading byte count is the running sum of the `@%l` sizes — 259,124,497 at
-      `xfr#14`, exactly the 14 preceding sizes added up. Skipped files contribute
-      nothing to it, so it needs no adjustment.
-
-    rsync's own percentage is bytes-sent over the size of the whole file list, so a
-    300 MB repair inside a 10 GB tree reads 3% and never advances. The bar tracks
-    entries instead, which is the one quantity that always reaches its total.
+    Three numbers that count three things (measured on an aborted push of 234 files):
+    `xfr#N` is transfers *finished* (14 when 15 @-lines had printed); `to-chk=r/t` is
+    file-list entries, directories and skipped files included (244 for that directory);
+    and the byte count is the running sum of the @-line sizes. The bar tracks entries,
+    because rsync's own percentage is bytes over the whole list: a 300 MB repair in a
+    10 GB tree reads 3% and never moves.
     """
     raw_bytes, pct, rate, elapsed, xfr, remaining, total = match.groups()
     job.bytes_done = parse_size_token(raw_bytes)
     job.rate = rate
     if xfr:
-        # max() rather than assignment: _run zeroes the counter at the start of each
-        # attempt, and a progress line buffered from the previous rsync must not be able
-        # to drag the new attempt's count backwards.
+        # max(): a line buffered from the previous attempt must not drag this one back.
         job.files_sent = max(job.files_sent, int(xfr))
     if total and remaining:
         job.entries_total = int(total)
@@ -2737,25 +2293,16 @@ def _apply_progress(job: Job, match: re.Match) -> None:
         job.pct = min(100.0, job.entries_done * 100 / job.entries_total)
     else:
         job.pct = float(pct)
-    # files_total and bytes_total stay as _estimate set them, from the index. They are
-    # the size of what was *selected*, and the queued card, the dock and the jobs table
-    # all quote them; letting rsync redefine them mid-run is what made one directory
-    # read 234 files in the file table and 244 in the dock.
+    # files_total and bytes_total stay as `_estimate` set them: the selection, in files.
     job.eta = _eta(job)
 
 
 def _eta(job: Job) -> str:
-    """Time left, in the same currency as the bar: file-list entries.
-
-    Estimating from bytes needs a byte total, and the only honest one available mid-run
-    is the whole selection — which for a mostly-synced tree is orders of magnitude more
-    than will actually move (10 GB quoted for a 300 MB repair). Entries are what the bar
-    counts down, so the ETA counts the same thing down at the observed rate.
-    """
+    """Time left in the bar's currency, file-list entries. A byte ETA would divide by the
+    whole selection: 10 GB quoted for a 300 MB repair."""
     if not job.entries_total or job.started_at is None:
         return ""
-    # Below ~5% the sample is a handful of directory entries consumed in milliseconds
-    # and the extrapolation is nonsense. Say nothing rather than something wrong.
+    # Below ~5% the sample is a few directory entries and the extrapolation is nonsense.
     if job.entries_done < max(1, job.entries_total // 20):
         return ""
     elapsed = time.time() - job.started_at
@@ -2772,31 +2319,37 @@ def _eta(job: Job) -> str:
     return f"{h}:{m:02d}:{s:02d}"
 
 
-async def _iter_lines(stream: asyncio.StreamReader):
-    """Yield rsync output split on both \\n and \\r.
+_LINE_BREAK_RE = re.compile(r"\r\n|\r|\n")
 
-    `--info=progress2` rewrites one line in place with carriage returns, so a plain
-    readline() would block until the transfer finished.
+
+async def _iter_lines(stream: asyncio.StreamReader):
+    """Yield rsync output split on both \\n and \\r (progress2 rewrites a line in place, so
+    readline() would block until the end).
+
+    Decoded incrementally: a read ends wherever 4 KiB does, and decoding each chunk alone
+    turned a Cyrillic letter split across it into two U+FFFD, a filename that then matched
+    nothing when the manifest was credited.
     """
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     buffer = ""
     while True:
         chunk = await stream.read(4096)
-        if not chunk:
-            break
-        buffer += chunk.decode("utf-8", errors="replace")
-        buffer = buffer.replace("\r\n", "\n")
-        while True:
-            idx = min(
-                (i for i in (buffer.find("\n"), buffer.find("\r")) if i != -1),
-                default=-1,
-            )
-            if idx == -1:
-                break
-            line, buffer = buffer[:idx], buffer[idx + 1 :]
+        buffer += decoder.decode(chunk, final=not chunk)
+        *lines, buffer = _LINE_BREAK_RE.split(buffer)
+        for line in lines:
             if line:
                 yield line
+        if not chunk:
+            break
     if buffer.strip():
         yield buffer
+
+
+def _manifest_row(entry) -> tuple:
+    """An index entry as `Manifests.record` takes it; a directory's recursive size is 0."""
+    if entry.is_dir:
+        return (entry.path, None, 0, entry.mtime, 1)
+    return (entry.path, entry.blob, entry.size, entry.mtime, 0)
 
 
 def _label_for(sources: Sequence[str]) -> str:

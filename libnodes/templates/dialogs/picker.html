@@ -1,6 +1,4 @@
-{# Choose devices for a push. Multi-select: one job per device.
-   Used by the selection bar and by both of a row's buttons — it is now the only way to
-   start a push from the Library at all. #}
+{# Choose devices for a push, one job each: the only way to start one from the Library. #}
 <div class="backdrop" id="device-picker">
   <div class="dialog" style="width:460px">
 
@@ -18,15 +16,10 @@
 
       <form id="push-form">
         {% for p in paths %}<input type="hidden" name="path" value="{{ p }}">{% endfor %}
-        {% if dry_run %}<input type="hidden" name="dry_run" value="on">{% endif %}
         {% for d in devices %}
           {% set st = status(d.id) %}
           <label class="opt">
-            {# Nothing pre-checked: the first device in the file may well be offline,
-               and a dialog that arrives with a surprise already selected is worse than
-               one extra click. There is no one-click path any more — the row's `→ ONE`
-               and `→ LG` were the first two selectable devices in devices.yaml order,
-               picked by nothing but file order, and each POSTed a real transfer. #}
+            {# Nothing pre-checked: a surprise already selected is worse than one click. #}
             <input class="check" type="checkbox" name="device" value="{{ d.id }}">
             <span style="flex:1;min-width:0">
               {{ d.name }}
@@ -43,11 +36,8 @@
             </span>
           </label>
         {% else %}
-          {# Neither a mirror nor an upstream is a selection target — a mirror replicates
-             the whole root from its own row action, an upstream is only ever pulled from —
-             so on a fleet of those this list is legitimately empty and has to say which
-             kind of empty it is, naming each reason separately because the remedies
-             differ. #}
+          {# Mirrors and upstreams are never targets, so an empty list says which kind of
+             empty it is. #}
           {% if hidden_mirrors or hidden_upstreams %}
             <div class="meta">
               No devices take a selection.
@@ -70,14 +60,9 @@
     <div class="dialog-foot">
       <button class="btn" type="button"
               onclick="document.getElementById('device-picker').remove()">Cancel</button>
-      {# Close AFTER the response lands, never in onclick. An inline handler is registered
-         when the fragment is parsed and htmx's when it processes the node, so onclick runs
-         first and detaches this button along with #push-form — and htmx 2 silently drops a
-         request whose element has left the document (`getRootNode() === document`). No
-         request, no console error: the dialog just vanished. Closing first is wrong for the
-         reply too — .backdrop is z-index 60 over .notices' 50, so the toast would land
-         behind it. `closest` rather than the id: the row's ⌕ and → can each put a
-         #device-picker in #notices, and an id lookup would close the wrong one. #}
+      {# Close after the response lands, never in onclick: htmx drops a request whose
+         element has left the document, and closing first would hide the toast behind
+         the backdrop. `closest`, because two pickers may be open. #}
       <button class="btn btn-primary" type="button"
               hx-post="{{ '/jobs/dry-run' if dry_run else '/jobs' }}"
               hx-include="#push-form"

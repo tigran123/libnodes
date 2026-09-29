@@ -38,24 +38,13 @@ def dock_context(app: AppState) -> dict:
 
 
 def source_label(app: AppState):
-    """Build the Jobs table's SOURCE renderer.
-
-    A selection covering every top-level directory *is* the library, and saying `/Books`
-    beats naming one arbitrary member and counting the rest. The cell used to read
-    `/Books/Art +16 (full)`, where `Art` was only alphabetically first and `(full)` was
-    `len(sources) > 3` — a heuristic that called any four directories the whole library
-    and, on a genuine full push, still printed a directory name it had picked at random.
-
-    Returns a closure so the one scandir behind `full_sync_sources` happens per render
-    rather than per row. It is a single level of the root, not a library walk.
-    """
+    """Build the Jobs table's SOURCE renderer: a selection of every top-level directory is
+    the library, and says `/Books`. A closure, so the one scandir happens per render."""
     root = str(app.settings.library_root)
     whole = set(full_sync_sources(app.settings))
 
     def render(job) -> str:
-        # A pull's source is the far end, and this column would otherwise print the local
-        # root for both source and destination — the one thing about a pull that has to be
-        # unambiguous at a glance.
+        # A pull's source is the far end.
         if getattr(job, "kind", "push") == "pull":
             device = app.devices.config.by_id.get(job.device_id)
             if device is not None:
@@ -116,7 +105,14 @@ async def dock(request: Request, active: int | None = None):
 
 @router.get("/jobs/telemetry", response_class=HTMLResponse)
 async def jobs_telemetry(request: Request):
-    return templates.TemplateResponse(request, "fragments/telemetry.html", jobs_context(request))
+    """Three numbers, every 3 s while a job runs: its own context, not `jobs_context`."""
+    app = state(request)
+    running, _pending = app.jobs.counts()
+    return templates.TemplateResponse(
+        request,
+        "fragments/telemetry.html",
+        {"host": host_stats(app.settings.library_root), "running": running},
+    )
 
 
 # ------------------------------------------------------------- submission --
@@ -152,24 +148,15 @@ def _queue(
     if device is None:
         return None, "unknown device"
     if device.is_upstream:
-        # Above the mirror branch, and it refuses rather than re-deriving: an upstream is
-        # pulled from, and a pull is not a Job this function can compose -- it has its own
-        # route and its own six phases. Retry is the live way in, replaying a stored job's
-        # sources, which is exactly the path a route-level guard alone would not cover.
+        # Refused, not re-derived: a pull has its own route.
         return None, f"{device.name} is an upstream source — it is pulled from, never pushed to"
     if device.is_mirror:
-        # `_resolve` filters against the index, which by design holds no `.data/` — so a
-        # mirror push arriving here would be stripped down to the browsable categories
-        # while `build_argv` still added `--delete`, leaving preserved symlinks pointing at
-        # a vault that was never sent. Retry is the live route into this: it replays a
-        # stored job's sources. Re-derive the whole root instead of narrowing it.
+        # Re-derived whole: `_resolve` would strip the unindexed vault while --delete stayed.
         try:
             return (
                 app.jobs.submit(
                     device,
                     mirror_sources(app.settings),
-                    # Not `_submit`'s label: that names the first path and a count, which
-                    # for a whole-root replica reads as ".data +4".
                     label=(
                         "(dry run · whole root)"
                         if dry_run
@@ -183,14 +170,7 @@ def _queue(
         except ValueError as exc:
             return None, str(exc)
     if full_library and device.full_sync:
-        # A stored Full Sync, re-derived rather than replayed — the same reasoning as the
-        # mirror branch above, one step milder. `_resolve` would hand back whatever of the
-        # old source list the index still vouches for, so a top-level directory added
-        # since would be missing from the retry while `--delete` (on a `prune: true` node)
-        # stayed: everything under a category this run never mentioned is outside the
-        # transfer and safe, but a category that has since been *emptied* out of the
-        # library would go unpruned, and the retry would quietly be a different job from
-        # the one the row names. Re-deriving keeps "full library" meaning what it says.
+        # A Full Sync, re-derived too, so "full library" still means the current library.
         try:
             return (
                 app.jobs.submit(
@@ -221,6 +201,34 @@ def _queue(
     )
 
 
+def _selection(app: AppState, device_ids: list[str], paths: list[str]):
+    """`(targets, paths, error)` for a push or a dry run of a Library selection.
+
+    One gate for both routes, because a form post is not limited to what the picker drew:
+    `/jobs/dry-run` once had no mode check at all, so an upstream target was an unhandled
+    500 and a mirror queued a whole-root `--delete -n` under a subtree label. The two
+    refusals stay separate because their remedies differ -- a mirror takes the whole root
+    from its own Replicate, an upstream takes nothing.
+    """
+    targets = [d for d in (app.devices.config.by_id.get(x) for x in device_ids) if d]
+    upstreams = [d.name for d in targets if d.is_upstream]
+    if upstreams:
+        return [], [], (
+            f"{', '.join(upstreams)}: an upstream source — it is pulled from, never pushed to"
+        )
+    mirrors = [d.name for d in targets if d.is_mirror]
+    if mirrors:
+        return [], [], (
+            f"{', '.join(mirrors)}: a mirror node replicates the whole root — use Replicate"
+        )
+    if not targets:
+        return [], [], "no device selected"
+    wanted = _resolve(app, paths)
+    if not wanted:
+        return [], [], "nothing selected"
+    return targets, wanted, None
+
+
 @router.post("/jobs", response_class=HTMLResponse)
 async def create_job(
     request: Request,
@@ -229,37 +237,13 @@ async def create_job(
     confirmed: str = Form(""),
     auto: str = Form(""),
 ):
-    """Queue a push — one job per selected device.
-
-    If a device is unreachable this returns the confirmation dialog and creates
-    **nothing** for it; the job only exists once the user confirms. Creating it first
-    and cancelling afterwards left an un-asked-for job in the history.
-    """
+    """Queue a push, one job per selected device. An unreachable device gets the
+    confirmation dialog first, and nothing is created until the user confirms."""
     app = state(request)
     ctx = base_context(request, "library")
-
-    targets = [d for d in (app.devices.config.by_id.get(x) for x in device) if d]
-    # The picker offers neither mirrors nor upstreams, but a hidden button is not a guard:
-    # this is a form post. The two refusals are separate because the reasons are: a mirror
-    # takes the whole root from its own Replicate action, and an upstream takes nothing at
-    # all. See the notes in `_queue`.
-    upstreams = [d for d in targets if d.is_upstream]
-    if upstreams:
-        names = ", ".join(d.name for d in upstreams)
-        ctx["message"] = f"{names}: an upstream source — it is pulled from, never pushed to"
-        return templates.TemplateResponse(request, "fragments/error_toast.html", ctx)
-    mirrors = [d for d in targets if d.is_mirror]
-    if mirrors:
-        names = ", ".join(d.name for d in mirrors)
-        ctx["message"] = f"{names}: a mirror node replicates the whole root — use Replicate"
-        return templates.TemplateResponse(request, "fragments/error_toast.html", ctx)
-    if not targets:
-        ctx["message"] = "no device selected"
-        return templates.TemplateResponse(request, "fragments/error_toast.html", ctx)
-
-    wanted = _resolve(app, path)
-    if not wanted:
-        ctx["message"] = "nothing selected"
+    targets, wanted, error = _selection(app, device, path)
+    if error:
+        ctx["message"] = error
         return templates.TemplateResponse(request, "fragments/error_toast.html", ctx)
 
     # Ask about the first unreachable device before creating anything at all.
@@ -278,8 +262,7 @@ async def create_job(
                     request, "dialogs/offline_push.html", ctx
                 )
 
-    # An unchecked box submits nothing, so "auto" absent on a confirmed push means the
-    # user deliberately cleared it and wants the job held.
+    # "auto" absent on a confirmed push: the user unticked it and wants the job held.
     hold = confirmed == "yes" and auto != "on"
     jobs = []
     for target in targets:
@@ -297,18 +280,12 @@ async def dry_run(
     device: list[str] = Form(default=[]),
     path: list[str] = Form(default=[]),
 ):
-    """`rsync -n` against each chosen device. Never asks about reachability: a dry run
-    that cannot connect simply fails, and costs nothing."""
+    """`rsync -n` against each chosen device, without asking about reachability."""
     app = state(request)
     ctx = base_context(request, "library")
-
-    targets = [d for d in (app.devices.config.by_id.get(x) for x in device) if d]
-    wanted = _resolve(app, path)
-    if not targets:
-        ctx["message"] = "no device selected"
-        return templates.TemplateResponse(request, "fragments/error_toast.html", ctx)
-    if not wanted:
-        ctx["message"] = "nothing selected"
+    targets, wanted, error = _selection(app, device, path)
+    if error:
+        ctx["message"] = error
         return templates.TemplateResponse(request, "fragments/error_toast.html", ctx)
 
     ctx["jobs_queued"] = [
@@ -337,12 +314,7 @@ async def picker(
         if entry is not None:
             total += entry.size
 
-    # FAT32 cannot hold a file of 4 GiB or more. Say so before the transfer fails
-    # halfway rather than after. Asked of the index rather than summed from the entries
-    # above, because `Entry.size` on a directory is its recursive total: selecting the
-    # library's 17 top-level directories claimed a largest file of 68.7 GB — `Science`
-    # whole — and warned about a 4 GiB limit the biggest real file (786 MB) is nowhere
-    # near.
+    # For the FAT32 4 GiB warning. See `LibraryIndex.max_file_size`.
     biggest = app.index.max_file_size(wanted)
 
     ctx.update(
@@ -350,15 +322,8 @@ async def picker(
             "paths": wanted,
             "total_bytes": total,
             "biggest": biggest,
-            # Only `books` nodes are offered. A mirror takes the whole root or nothing —
-            # a subtree of preserved symlinks has no vault to resolve against — and an
-            # upstream takes nothing at all. `is_selectable` is positive rather than
-            # `not is_mirror` so a mode invented later is excluded until someone opts it
-            # in; `upstream` is the mode that proved the point. See library_context, which
-            # drops the same nodes from the row buttons.
+            # Only `books` nodes (see `Device.is_selectable`).
             "devices": [d for d in app.devices.config.devices if d.is_selectable],
-            # So the empty case can say *why* it is empty, and which kind of why. "No
-            # devices configured" would be a lie on a fleet that is all mirrors.
             "hidden_mirrors": sum(
                 1 for d in app.devices.config.devices if d.is_mirror
             ),
@@ -398,9 +363,7 @@ async def start_job(request: Request, job_id: int):
     return templates.TemplateResponse(request, "job_rows.html", jobs_context(request))
 
 
-# Must stay above `/jobs/{job_id}`: FastAPI matches routes in declaration order, so below
-# it this literal is swallowed by the parameterised one and every Clear finished is a 422
-# on int("finished") -- a button that silently does nothing.
+# Above `/jobs/{job_id}`, which would otherwise swallow it as a 422.
 @router.delete("/jobs/finished", response_class=HTMLResponse)
 async def clear_finished(request: Request):
     app = state(request)
@@ -425,14 +388,9 @@ async def retry(request: Request, job_id: int):
     if old is None:
         ctx["message"] = "job not found"
         return templates.TemplateResponse(request, "fragments/error_toast.html", ctx)
-    # Repeat what was run, dry run included. Retrying a preview as a real transfer is
-    # wrong in any mode; on a mirror it would turn "show me what would change" into a
-    # --delete push, which is the one place it is unrecoverable.
+    # Repeat what was run, dry run included: a retried preview must stay a preview.
     if getattr(old, "kind", "push") == "pull":
-        # Re-derived from the device, never replayed through `_queue`: that path resolves
-        # stored source names against the index, and a pull's stored source is the far
-        # end's path, which the index has never heard of. `build_pull_argv` takes no
-        # sources at all, so there is nothing here that could go stale between runs.
+        # Re-derived from the device; a pull takes no sources to go stale.
         device = app.devices.config.by_id.get(old.device_id)
         if device is None or not device.is_upstream:
             ctx["message"] = "that device is no longer an upstream source"
@@ -449,8 +407,6 @@ async def retry(request: Request, job_id: int):
         old.device_id,
         old.sources,
         dry_run=old.dry_run,
-        # Carried, for the same reason `dry_run` is: a retry that silently dropped the
-        # prune would run a different command under the row's own label.
         full_library=getattr(old, "full_library", False),
     )
     if job is None:
@@ -460,8 +416,7 @@ async def retry(request: Request, job_id: int):
     return templates.TemplateResponse(request, "fragments/queued.html", ctx)
 
 
-#: A finished full-library run writes ~400 KB of log. Show the end of it — the summary,
-#: the errors, the last files touched — and offer the raw file for the rest.
+#: A full-library log is ~400 KB; the dialog shows its end and links the rest.
 LOG_TAIL_LINES = 600
 
 
@@ -513,30 +468,22 @@ async def job_log(request: Request, job_id: int):
 
 @router.get("/jobs/stream")
 async def stream(request: Request):
-    """One multiplexed stream carrying rendered HTML fragments, not JSON.
-
-    HTMX swaps the payloads directly, so the server stays the only place that knows
-    what a job card looks like.
-    """
+    """One multiplexed stream of rendered HTML fragments, which htmx swaps directly."""
     app = state(request)
     queue = app.jobs.subscribe()
 
     async def publisher():
         try:
-            # Paint the current state immediately: a reconnect must not wait for the
-            # next progress tick to show a running job.
+            # Paint the current state at once, so a reconnect is never blank.
             yield {
                 "event": "dock",
                 "data": render("dock.html", dock_context(app)),
-                # Browsers reconnect after a Wi-Fi drop; 3s is the design's promise.
                 "retry": 3000,
             }
             while True:
                 try:
                     event: JobEvent = await asyncio.wait_for(queue.get(), timeout=30)
                 except asyncio.TimeoutError:
-                    # Nothing happened. Keep waiting -- EventSourceResponse sends its
-                    # own keep-alive comments, so there is nothing for us to emit.
                     continue
                 payload = _render_event(app, event)
                 if payload is not None:
@@ -544,12 +491,9 @@ async def stream(request: Request):
         finally:
             app.jobs.unsubscribe(queue)
 
-    # Do NOT poll request.is_disconnected() in the generator. EventSourceResponse is
-    # already listening on the same receive channel to detect client disconnects; a
-    # second consumer steals those messages, so the stream sees a phantom disconnect,
-    # closes, and the browser reconnects. Repeat that a few times and the six
-    # connections HTTP/1.1 allows per host are all held by dying streams, at which point
-    # every ordinary page load queues behind them and the whole UI appears to hang.
+    # Never poll request.is_disconnected() here: EventSourceResponse reads the same
+    # channel, a second reader steals its messages, and the phantom reconnects fill the
+    # six connections a host allows until every page load hangs.
     return EventSourceResponse(publisher(), ping=15)
 
 
@@ -570,9 +514,7 @@ def _render_event(app: AppState, event: JobEvent) -> dict | None:
     if event.kind == "line":
         return {
             "event": f"job-{job.id}-line",
-            "data": render(
-                "term_line.html", {"css": event.css, "text": event.text}
-            ),
+            "data": render("term_line.html", {"lines": event.lines}),
         }
     if event.kind == "done":
         return {

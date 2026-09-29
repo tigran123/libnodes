@@ -1,8 +1,6 @@
 {# Whole dock body. Re-rendered on every `dock` event; empty when nothing is live. #}
 {% if not jobs %}
-  {# Nothing left to watch. Swap the shell back to polling shortly, which closes the
-     EventSource and returns the connection to the browser's pool. Harmless if the shell
-     is already in polling mode. #}
+  {# Nothing left: swap back to polling shortly, closing the EventSource. #}
   <div hx-get="/jobs/dock"
        hx-trigger="load delay:2s"
        hx-target="#job-dock"

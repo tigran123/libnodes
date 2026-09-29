@@ -101,10 +101,10 @@ def test_file_events_are_declared_not_guessed():
 
 
 def test_libnodes_specifies_its_own_output_format(app, settings):
-    """Parsing must not depend on what the user put in rsync_flags.
+    """Parsing depends on the output format, so the program names it itself.
 
-    devices.yaml is hand-edited; if someone drops -v or adds --info=name0, the file
-    lines change shape and a heuristic parser quietly stops seeing them.
+    If the lines could change shape -- a dropped -v, an added --info=name0 -- a heuristic
+    parser would quietly stop seeing them.
     """
     from libnodes.jobs import INFO_FLAGS, OUT_FORMAT, build_argv
 
@@ -114,27 +114,6 @@ def test_libnodes_specifies_its_own_output_format(app, settings):
 
     assert f"--out-format={OUT_FORMAT}" in argv
     assert f"--info={INFO_FLAGS}" in argv
-
-
-def test_config_cannot_override_the_transfer_flags(app, settings):
-    """rsync_flags is accepted for old files but has no effect.
-
-    The program depends on the exact flags; a hand-edited value that dropped -L or the
-    out-format would break it in ways that look like application bugs.
-    """
-    from libnodes.jobs import BASE_FLAGS, OUT_FORMAT, build_argv
-
-    lib = app.state.lib
-    device = lib.devices.config.by_id["kobo"].model_copy(
-        update={"rsync_flags": ["-z", "--out-format=%n", "--no-links"]}
-    )
-    argv = build_argv(device, lib.devices.config, ["Science"], settings)
-
-    assert "-z" not in argv and "--no-links" not in argv
-    assert "--out-format=%n" not in argv
-    assert f"--out-format={OUT_FORMAT}" in argv
-    for flag in BASE_FLAGS:
-        assert flag in argv
 
 
 async def test_file_events_reach_the_dock_as_names(app, tmp_path, monkeypatch):

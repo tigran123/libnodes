@@ -28,16 +28,11 @@
   --accent: #9a8ce6;
   --accent-hi: #b6acef;
   --ok: #4fb383;
-  /* Amber and red have to be told apart at 6px, which is the size of a status dot. The
-     design bundle's pair was #d3a05a against #d1685c: 29deg of hue and *identical*
-     lightness (both L59 in HSL), 1.53:1 against each other -- amber read as red at a
-     glance, so `sleeping` and `offline` looked like one state. This is L65 and H45, a
-     38deg gap and 2.2:1, without going neon. Every rgba() literal of it below has to be
-     changed with it; `test_a_state_tint_is_the_state_colour` is what enforces that. */
+  /* Amber and red must be told apart at 6px, a status dot. The bundle's pair had the same
+     lightness (1.53:1), so sleeping looked offline; this is 2.2:1 without going neon.
+     `test_a_state_tint_is_the_state_colour` checks the rgba() copies below. */
   --warn: #eac861;
-  /* Solid fills -- the status dot, the battery bar -- as opposed to ink and 1px borders.
-     On black they are the same colour and this is `var(--warn)`; on white they cannot be,
-     which is what the light theme's own note explains. */
+  /* Solid fills (a status dot, a battery bar), separate from ink; see the light theme. */
   --warn-fill: var(--warn);
   --err: #d1685c;
 
@@ -63,39 +58,20 @@
   /* Text that sits on an --accent fill. */
   --on-accent: #0c0d10;
 
-  /* Global size. Every length in this file is px, mirroring the design bundle's Tailwind
-     scale 1:1 -- so scaling by rewriting 412 values would break the correspondence
-     CLAUDE.md asks be kept, and scaling only the fonts would leave rows, gutters and
-     icons behind and just look wrong. `zoom` scales layout and type together and still
-     reflows, which transform: scale() does not. One number, so it is easy to change or
-     undo.
-
-     Viewport units are the exception: vh/vw resolve against the real viewport and are
-     NOT divided by the zoom, so 100vh would render 100 * --scale tall and put a scrollbar
-     on a shell that is meant to fill the screen exactly. The three that exist are divided
-     back out at their use sites, each marked.
-
-     1.08 was the design bundle's own figure and it was too small on the screen this is
-     actually read on: a 28in 4K monitor turned portrait, half of it, needed Chrome's
-     per-site zoom at 125% to be comfortable -- which is the app failing to size itself.
-     1.21 is that at about 112%, measured on the live page at 2156 CSS px: the card title
-     renders 22.0px against 19.7px before and the 24.6px of the 125% it replaces. The
-     type and the controls grow with it -- and so does how many device cards fit a row, the
-     card grid being auto-fill over a floor in layout px while the screen is real px. Change
-     this number and that floor's arithmetic moves under it; see .cards, which carries the
-     measurements.
-
-     THREE BREAKPOINTS ARE DERIVED FROM THIS NUMBER AND DO NOT FOLLOW IT BY THEMSELVES,
-     because a media query is matched against the real viewport and cannot read a custom
-     property. Change them together or the layout gets a band where it has stopped
-     stacking and cannot lay out:
-
+  /* Global size. Every length here is px, mirroring the design bundle's Tailwind scale 1:1,
+     so the whole page is zoomed rather than 412 values rewritten. Viewport units are not
+     divided by the zoom, so the few in use are divided back out where they appear.
+     
+     1.21, up from the bundle's 1.08, because a 28in 4K monitor in portrait needed Chrome at
+     125% to be readable (card title 19.7 -> 22.0px measured). Three breakpoints are derived
+     from this number by hand -- a media query cannot read a custom property -- and must move
+     with it:
+     
        1089  the rail leaves the flow and the Library stacks   = 900 x --scale
        1520  the device and jobs rows stack                    >= 1248 x --scale
-       1090  the tablet band's floor, the matched pair of 1089
-
-     Each is pinned by a test that recomputes it from this value -- see
-     test_the_rail_breakpoint_follows_the_zoom and its two siblings. */
+       1090  the tablet band's floor, 1089's matched pair
+     
+     Each is recomputed by a test: test_the_rail_breakpoint_follows_the_zoom and its siblings. */
   --scale: 1.21;
 
   /* Native widgets -- select popups, form controls, scrollbars -- are drawn by the
@@ -104,13 +80,8 @@
 }
 
 /* ------------------------------------------------------------ light theme --
- *
- * Same token names, same semantic roles, so no rule below this block needs to know
- * which theme is active. The palette is not an inversion: the accent and state colours
- * are darkened until they carry their meaning against white, which #9a8ce6 and #4fb383
- * do not. Set by data-theme on <html>, written server-side from a cookie so the first
- * paint is already correct.
- */
+   Same tokens and roles, so no rule below needs to know the theme. Not an inversion: the
+   accent and state colours are darkened until they carry against white. */
 
 :root[data-theme="light"] {
   --bg: #f7f8fa;
@@ -131,19 +102,11 @@
   --accent: #6244cf;
   --accent-hi: #4f34b8;
   --ok: #1f7a52;
-  /* The same separation problem, solved only in hue: this is text and 1px borders on
-     white, where 4.5:1 is the floor, so amber cannot be lightened here the way the dark
-     one was -- #92661f was already only 5.07:1. H37 -> H44 at an unchanged 5.06:1 buys
-     the hue gap against #b23d31 and keeps the contrast. */
+  /* The same separation, by hue alone: text on white cannot be lightened under 4.5:1. */
   --warn: #8a6a12;
-  /* Amber on white cannot be one colour. Small text needs 4.5:1, which on white means a
-     dark mustard -- #8a6a12 is 5.06:1 and is as light as the floor allows -- while a 6px
-     dot needs to read as *yellow* beside a red one, and anything that does is around 2:1.
-     Measured: at one token the pair was #8a6a12 on #b23d31, both mid-dark and saturated,
-     which is the pairing reported as "almost the same as red". So the ink keeps its
-     contrast and solid fills get this: H42 against the red's H6, and 7 lightness points
-     above it. A fill only owes 3:1 to its background, and the dot's 3px halo carries it.
-     `test_warning_text_stays_readable` is why this is not simply assigned to --warn. */
+  /* Amber on white cannot be one colour: text needs 4.5:1 (#8a6a12, a mustard), while a 6px
+     dot must read as yellow beside red. Fills get their own token; a fill owes only 3:1.
+     `test_warning_text_stays_readable` is why this is not simply --warn. */
   --warn-fill: #edb01c;
   --err: #b23d31;
 
@@ -274,13 +237,8 @@ html {
   /* See --scale. On the root so every length below it scales together. */
   zoom: var(--scale);
 
-  /* Chrome on Android inflates the text of blocks it takes for a page's main column,
-     and it does it per block rather than per page: on the Nexus 10 the Library's SIZE
-     and MODIFIED cells came out around half again the size of the NAME beside them, so
-     every "2026-05-20" wrapped to two lines while "Art/" did not. It is not a zoom -- the
-     row heights doubled around text the stylesheet had sized to fit. --scale is how this
-     app decides how big it should be, and the autosizer is a second opinion on top of it.
-     No-op everywhere else; there is nothing to switch off on a desktop. */
+  /* Chrome on Android inflates text per block: the Nexus 10's SIZE and MODIFIED came out
+     half again the size of NAME and wrapped. --scale already decides the size. */
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
 }
@@ -338,11 +296,7 @@ ul {
   list-style: none;
 }
 
-/* The UA's `[hidden] { display: none }` is a low-specificity rule, so ANY author rule
-   that sets `display` beats it. The Library's old tree pane proved it: `.tree-row
-   { display: flex }` meant rows were marked hidden and stayed on screen, so collapsing a
-   subtree changed the caret and nothing else. That pane is gone; the trap is not specific
-   to it, and every `.trow`/`.card` here sets `display` too. */
+/* The UA's `[hidden]` loses to any author `display` rule, and every .trow and .card sets one. */
 [hidden] {
   display: none !important;
 }
@@ -419,10 +373,7 @@ ul {
   flex-shrink: 0;
 }
 
-/* The mark is static/icon.svg, the same file the favicon links, so the shape and the
-   colours live there and this only sizes it. `display: block` because an inline image
-   sits on the text baseline and leaves a few pixels of descender gap under it, which
-   knocked the wordmark out of alignment with it. */
+/* The mark is static/icon.svg, the favicon; `display: block` removes the baseline gap. */
 .rail-mark {
   display: block;
   width: 17px;
@@ -544,55 +495,6 @@ ul {
   background: var(--faint);
 }
 
-/* Pinned push target (Library rail) ---------------------------------------- */
-
-.target-pick {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 7px 9px;
-  background: var(--surface);
-  border: 1px solid var(--border-hi);
-  border-radius: var(--r-ctl);
-  font-size: 12px;
-  text-align: left;
-}
-
-/* Not `all: unset` -- that strips the colour too, and the OS-drawn dropdown then
-   renders the page's light text on its own light background. */
-.target-select {
-  flex: 1;
-  min-width: 0;
-  appearance: none;
-  -webkit-appearance: none;
-  border: none;
-  outline: none;
-  padding: 0;
-  background: transparent;
-  color: var(--ink);
-  font: inherit;
-  text-overflow: ellipsis;
-}
-
-.target-pick .caret {
-  margin-left: auto;
-  color: var(--dim);
-}
-
-.pin-scan {
-  border-top: 1px solid var(--line);
-  margin-top: 10px;
-  padding-top: 9px;
-}
-
-.rail-caption {
-  font-size: 10.5px;
-  color: var(--dim);
-  line-height: 1.5;
-  padding: 8px 2px 0;
-}
-
 /* Top bar ----------------------------------------------------------------- */
 
 .topbar {
@@ -628,23 +530,7 @@ ul {
   flex-shrink: 0;
 }
 
-/* Present in the DOM (so Copy can read it inside a user gesture) but never shown. */
-.visually-hidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-
-/* .theme-toggle is styled down with the other .btn variants, not here. A block at this
-   point in the file loses to .btn on the cascade -- same specificity, and .btn comes
-   later -- which is exactly what happened to the font-size: 13px that used to sit here:
-   it never applied, and the button rendered at .btn's 11px like everything else. */
+/* .theme-toggle is styled after .btn, below; here it would lose the cascade. */
 
 .chip {
   display: inline-flex;
@@ -800,11 +686,8 @@ ul {
   color: var(--ink);
 }
 
-/* The emphasised action button: a stronger border and full-strength text, and nothing
-   else. It used to carry `background: var(--hover)` -- the exact background .btn:hover
-   paints -- so it sat there looking permanently pressed and had no hover response left
-   to give. Harmless while every button in a group wore it (the Actions dialog), obvious
-   the moment a plain .btn stood next to one (Test beside Actions on a device row). */
+/* The emphasised action button: a stronger border and full-strength text. Not the hover
+   background, which made it look permanently pressed. */
 .btn-default {
   border-color: var(--border-hi);
   color: var(--ink);
@@ -852,26 +735,10 @@ ul {
   padding: 5px 8px;
 }
 
-/* The theme toggle earns more weight than the buttons around it: it is the only control
-   in the topbar whose effect cannot be guessed from its surroundings, and at .btn's 11px
-   inside a border it read as chrome and went unfound. Borderless so the glyph itself is
-   the target, and half again the size of the text beside it so it carries.
- *
- * Must stay AFTER .btn and .btn:hover. An identical block higher up the file lost the
- * cascade to .btn on both count and order, so its font-size was inert for as long as it
- * existed -- see the note where it used to be.
- *
- * A crescent / a sun because the icon should name the mode you get, not the one you are
- * in -- ◐ / ◑ name neither. Both are drawn as SVG, because on Android 5.1 no glyph says
- * "moon": U+263E and U+263D are in none of the Nexus 10's 91 /system/fonts, and the only
- * moon it has is U+1F319 in NotoColorEmoji, which would go colour exactly as U+2600 does
- * without a variation selector. The sun escaped it -- NotoSansSymbols-Subsetted and
- * NotoSerif both carry U+263C -- so for as long as the pair was glyphs the tablet drew a
- * tofu box beside a perfectly good ☼ and nothing said why. See base.html.
- *
- * line-height: 0 because the box is now the 15px svg and not a 17px line box; without it
- * the button keeps the strut of the text it no longer contains and stands ~3px taller
- * than the Log out button beside it. */
+/* The theme toggle: borderless and half again the text's size, because it is the one
+   topbar control whose effect cannot be guessed. After .btn, or it loses the cascade.
+   line-height: 0, or the button keeps a text strut and stands ~3px tall. The glyphs are
+   SVG; see base.html. */
 .theme-toggle {
   line-height: 0;
   padding: 4px 7px;
@@ -883,12 +750,7 @@ ul {
   color: var(--accent-hi);
 }
 
-/* The toggle's sizing for the same reason and in the same place -- after .btn, or it
-   loses the cascade. line-height: 0 so the box is the 15px svg and not a text strut, which
-   puts the pair at the same ~41 real px on a phone instead of the 80 the words took. The
-   border stays: this is the button that ends the session, and the toggle beside it is the
-   one that can afford to look like a glyph. Rescan on Devices is the same kind of
-   bordered icon button and takes the same box. */
+/* Sized like the toggle, after .btn; bordered, because this one ends the session. */
 .logout,
 .rescan {
   line-height: 0;
@@ -1131,12 +993,8 @@ ul {
   gap: 6px;
 }
 
-/* The reachability message is short and diagnostic -- "connection refused" is the whole
-   of it -- so it must not be the thing that gives way, and it was: as the only shrinkable
-   item in the cell it absorbed every pixel of squeeze. Measured at a 1500px viewport,
-   with the panel 95px wider than its content needed, "timed out" was still being given
-   43px of the 62px it wanted and elided to "time…"; by 1300px it was down to zero. The
-   buttons are fixed-width text, so pinning this one makes the wrap above do the work. */
+/* The reachability message must not be what gives way: it was the one shrinkable item,
+   and "timed out" elided to "time…" with room to spare. The wrap above does the work. */
 .cell-actions .nowrap {
   flex-shrink: 0;
 }
@@ -1184,16 +1042,9 @@ ul {
 
 /* --------------------------------------------------------------- devices -- */
 
-/* minmax, not bare px. A fixed track cannot compress, so the row simply grew wider than
-   .panel and .panel's overflow: hidden swallowed whatever hung off the right -- STORAGE,
-   LAST SYNC and ACTIONS disappeared with nothing on screen to say they existed, and the
-   table looked like it had four columns. Measured: the row needed 1005px, and from 1250px
-   of viewport down to the 1089px stacking breakpoint it did not get it, so there was a
-   ~280px band where the page quietly lied.
-
-   The max of each track is the design's original width, so a wide screen is unchanged.
-   The min is where the column stops shrinking; below the sum of them the stacked layout
-   takes over, which is why that breakpoint and these numbers have to move together. */
+/* minmax, not bare px: a fixed track cannot compress, so the row outgrew .panel and its
+   overflow: hidden swallowed STORAGE onwards in silence. The max is the design's width; the
+   min is where the column stops, and the stacking breakpoint must move with their sum. */
 .device-grid {
   grid-template-columns:
     minmax(150px, 210px)
@@ -1201,26 +1052,14 @@ ul {
     minmax(118px, 176px)
     minmax(96px, 200px)
     minmax(92px, 120px)
-    /* Battery. Narrower than Storage because its widest content is a charging bolt plus
-       "100%" over a bar, where Storage carries "302.9G / 466.4G". The floor went 58 -> 70
-       when the bolt arrived: 7px of glyph and 3px of margin, rounded up. That puts the
-       nine floors at 1022px and a single-line row at 1248 layout px -- 1510 real px at
-       --scale 1.21 -- still inside the 1520px stacking breakpoint below -- which is what
-       test_the_stack_breakpoint_clears_the_row_floor checks, so the next one to grow
-       fails there rather than on somebody's screen. */
+    /* Battery: a bolt plus "100%" over a bar, so narrower than Storage. 70px, which puts the
+       nine floors at 1022px (test_the_stack_breakpoint_clears_the_row_floor). */
     minmax(70px, 96px)
-    /* Last seen, then Last sync. Same content shape -- "3m ago", "yesterday", "never" --
-       so the same floor. The pair sits together on purpose: they are two ages that
-       routinely disagree, and reading one for the other is the mistake the column exists
-       to stop. */
+    /* Last seen, then Last sync: two ages that routinely disagree, side by side. */
     minmax(56px, 116px)
     minmax(56px, 132px)
-    /* 320px, not 200: the floor has to clear this cell's widest content on one line --
-       "connection refused" (~120px) plus Test, Retry and Actions plus gaps, ~295px -- or
-       the buttons wrap onto a second line while the columns to their left still have
-       slack they cannot give up, a grid track being capped at its own max. Measured, the
-       track hit the old 200px floor at 1450px of viewport and started wrapping around
-       1550px. Everything above the floor is still 1fr, so a wide screen is unchanged. */
+    /* 320px: "connection refused" plus Test and Actions on one line, or the buttons wrap while
+       the columns to their left keep slack they cannot give up. */
     minmax(320px, 1fr);
 }
 
@@ -1242,11 +1081,9 @@ ul {
   gap: 4px;
 }
 
-/* An offline row keeps the last figures it got, dated by LAST SEEN, rather than blanking
-   them -- so the bar must not read as a live measurement. A modifier on the storage bar
-   itself, not a rule on the row or the card: either would outrank `.track-err > i` on
-   specificity and take the battery tint with it, and a red node's low battery is the most
-   useful thing on the row, being the likeliest reason it is red at all. */
+/* An offline row keeps its figures, dated by LAST SEEN, with a faint storage bar. A
+   modifier on the bar, not a row rule, which would outrank `.track-err > i` and take the
+   low-battery tint -- the likeliest reason the row is red. */
 .trow.is-offline .track-disk > i,
 .card.is-offline .track-disk > i {
   background: var(--faint);
@@ -1258,23 +1095,16 @@ ul {
   color: var(--ink-2);
 }
 
-/* The charging bolt, left of the percentage in both views. `vertical-align: -1px` rather
-   than a flex wrapper: the glyph sits inside the mono value span, and giving that span a
-   display would take the number out of the text flow it shares with the `%` sign. */
+/* The bolt, left of the percentage; vertical-align rather than a flex wrapper, which would
+   take the number out of the text flow it shares with `%`. */
 .bolt {
   display: inline-block;
   vertical-align: -1px;
   margin-right: 3px;
 }
 
-/* Amber while current is flowing, green once it is merely connected -- full, or a charger
-   that has paused. `--warn-fill` and not `--warn`: that token exists because plain amber
-   reads as red at small sizes, which is exactly the size this is.
-
-   Set on the glyph itself, so it survives `.trow.is-offline .usage-v` dimming the number
-   beside it. That is deliberate and matches the low-battery tint next to it: an offline
-   row keeps every figure it had, dated by LAST SEEN, and "it was on the charger when we
-   last reached it" is among the more useful things that row can say. */
+/* Amber while charging, green once plugged and full; --warn-fill, because plain amber reads
+   as red this small. On the glyph, so it survives an offline row's dimming. */
 .bolt-charging {
   color: var(--warn-fill);
 }
@@ -1316,24 +1146,11 @@ ul {
 
 .cards {
   display: grid;
-  /* auto-fill, not a fixed three-up. On the 4K monitor this is read on, 3 x 1fr made a card
-     617 layout px wide -- a 13px title and a 124px address stretched across 1156 real px --
-     while 14 devices ran off the bottom of a page that had room for them all.
-   *
-   * 300px is measured from both sides, against the running service with tools/shot.py
-   * --eval. Below 260 a card overflows its own box, forcing the columns narrower and
-   * narrower: 3px spills at 250 and the Test/Retry/Actions strip goes by 37px at 220. (The
-   * touch block's 230 is not transferable -- that regime has --scale 1.35 under it.) Above
-   * 313 a 1440px desktop loses its third column, 313 being what the design's three-up gives
-   * a card there.
-   *
-   * Between the two, the floor is also what holds the card *size* still: the column is
-   * (room + 12) / n - 12 with n = floor((room + 12) / 312), so 300-345 layout px from four
-   * columns up -- a wider screen gets more cards rather than bigger ones. Measured: 1440
-   * stays 3 x 313.4 unchanged, 1920 goes 3 x 446 to 4 x 331, the 4K in landscape 3 x 617 to
-   * 7 x 320 at the 125% it is read at. It also un-breaks 1090-1180, where the three fixed
-   * columns ran 45px past .view -- which is overflow-x: auto, so they scrolled off-screen
-   * rather than saying anything. */
+  /* auto-fill over a measured floor, not a fixed three-up: on the 4K monitor 3 x 1fr made a
+     card 617 layout px wide while 14 devices ran off the page. 300 from both sides: below 260
+     a card overflows its own box, and above 313 a 1440px desktop loses its third column. A
+     wider screen then gets more cards, not bigger ones: 1920 goes 3 x 446 to 4 x 331, the 4K
+     landscape 3 x 617 to 7 x 320. */
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 12px;
 }
@@ -1363,27 +1180,11 @@ ul {
   font-weight: 600;
 }
 
-/* Address and target on one line -- addr left, target right. They were two `.card`
-   children, which cost a whole line box plus 10px of gap for two short strings.
- *
- * Measured on the live fleet (tools/shot.py --eval on scrollWidth, layout px). A card
- * gives its content 331px on a 1440px desktop, 249px on a Nexus 10 in portrait and 212px
- * on a Galaxy Tab S4 -- 700 CSS px, not 800, because its Screen zoom moves the density.
- * The widest pair any one card actually holds is the Kobo's `192.168.1.81:2222` beside
- * `webcache-pi`, 203px with the gap, so nothing here is clipped even at 212. Do not read
- * that off the two columns separately: the widest address (117px) and the widest target
- * (90px, `/sdcard/Books`) are on different devices, and adding them gives 217 and an
- * elision that does not happen.
- *
- * When it does run out -- a longer hostname, a deeper target -- the address holds and the
- * target gives. `.nowrap` on the target sets overflow:hidden, which zeroes a flex item's
- * automatic minimum size, so it shrinks and ellipsises rather than taking a second line
- * back. That is the right way round: the address is the widest value in the card with
- * nothing behind it, while the target already carries its whole path in a title. The same
- * mechanism `.cell-actions .nowrap` exists to *defeat* in the table, wanted here.
- *
- * `.card-host` rather than :first-child, because with the address ticked off the target
- * becomes the first child and would inherit the rule that must never apply to it. */
+/* Address left, target right, on one line. Measured (layout px): a card gives its content
+   331 on a desktop, 249 on a Nexus 10 portrait and 212 on a Tab S4; the widest real pair is
+   203. When it runs out the address holds and the target ellipsises -- `.nowrap` zeroes its
+   flex minimum -- since the target has its path in a title. `.card-host`, not :first-child,
+   so a hidden address cannot hand its rule to the target. */
 .card-addr {
   display: flex;
   justify-content: space-between;
@@ -1396,10 +1197,7 @@ ul {
   white-space: nowrap;
 }
 
-/* The stat lines and their bars. The 7px was `style="margin-top:7px"` on each member
-   below the first, which is a margin belonging to the element above the space it makes --
-   so hiding any one of them left its neighbour's behind, and hiding the first left none
-   at all. A gap on the wrapper cannot get that wrong. */
+/* A gap on the wrapper, not a margin per line, so hiding a line leaves no stray space. */
 .card-stats {
   display: flex;
   flex-direction: column;
@@ -1410,9 +1208,7 @@ ul {
   line-height: 1.4;
 }
 
-/* The storage line is last-sync on the left and used/total on the right. With last sync
-   ticked off the value is the only child, and space-between would park it at the start,
-   under a label that is no longer there. */
+/* With last sync hidden, the value must not be parked under a missing label. */
 .card-stats .stat > b:only-child {
   margin-left: auto;
 }
@@ -1445,10 +1241,7 @@ ul {
 /* --------------------------------------------------------------- library -- */
 
 .lib {
-  /* One panel. The tree pane that used to sit beside this — a fixed 300px aside — is
-     gone: the file table is the navigator now, so the same information was on screen
-     twice and only one of the two survived a viewport under 1089px. `.lib-main` was
-     merged in here for the same reason; a flex row with one child is not a layout. */
+  /* One panel: the file table is the navigator. */
   flex: 1;
   min-width: 0;
   /* .lib-body is the scroller and this is a flex child of .main, so without min-height
@@ -1488,27 +1281,12 @@ ul {
   padding: 0 var(--gutter) var(--gutter);
 }
 
-/* The crumb and the selection bar, pinned as one group.
-
-   Sticky, because the crumb is now the only way *out* of a directory and Science/ lists
-   1,452 of them -- without it you scroll back to the top to go up one level -- and
-   because the Push button is armed by ticking a row that may be 1,400 rows down, where
-   the bar that carries it had scrolled off the top long ago.
-
-   One group and not two sticky elements: the crumb's segments wrap, so its height is not
-   a number anyone can write into the bar's `top:`. .lib-body is the scroller, so the
-   offset is measured from there.
-
-   The opaque background is mandatory, not decoration: rows read straight through a
-   transparent crumb as they pass under it, and .selbar's own background is
-   rgba(154,140,230,.07). The 14px above the crumb is a child's padding and not the
-   scroller's, and that is not tidiness either: Chrome pins a sticky child at the
-   scroller's *content* box, so while .lib-body carried `padding-top: 14px` the crumb
-   stuck 14px below the edge and the rows scrolled on through that band above it -- 18.9
-   real px on a 412px phone at --scale 1.35, measured with tools/shot.py, and 0 once the
-   padding moved onto the opaque element. The 12px below is the group's, not .selbar's
-   margin, for the same reason from the other end: a margin is outside the background box,
-   so rows would scroll through a 12px transparent band under the bar. */
+/* The crumb and the selection bar, pinned as one group: the crumb is the only way up, and
+   Push is armed by ticking a row that may be 1,400 rows down. One group, because the crumb
+   wraps and no `top:` could follow it. The background is opaque, or rows show through. The
+   14px above is a child's padding, since Chrome pins a sticky child at the scroller's
+   content box (with it on .lib-body, rows scrolled through an 18.9px band above the crumb);
+   the 12px below is padding for the same reason from the other end. */
 .lib-sticky {
   position: sticky;
   top: 0;
@@ -1526,15 +1304,9 @@ ul {
   row-gap: 6px;
 }
 
-/* The segments wrap; they do not elide and they do not scroll. Measured against the live
-   index: 3,841 directories, the deepest 8 segments and 88 characters
-   (Science/Aviation/Boeing/PMDG-777/…/FMC-COROUTE), which is ~740px of 14px mono before
-   the /Books root — no single line holds it on an 800px tablet at any setting. A middle
-   ellipsis would hide precisely the ancestors this control exists to offer, and a
-   horizontal scroller inside a vertically scrolling page is a trap on touch.
-   overflow-wrap is for the other measurement: the longest single segment is 57 characters
-   (The-New-Schaff-Herzog-Encyclopedia-of-Religious-Knowledge), ~480px, against ~357px of
-   panel on a 412px phone — one directory name, wider than the screen. */
+/* The segments wrap rather than elide or scroll: the deepest path is 8 segments, ~740px of
+   mono, and a middle ellipsis would hide the very ancestors this offers. overflow-wrap for
+   the longest single segment, ~480px against a phone's ~357. */
 .pathline .crumbs {
   display: flex;
   flex-wrap: wrap;
@@ -1547,10 +1319,7 @@ ul {
   font-size: 14px;
 }
 
-/* --ink-3, not the --muted the inert `.parent` span used to wear: these are the only
-   controls on the page whose job is to leave, and at --muted they still read as the
-   caption they were. 9.1:1 on --bg, and the light theme's pair clears 4.5:1, so neither
-   needs an override. */
+/* --ink-3: the crumb's links are the controls that leave, and --muted read as a caption. */
 .pathline .crumbs a {
   color: var(--ink-3);
   text-decoration: none;
@@ -1609,21 +1378,12 @@ ul {
 
 /* minmax for the same reason as .device-grid. The checkbox column stays fixed: it holds
    an 11px box and has nothing to give. */
-/* SIZE and MODIFIED carry a formatted string of known width, so their floors are that
-   string and not a guess: `hsize` emits up to "136.1 MB" and `isodate` always ten
-   characters, measured at 55px and 69px in 11.5px JetBrains Mono, plus 2x12px of padding. At the old
-   64/84 floors both fitted at their 84/108 maxima and neither fitted once the tracks were
-   squeezed -- measured at 980 CSS px, the width Chrome's "Desktop site" gives a Nexus 10,
-   where "136.1 MB" broke after the number. Every other column holds elements that can
-   shrink or elide; these two hold text that cannot.
-   PRESENT ON went 100->110 and PUSH 140->96 together, and the pair is the point: the
-   floors sum to 610px against the 674px the 1090px band allows, where they summed to 644.
-   PUSH could give 44px up because it stopped carrying two device-named push buttons and
-   now holds two icons; PRESENT ON needed 10px of it so the presence map's slots cannot be
-   squeezed below the 2px floor .pmap declares. PRESENT ON's *maximum* is sized for its
-   header instead: 15 rotated labels at 10px of track plus 14 2px gaps plus 2x12px of
-   padding is 202px, so 210. The floor is untouched, so this costs nothing where it is
-   tight -- 1fr NAME simply stops absorbing 40px it had. */
+/* SIZE and MODIFIED hold strings of known width, so their floors are those strings:
+   "136.1 MB" and a ten-character date, 55px and 69px in 11.5px mono, plus 24px of padding.
+   The old floors fitted only at their maxima ("136.1 MB" broke at 980 CSS px). The seven
+   floors sum to 610px against the 674px the 1090px band allows. PRESENT ON's floor keeps
+   its slots above their 2px minimum; its maximum fits the rotated header: 15 labels at 10px
+   + 14 gaps + 24 = 202, so 210. */
 .file-grid {
   grid-template-columns:
     26px
@@ -1670,10 +1430,7 @@ ul {
   border-color: var(--accent);
 }
 
-/* Some rows selected, not all — the header box only. appearance:none leaves the native
-   indeterminate mark undrawn, and without one a part-selection is indistinguishable from
-   an empty one. A dash rather than the checked state's solid fill, so the two read apart
-   at 11px. */
+/* Some rows selected: a dash, since appearance:none drops the native indeterminate mark. */
 .check:indeterminate {
   border-color: var(--accent);
   background-image: linear-gradient(var(--accent), var(--accent));
@@ -1682,18 +1439,10 @@ ul {
   background-repeat: no-repeat;
 }
 
-/* The filename never elides. It used to: nowrap + text-overflow, which on a Tab S4 in
-   portrait (700 CSS px at --scale 1.35) cut
-   "Poxititeli-avtomobilej-Zapiski-sledovatelja-1965.fb2.zip" after 23 characters — and a
-   transliterated name is not a title you can recognise from its opening, it is the one
-   thing on the row that says *which book this is*. So it wraps to as many lines as it
-   needs, and the catalog title below it keeps the ellipsis instead: that one is a nicety,
-   this one is the row's identity.
-   overflow-wrap rather than word-break, and `anywhere` rather than `break-word`: these
-   names carry no spaces at all, so there is no break opportunity to prefer, and only
-   `anywhere` also shrinks the cell's min-content contribution — without it the 1fr NAME
-   track floors at the longest unbroken word and pushes the whole grid wide.
-   display:block stays, for the hit-area reason a.file-name documents below. */
+/* The filename never elides: on a Tab S4 nowrap cut a 57-character transliterated name at
+   23, and the filename is what says which book this is. It wraps; the catalog title keeps
+   the ellipsis. `overflow-wrap: anywhere`, because these names have no spaces and only it
+   lets the 1fr NAME track shrink to its floor. */
 .file-name {
   display: block;
   font-family: var(--font-mono);
@@ -1702,15 +1451,8 @@ ul {
   overflow-wrap: anywhere;
 }
 
-/* A directory's name is the way into it, so it is an anchor; a file's name stays an inert
-   span. inline-block rather than the block above, and the difference is the hit area: at
-   block width the whole 1fr NAME cell would navigate, and a directory row — the one row
-   you most need to be able to *tick*, since ticking one is how a whole subtree gets
-   pushed — would have nothing left to click on but the 11px checkbox. It wraps like the
-   block above does, and max-width: 100% is what holds it inside the cell while it does.
-   vertical-align: top so the line box gains no descender and the row does not grow by 3px.
-   --ink against the files' --ink-2 is the entire affordance: no icon, no underline until
-   hover. The trailing "/" that `Entry.label` already appends says which rows are which. */
+/* A directory's name is its link; inline-block, so the rest of a directory row can still be
+   ticked. --ink against the files' --ink-2 is the affordance, and the trailing "/" says which. */
 a.file-name {
   display: inline-block;
   max-width: 100%;
@@ -1734,24 +1476,13 @@ a.file-name:hover {
   text-overflow: ellipsis;
 }
 
-/* The presence map: one slot per fleet device, in fleet order, always all of them.
-
-   This replaced a row of text badges, one per device that held the row. They were
-   `flex-wrap: wrap` with nothing capping the count, so at 15 devices in devices.yaml and
-   ~10 of them holding a typical directory, every row wrapped to three lines: 87px where
-   var(--row) is 34px, 21 directories filling a 4K screen where 60 fit now.
-
-   There is deliberately no `flex-wrap` here. That single omission is the whole feature,
-   and it is what tests/test_battery.py::test_the_presence_map_cannot_wrap asserts.
-
-   The slots flex to share whatever the track gives them, so the map fits any width
-   rather than setting one -- but `min-width: 2px` means they cannot thin to nothing, and
-   the PRESENT ON floor is sized so that floor can never be hit: 110px of track less
-   2x12px of .file-grid padding is 86px, against 16 slots at 2px plus 15 gaps at 2px =
-   62px. 16 is the fleet this was sized for (15 declared today); past that the guarantee
-   is gone and the strip would overflow into .panel's `overflow: hidden`, which loses a
-   slot in silence and so shifts every slot after it. Pinned by
-   ::test_every_slot_fits_the_narrowest_track. */
+/* The presence map: one slot per fleet device, in fleet order, always all of them. It
+   replaced wrapping text badges that made every row three lines (87px against a 34px row).
+   
+   No `flex-wrap`, and that omission is the feature (::test_the_presence_map_cannot_wrap).
+   The slots share the track down to `min-width: 2px`, and the floor keeps that unreachable:
+   110 - 24 = 86px against 16 slots and 15 gaps of 2px = 62px. Past 16 devices the strip
+   would overflow .panel and lose slots in silence (::test_every_slot_fits_the_narrowest_track). */
 .pmap {
   display: flex;
   align-items: center;
@@ -1767,11 +1498,8 @@ a.file-name:hover {
   cursor: pointer;
 }
 
-/* The header is the map's legend: the same flex, the same 2px gap and the same cell
-   padding as .pmap, in the same grid track, so label N stands over slot N on every row
-   below. Get any of those three wrong and the labels still render -- one column out,
-   which is the shift-by-one failure again, arriving through the stylesheet this time.
-   Pinned by tests/test_battery.py::test_the_map_header_lines_up_with_the_slots. */
+/* The map's header: the same flex, gap and padding as .pmap in the same track, so label N
+   stands over slot N (test_battery.py::test_the_map_header_lines_up_with_the_slots). */
 .pmap-head {
   display: flex;
   align-items: flex-end;
@@ -1782,10 +1510,7 @@ a.file-name:hover {
   display: none;
   flex: 1 1 0;
   min-width: 2px;
-  /* Bottom-to-top. The abbreviations run to 10 characters ("SIGMAAI.AU"), which is 57px
-     of 9.5px JetBrains Mono -- no arrangement puts fifteen of those across a 210px track
-     lying down. The thead's 0.11em tracking is cancelled: it buys legibility across a
-     word and costs height down one. */
+  /* Bottom-to-top: a 10-character abbreviation is 57px, and fifteen do not fit across 210px. */
   writing-mode: vertical-rl;
   transform: rotate(180deg);
   letter-spacing: 0;
@@ -1793,13 +1518,10 @@ a.file-name:hover {
   overflow: hidden;
 }
 
-/* 1300px, and it is derived twice rather than chosen. Above it the fixed tracks are all
-   at their maxima -- (624 of maxima + NAME's 140 floor + 190 rail + 2x18 gutter) x 1.21
-   is 1198px of viewport -- so a slot is (210 - 24 - 28)/15 = 10.5px and a rotated label
-   has room. And it clears 1280, the touch band's ceiling, where --scale is 1.35 and the
-   same panel is 722px: the labels would be 7.5px apart and touching there, and a tablet
-   has the strip's dialog instead, which is the better answer on a screen with no hover.
-   Pinned by ::test_the_map_header_appears_only_where_it_fits. */
+/* 1300px, derived twice: above it every fixed track is at its maximum, so a slot is
+   (210 - 24 - 28) / 15 = 10.5px and a rotated label fits; and it clears the touch band's 1280,
+   where --scale 1.35 leaves 7.5px and the strip's dialog is the better legend
+   (::test_the_map_header_appears_only_where_it_fits). */
 @media (min-width: 1300px) {
   .pmap-head-plain {
     display: none;
@@ -1822,12 +1544,8 @@ a.file-name:hover {
   border-radius: 1px;
 }
 
-/* Every state selector names its context, and that is not tidiness: `.pmap > i` is a
-   class *and* a type, so it outranks a bare `.p-ok` and painted all fifteen slots
-   --line whatever the device held -- a map that was uniformly grey on a fleet where
-   seven nodes hold most of the library. `.pslot` lost the same argument on a tie, being
-   one class against one class and further down the file. Neither is visible from a
-   stylesheet read as text, which is how it shipped. Pinned by
+/* Every state selector names its context: `.pmap > i` is a class and a type, so it
+   outranked a bare `.p-ok` and painted every slot grey, invisibly to a stylesheet read as text.
    tests/test_theme.py::test_a_slot_is_painted_by_its_state_and_not_by_the_default. */
 .pmap > .p-none,
 .pslot.p-none {
@@ -1844,9 +1562,7 @@ a.file-name:hover {
   background: var(--warn-fill);
 }
 
-/* The same four states at reading size, in the dialog the map opens. Its own box rather
-   than a .pmap slot: there it is one of fifteen sharing a track, here it is one row's
-   own mark and the p-* classes are all the two have in common. */
+/* The four states at reading size, in the map's dialog. */
 .pslot {
   display: block;
   width: 10px;
@@ -1856,10 +1572,8 @@ a.file-name:hover {
   border-radius: 2px;
 }
 
-/* Half full, drawn as half full. `partial` and `absent` shared one badge class until
-   now, so "2 of 900 files" and "all 900" were the same picture and the difference lived
-   in a tooltip. A colour would not do it at 4px wide against --ok; a horizontal split
-   reads as a part-filled column at any width, in either theme. */
+/* Half full, drawn as half full: at 4px wide a colour would not tell partial from full, and
+   a split reads at any width, in either theme. */
 .pmap > .p-part,
 .pslot.p-part {
   background: linear-gradient(var(--line) 0 50%, var(--ok) 50% 100%);
@@ -2008,9 +1722,7 @@ a.file-name:hover {
   white-space: nowrap;
 }
 
-/* The denominators, one step back from the sent/received line above them. They are
-   context — what was selected, how far rsync has walked — and reading at the same
-   weight as the transfer itself is how they came to be mistaken for it. */
+/* The denominators, a step back from the transfer they give context to. */
 .dock-line.is-sub {
   margin-top: -3px;
   font-size: 10px;
@@ -2146,9 +1858,7 @@ a.file-name:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--ink-2);
-  /* Load-bearing. The terminal is a fixed-height flex column, so the default
-     flex-shrink:1 divides the height among the lines: 200 lines in a 420px box render
-     at 2px each and the whole log looks blank. */
+  /* Load-bearing: in a fixed-height flex column, shrinking lines rendered 200 lines at 2px each. */
   flex-shrink: 0;
 }
 
@@ -2168,18 +1878,10 @@ a.file-name:hover {
   color: var(--warn);
 }
 
-/* A finished transcript, not a live tail. Two differences from `.term`, and both matter.
-   `flex-start`, because the connection test is a document you read from the top -- and
-   because a flex-end column that overflows pushes its first lines past the start edge
-   where scrolling cannot reach them, so the head of the output was not merely scrolled
-   away, it was unreachable.
-
-   And a height that hugs the content up to a cap, rather than `.term`'s fixed 206px: a
-   failed connect is three lines and should not sit in a 460px box, while a termux node's
-   `BatteryStatus` prints 15 lines of JSON inside a 24-line transcript -- measured on s4l.
-   At 11.5px/1.55 that is 428px of lines plus 20px of padding, so 480px shows all of it
-   with a spare line for a `df` that wraps its device name. The vh cap keeps the dialog
-   inside a short laptop screen; past either, it scrolls, now from the top. */
+/* A finished transcript, read from the top: `flex-start`, because an overflowing flex-end
+   column pushes its first lines out of reach. It hugs its content up to a cap: a termux
+   node's BatteryStatus transcript is 428px of lines, so 480, and the vh cap keeps it on a
+   short screen. */
 .term-doc {
   height: auto;
   max-height: min(480px, 62vh);
@@ -2259,14 +1961,9 @@ a.file-name:hover {
   padding: 20px;
 }
 
-/* The dialog is capped at the screen and its body scrolls, so the head and the foot --
-   whose Close is the way out -- are always on it. Without the cap a dialog taller than
-   the viewport was centred by .backdrop and so spilled past BOTH edges of a fixed box
-   that does not scroll: sigmaai.au's Actions on a phone showed a slice of the Pull note
-   and nothing else, no Close, and only Android's Back to leave by
-   (shots/mobile-actions.jpg). Divided by --scale because zoom does not scale viewport
-   units (see .shell); the 40px is .backdrop's padding. dvh after vh so a phone's
-   collapsing toolbar is allowed for where the browser knows the unit. */
+/* Capped at the screen with a scrolling body, so the head and its Close are always on it:
+   taller than the viewport, a dialog spilled past both edges of the fixed backdrop and left
+   only Android's Back. Divided by --scale; dvh after vh for a collapsing toolbar. */
 .dialog {
   width: 454px;
   max-width: 100%;
@@ -2305,9 +2002,7 @@ a.file-name:hover {
   overscroll-behavior: contain;
 }
 
-/* The body scrolls instead of its children shrinking: a child with its own overflow
-   (the extras dialog's 340px panel, job_log's term) has a flex min-height of 0 and would
-   otherwise be squeezed to nothing before the body ever scrolled. */
+/* The body scrolls: a child with its own overflow would otherwise be squeezed to nothing first. */
 .dialog-body > * {
   flex-shrink: 0;
 }
@@ -2354,10 +2049,8 @@ a.file-name:hover {
   padding-top: 10px;
 }
 
-/* Wraps, and the note has a 220px basis, so on a phone the note takes its own line under
-   the button. Unwrapped, the 150px button left it ~120px of a 305px dialog (412px /
-   --scale 1.35) and the Pull note stood one word to a line, a screen and a half tall.
-   The 720px desktop dialog leaves it 540px, so nothing moves there. */
+/* Wraps, so on a phone the note takes its own line under the button rather than standing
+   one word to a line. */
 .action-head {
   display: flex;
   flex-wrap: wrap;
@@ -2418,32 +2111,6 @@ a.file-name:hover {
 
 .action-cmd .btn {
   flex-shrink: 0;
-}
-
-/* The two halves share the row: the name keeps its natural width, the path takes what
-   is left and ellipsises rather than escaping the dialog. */
-.pick-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 12px;
-  width: 100%;
-  min-width: 0;
-  text-align: left;
-}
-
-.pick-name {
-  flex-shrink: 0;
-}
-
-.pick-target {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: right;
-  direction: rtl; /* keep the meaningful tail (…/home/sd/Books) visible */
 }
 
 .opt {
@@ -2528,36 +2195,14 @@ a.file-name:hover {
   display: none;
 }
 
-/* Each table stacks into cards at its own width, because each has a different amount of
-   room. The Library used to run out first: it kept a 300px tree beside its table, so its
-   panel was ~300px narrower than the Devices one and it clipped PUSH at 1200px while
-   Devices was still clean. That tree is gone -- the file table is the navigator now -- so
-   the panel is 300px wider at every viewport and the same seven columns fit far further
-   down.
-
-   Two regimes, and the narrower viewport is the roomier one: above 1089px the rail is
-   190px of flow, so the panel is `viewport / --scale - 190 - 2x--gutter(18)`; at 1089px
-   and below the rail becomes position: fixed and leaves the flow entirely, and the panel
-   is `viewport / --scale - 2x12` of .lib-body padding. The seven track floors sum to
-   644px (26+140+60+82+96+100+140), so at --scale 1.21 the wide regime needs 1053px of
-   viewport and the narrow one 808px. Measured with tools/shot.py at 1.21: PUSH hangs 32px
-   past .panel's overflow: hidden edge at 1016px of viewport, 4px over at 1050 and clean at
-   1089 -- so the arithmetic and the browser agree to within a handful of pixels, as they
-   did at the previous zoom (where the same sweep put the floor at 689 exactly).
-
-   1089, not the 1053 floor: it is the width at which the rail leaves the flow, so the page
-   tells one story instead of two, and it leaves the slack that arithmetic ignores -- the
-   scrollbar .lib-body grows on a desktop, and the next column somebody adds. It is 900 x
-   --scale, the design's own breakpoint carried through the zoom; see --scale, which lists
-   the three numbers derived from it. The payoff is a Nexus 10 in landscape, 1280 CSS px,
-   which the old number handed the stacked cards; in portrait it is 800px and still gets
-   them, which is the right read on a tablet held upright.
-   test_the_file_grid_stacks_before_it_runs_out_of_panel recomputes the floor from this
-   stylesheet, so the next column fails there rather than on somebody's screen.
-
-   Below this the row was simply wider than .panel, and .panel's overflow: hidden ate
-   whatever hung off the right, with nothing on screen to say so -- the table just looked
-   as though it had fewer columns. */
+/* Each table stacks into cards at its own width. Above 1089px the rail is 190px of flow
+   and the panel is viewport / --scale - 190 - 36; below, the rail is fixed and the panel is
+   viewport / --scale - 24. The seven floors sum to 644px, so the wide regime needs 1053px:
+   measured with tools/shot.py, PUSH hangs 32px past .panel at 1016, 4px at 1050, clean at
+   1089. 1089 rather than 1053, because it is where the rail leaves the flow (900 x --scale)
+   and it leaves slack for a scrollbar or a new column. Past the floor, .panel's
+   overflow: hidden ate the last columns in silence.
+   test_the_file_grid_stacks_before_it_runs_out_of_panel recomputes this from the stylesheet. */
 
 @media (max-width: 1089px) {
   .thead.file-grid {
@@ -2590,15 +2235,9 @@ a.file-name:hover {
     flex-shrink: 0;
   }
 
-  /* NAME is the one cell whose value can be longer than the row is wide, and the filename
-     is what you came here to read. Grid rather than the flex every other cell uses: as a
-     flex item the name sat *beside* the catalog title and the two of them shared one line,
-     so both ellipsised at around 23 characters on a Tab S4 in portrait -- 700 CSS px at
-     --scale 1.35, the narrowest screen in the fleet. Here the ::before label holds column
-     1, the name takes column 2 and wraps to as many lines as it needs, and the title drops
-     to a second row of that same column where it can go on eliding.
-     2px of row-gap, not the 8px the cells share: the title is a continuation of the name
-     above it, not the next field down. */
+  /* NAME is a grid, not a flex like the other cells: as a flex item the name shared its line
+     with the catalog title and both elided at ~23 characters on a Tab S4. The name takes
+     column 2 and wraps; the title drops to a second row and may elide. */
   .trow.file-grid > [data-label="Name"] {
     display: grid;
     grid-template-columns: 92px minmax(0, 1fr);
@@ -2621,21 +2260,11 @@ a.file-name:hover {
   }
 }
 
-/* 1280px. This used to be the same number `.file-grid` stacked at, and the two have
-   since parted: the Library lost its 300px tree, so its panel grew and its breakpoint
-   moved down to 1089 while the Devices table's arithmetic did not change at all. They were
-   never one number for a shared reason -- each is its own grid's floor -- so they stack
-   at their own widths and only one of these tables is ever on screen at a time.
-   Arithmetic, not taste: the device row's nine track floors sum to 1022px, and the panel
-   gets `viewport - --rail(190) - 2x--gutter(18)`, so a single-line row needs 1248 *layout*
-   px -- which at --scale 1.21 is 1510 real px, because the row is zoomed and this query is
-   not. 1520 for the slack. Measured on the live page at 1.21: the row hangs 121px past the
-   panel at a 1366px viewport, 60px at 1440, 2px at 1510, and is clean from 1512 up.
-   At the old 1200px there was a 36px band -- 1200 to 1236 -- where the row had
-   stopped stacking but could not lay out either, and an over-constrained grid pays for it
-   by wrapping the Actions buttons. `test_the_stack_breakpoint_clears_the_row_floor` keeps
-   the two numbers in step when a column is added. `.jobs-grid` rides along; its floors sum
-   to 628px, so it fits comfortably either side and only gains consistency. */
+/* 1520: where the device row stops stacking. Its nine floors sum to 1022px and the panel
+   gets viewport - 190 - 36, so one line needs 1248 layout px = 1510 real px at --scale 1.21;
+   1520 for slack. Measured: the row hangs 121px past the panel at 1366, 2px at 1510, clean
+   from 1512. test_the_stack_breakpoint_clears_the_row_floor keeps it in step. .jobs-grid's
+   floors are 628px and fit either side. */
 @media (max-width: 1520px) {
   .thead.device-grid, .thead.jobs-grid {
     display: none;
@@ -2677,39 +2306,17 @@ a.file-name:hover {
   }
 }
 
-/* Two-up, above 660px. The stacked row above is the fallback for *every* narrow screen and
-   not a phone layout: this fleet reads itself on a 10" tablet at 700 CSS px and on a 27"
-   2.5K monitor turned portrait, which at 125% is 1152 -- both far below the 1510px a
-   single-line row needs (1022px of track floors + 190 rail + 36 gutter, x --scale), and both
-   wide enough to hold two label/value pairs. The ceiling tracks that stack breakpoint and
-   must keep tracking it: leave it behind and 1281-1520 gets the one-up fallback, nine
-   lines per device, which is the layout this band exists to replace. One column there printed nine lines per device,
-   so nine devices went past a 2560px-tall screen one at a time. Measured on that monitor:
-   9 lines per device to 5.
-
-   The pairs are the row's own grouping rather than an accident of source order -- Device
-   with Type, Address with Target, Storage with Battery, and the two ages side by side, which
-   is where LAST SEEN and LAST SYNC already sit for the reason given at .device-grid. Actions
-   spans, its floor being 320px of failure text plus three buttons; .subrow already spans.
-
-   660 is measured, and the first attempt at it was not: 768 was picked as a tidy tablet
-   number and a Galaxy Tab S4 turned out to be 700 CSS px, not the 800 its 2560x1600 panel
-   suggests -- Samsung's Screen zoom setting moves the density, so dpr is 2.286 there against
-   a Nexus 10's exactly 2.0 on identical hardware dimensions. Two tablets of the same size
-   and resolution, 100 CSS px apart, and the breakpoint fell between them. So this one is
-   derived from the row instead: the address is the widest thing here that has no tooltip to
-   fall back on -- 124px at 11.5px mono -- and a column is that plus the label, the 8px gap
-   and 2x12px of padding. Two of those need 2 x (76 + 8 + 24 + 124) + 24 = 488 layout px,
-   which is 660 real px at --scale 1.35. Below it the address starts clipping: measured 1px
-   short at 700 with the 92px label, and that slack is where the label change comes from.
-
-   The label is 76px here rather than the 92px it takes when it has a whole row to itself.
-   92 was never its text -- "LAST SEEN" is the widest at 60.7 layout px -- so two-up spends
-   31px of dead space per column on a screen that has none to spare. 76 keeps 15px over the
-   widest label and hands 16px back to every value.
-   Pinned by test_the_stacked_row_pairs_its_cells. .jobs-grid rides along exactly as it does
-   in the block above: same fallback, same treatment -- Job with Target, Source with Files,
-   Bytes with Started, State spanning, and every one of its labels shorter than LAST SEEN. */
+/* Two-up, above 660px. The stacked row is the fallback for every narrow screen, not a
+   phone layout: a 700 CSS px tablet and a 27" monitor in portrait (1152 at 125%) both fall
+   far below the 1510px a single-line row needs. Pairs follow the row's own grouping --
+   Device/Type, Address/Target, Storage/Battery, the two ages -- with Actions spanning.
+   Measured on that monitor: 9 lines per device to 5.
+   
+   660 is derived, after a tidy 768 fell between the Nexus 10 (800 CSS px) and the Tab S4
+   (700, its Screen zoom moving the density): the widest untooltipped value is the 124px
+   address, and 2 x (76 label + 8 gap + 24 padding + 124) + 24 = 488 layout px = 660 real px
+   at --scale 1.35. The label is 76 here rather than 92, which was never its text ("LAST SEEN"
+   is 60.7px). .jobs-grid rides along. Pinned by test_the_stacked_row_pairs_its_cells. */
 @media (min-width: 660px) and (max-width: 1520px) {
   .trow.device-grid,
   .trow.jobs-grid {
@@ -2727,12 +2334,9 @@ a.file-name:hover {
   }
 }
 
-/* 1089px = the design's 900px breakpoint x --scale (1.21). A media query is matched against
-   the real viewport and cannot read a custom property, so this one does not follow --scale
-   by itself: zoomed content runs out of room at a *wider* viewport than before, and left at
-   900 the rail would overlap the content pane for the 189px in between. Change the two
-   together -- test_the_rail_breakpoint_follows_the_zoom is what catches it if you do not. This is also where the rail goes position: fixed and stops taking 190px out
-   of the flow, which is the second regime the .file-grid arithmetic above depends on. */
+/* 1089px = 900 x --scale; it does not follow --scale by itself, and at 900 the rail would
+   overlap the content for the 189px between (test_the_rail_breakpoint_follows_the_zoom).
+   Here the rail goes fixed, the second regime of the .file-grid arithmetic. */
 @media (max-width: 1089px) {
   body {
     font-size: 12.5px;
@@ -2789,12 +2393,8 @@ a.file-name:hover {
   }
 
 
-  /* .topbar-right is flex-shrink: 0 at every width, so on a phone it overflowed the bar
-     rather than squeezing, and the bar clipped its last child -- the theme toggle, which
-     was therefore unreachable on mobile with no sign it existed. Measured on a 412px
-     viewport: the toggle ended 3px past the bar's right edge, and 35px past it once the
-     UI was scaled up, which is what made a long-standing 3px clip obvious.
-     The chips are the informational part and give way; the controls never do. */
+  /* The chips give way; the controls never do. Unshrinkable, the bar once clipped its last
+     child -- the theme toggle -- off a phone's screen. */
   .topbar-right {
     flex-shrink: 1;
     min-width: 0;
@@ -2804,19 +2404,12 @@ a.file-name:hover {
     flex-shrink: 0;
   }
 
-  /* inline-block rather than the desktop inline-flex: text-overflow does nothing to the
-     text of a flex container, so once these actually started truncating they clipped
-     mid-word -- "last sca" -- instead of eliding. The dot must be told to be inline-block
-     to survive the switch: it is a bare span sized by width/height, which only works at
-     all because a flex parent blockifies it. */
+  /* inline-block, not inline-flex: text-overflow does nothing inside a flex container, so
+     these clipped mid-word. The dot then needs inline-block of its own. */
   .topbar-right .chip {
     display: inline-block;
-    /* Unscaled viewport unit -- see --scale. 50vw because that is the room there is once
-       Log out became an icon: on a 412px phone the bar has 363 real px, the rail toggle
-       and the two ~41px buttons take 153 of them with their gaps, leaving 210 (51vw).
-       At 40vw the chip stopped at 165 and read "index fresh …". It still elides past the
-       cap -- the full string is 330 px -- and still shrinks below it on a narrower phone,
-       being flex-shrink: 1 with min-width: 0, so the buttons are never what gives way. */
+    /* Unscaled viewport unit (see --scale). 50vw is the room a 412px phone's bar has left for
+       the chip (210 of 363 px); it elides past that, and shrinks before any button does. */
     max-width: calc(50vw / var(--scale));
     min-width: 0;
     flex-shrink: 1;
@@ -2830,17 +2423,12 @@ a.file-name:hover {
     vertical-align: middle;
   }
 
-  /* Two chips and three icon buttons do not fit a phone's bar: on 412px both chips
-     elided to "ssh…" and "devic…" and said nothing. The age of the last sweep is the one
-     that can go -- the dots below are that same fact, per node -- which leaves the count
-     the whole room it needs. */
+  /* On a phone the sweep's age goes -- the dots say it per node -- and the count keeps its room. */
   .topbar-right .chip-checked {
     display: none;
   }
 
-  /* The breadcrumb stacks above its totals rather than sharing their line: a deep path
-     wraps to two or three lines here, and on the same line the summary was squeezed off
-     the right edge in the one moment you need it. */
+  /* The breadcrumb stacks above its totals, or a deep path squeezes them off the edge. */
   .pathline {
     flex-direction: column;
     align-items: flex-start;
@@ -2918,8 +2506,7 @@ a.file-name:hover {
   /* Touch targets. */
   .btn,
   .segmented > *,
-  .nav-item,
-  .target-pick {
+  .nav-item {
     min-height: 44px;
     padding-top: 11px;
     padding-bottom: 11px;
@@ -2930,11 +2517,8 @@ a.file-name:hover {
     min-height: 44px;
   }
 
-  /* The two controls that navigate, at 14px and 12px of mono text. line-height, not
-     padding: vertical padding on an inline-block does not grow the line box, so it would
-     overlap the row above instead of making the row taller. Each wrapped crumb line
-     becomes its own 44px band, and the segments take horizontal padding to match — "AI"
-     is 17px of text and needs more than that to land a thumb on. */
+  /* The two navigating controls get their touch height from line-height: padding on an
+     inline-block would overlap the row above instead of growing it. */
   .pathline .crumbs {
     line-height: 44px;
     column-gap: 0;
@@ -2946,21 +2530,15 @@ a.file-name:hover {
     padding: 0 6px;
   }
 
-  /* Only a *directory* row carries an <a class="file-name">, so file rows keep their own
-     height and a 2,000-row listing does not grow by a third to buy a target on the
-     handful of rows that are directories. */
+  /* Only a directory row has the link, so file rows keep their height. */
   a.file-name {
     line-height: 44px;
   }
 }
 
-/* A pointer that cannot hover, at any width -- which is every touch screen, including a
-   Nexus 10 in landscape at 1280 CSS px where the table does not stack and the rules above
-   never fire. The directory link's whole affordance elsewhere is --ink against the files'
-   --ink-2 plus a hover underline, and half of that does not exist here: on the tablet the
-   change was made for, a name you can open looks exactly like a name you cannot. So the
-   underline is drawn permanently, in --border-hi rather than the text colour so a column
-   of directories does not read as a column of errors. */
+/* No hover means no hover underline, and a name you can open looked like one you cannot.
+   So touch screens get the underline permanently, in --border-hi so it does not read as an
+   error. */
 @media (hover: none) {
   a.file-name {
     text-decoration: underline;
@@ -2975,37 +2553,18 @@ a.file-name:hover {
   }
 }
 
-/* Tablet zoom -------------------------------------------------------------- *
- *
- * A 10" tablet has roughly twice a monitor's CSS pixels per inch, so every length in this
- * file renders at about half the size it was drawn at. Measured on the Nexus 10 (2560x1600
- * over 8.53 x 5.33in): device-width portrait is 800 CSS px across 5.33in and landscape
- * 1280 across 8.53in -- 150 per inch either way, against a desktop monitor's ~96. Chrome's
- * "Desktop site" used to be worse, not better: it widens the layout viewport to 980 CSS px
- * on that same 5.33in edge, 184 per inch, and that landed 8px above the *old* 972px
- * breakpoint that would have taken the rail out of the flow. So the tablet got the desktop
- * layout at half scale, with 190px of permanent nav still in it -- three card columns of
- * 227px on a screen that had room for two comfortable ones. Raising --scale moved that
- * breakpoint to 1089, so 980 now falls inside it and the rail leaves on its own; this block
- * is still what supplies the zoom, and the band below still owns the 1090-1280 landscape
- * case a Nexus 10 sits in natively.
- *
- * Two clauses, because neither alone covers both modes. `hover: none and pointer: coarse`
- * is a real touch screen; the pointer half is not redundant, because a browser with no
- * pointing device at all also reports `hover: none` -- headless chromium does, measured, so
- * without it every narrow tools/shot.py capture would render this layout instead of the
- * desktop one it was asked for. The `min-resolution` clause is the fallback for "Desktop
- * site", which may hand a tablet a mouse's media features along with the wider viewport:
- * the Nexus 10 is 2dppx natively and 1.63 under it. That clause is deliberately broad and
- * will also catch a high-DPI laptop windowed below 1280 -- acceptable here, where the app
- * is one person's on a LAN and a tablet that misses the zoom costs more than a desktop
- * window that gains it. Width alone would be wrong either way: a window dragged to 1100px
- * is still 96 per inch and must not be zoomed.
- *
- * 1280 is the ceiling because that is where the device row stops stacking, and its nine
- * track floors (1022px) do not fit a zoomed panel above it. Below the ceiling everything
- * still fits: the file grid's floors are 644px against 980/1.35 - 24 = 702px of panel, so
- * the Library stays a table -- and the file table is the only navigator there is. */
+/* Tablet zoom ------------------------------------------------------------- *
+   
+   A 10" tablet is ~150 CSS px per inch against a monitor's ~96 (Nexus 10: 800 across 5.33in
+   portrait, 1280 across 8.53in landscape), so everything drew at about half size. This block
+   supplies the zoom; the band below owns the 1090-1280 landscape case.
+   
+   `hover: none and pointer: coarse` is a touch screen -- the pointer half because headless
+   chromium also reports `hover: none`, and every tools/shot.py capture would otherwise get
+   this layout. `min-resolution` catches "Desktop site", which may report a mouse; it also
+   catches a high-DPI laptop window under 1280, an accepted cost. 1280 is the ceiling because
+   above it the device row stops stacking and its 1022px of floors do not fit a zoomed panel;
+   below it the file grid's 644px fits the 702px panel, so the Library stays a table. */
 @media (max-width: 1280px) and (hover: none) and (pointer: coarse),
        (max-width: 1280px) and (min-resolution: 1.5dppx) {
   :root {
@@ -3013,15 +2572,10 @@ a.file-name:hover {
   }
 }
 
-/* The zoom costs horizontal room and the rail is what pays for it -- 190px of nav that a
-   tablet reaches by the toggle instead, which is exactly what the 1089px block already does
-   for narrower screens. This repeats those rules rather than widening that block's query,
-   because only some of it belongs here: this band wants the rail gone and the toolbar
-   wrapped, but two card columns where a phone wants one.
-   `test_the_tablet_band_hides_the_rail_the_way_the_narrow_one_does` pins the repeat.
-
-   The two changes are a wash on content width and pure gain on type: 980/1.08 - 190 - 36 =
-   681 scaled px of cards before, 980/1.35 - 36 = 690 after, at a third the size again. */
+/* The tablet band hides the rail as the 1089px block does, repeated rather than widened
+   because this band wants two card columns where a phone wants one
+   (`test_the_tablet_band_hides_the_rail_the_way_the_narrow_one_does`). Content width is a
+   wash (681 -> 690 scaled px) and the type a third larger. */
 @media (min-width: 1090px) and (max-width: 1280px) and (hover: none) and (pointer: coarse),
        (min-width: 1090px) and (max-width: 1280px) and (min-resolution: 1.5dppx) {
   .rail {
@@ -3071,45 +2625,24 @@ a.file-name:hover {
   }
 }
 
-/* Touch chrome, after the zoom ---------------------------------------------- *
- *
- * The band above is landscape. In *portrait* a 10" tablet is 700 to 800 CSS px -- a Nexus 10
- * is exactly 800 and a Galaxy Tab S4 is 700, for the reason set out at the card floor below
- * -- which lands it in the 1089px block, written for a phone, while the zoom above is still
- * on. Two things follow, and both are the phone rule meeting the tablet's --scale rather
- * than anything either one got wrong alone.
- *
- * The 44px minimum in that block is a *physical* rule: 0.27" is what a thumb needs. The zoom
- * then multiplies it, and 44 x 1.35 = 59.4 CSS px is 0.40" on the Nexus 10 -- 800 CSS px
- * across its 5.33" edge is 150 to the inch -- and 0.47" on the S4, where 700 across 5.56" is
- * 126. Half again the target and more, in padding, on every button, field, crumb and
- * directory link. So it is divided back out: 33 x 1.35 = 44.6 CSS px, which is 0.30" and
- * 0.35" -- the size the rule meant. font-size is deliberately not repeated here, because the
- * type is not what is oversized: the same arithmetic puts it at 0.112" on the Nexus 10 and
- * 0.134" on the S4, against a desktop's 12.5 x 1.08 / 96 = 0.141". Only padding is
- * reclaimed. It applies at every touch width, phones included: the double-count is the same
- * arithmetic at 412px as at 800px.
- *
- * And the cards get a floor instead of a second breakpoint -- but the floor has to be the
- * card's own, not a number borrowed from somewhere roomier. The first attempt used the
- * desktop's narrowest three-up card, 256px, and a Galaxy Tab S4 stayed at one column:
- * its 2560x1600 panel is 700 CSS px, not the 800 a Nexus 10 of the same size and resolution
- * reports, because Samsung's Screen zoom moves the density and dpr with it (2.286 against
- * exactly 2.0, measured off the two screenshots against the 16.2px of .view padding both
- * had to draw). 256 needed 736 real px for a second column and fell between the two.
- * 230 is what a card measures instead: forced narrower and narrower against the running
- * service, its content first overflowed its box at 210px and the Test/Retry/Actions strip at
- * 200px, so 220 is the floor and 230 keeps ten of margin. It takes a second column at
- * (2 x 230 + 12 + 24) x 1.35 = 670 real px, so both tablets get two -- 700 gives 241 per
- * card, 800 gives 278 -- while a 412px phone has 281 and keeps one. Landscape is untouched
- * above. Pinned by test_the_touch_minimum_survives_the_zoom and
- * ::test_a_tablet_in_portrait_fits_two_cards. */
+/* Touch chrome, after the zoom --------------------------------------------- *
+   
+   In portrait a 10" tablet (700-800 CSS px) lands in the 1089px phone block with the zoom
+   still on. The 44px touch minimum is physical, so it is divided by the zoom that follows it:
+   33 x 1.35 = 44.6 CSS px, 0.30" on a Nexus 10 and 0.35" on an S4, where 44 would be 0.40"
+   and 0.47". Type is not repeated here -- the same arithmetic puts it at 0.112" and 0.134",
+   under a desktop's 0.141".
+   
+   The cards take a floor, measured on the card rather than borrowed from the desktop (whose
+   256 needed 736 real px and fell between the two tablets): a card overflows below 220, so
+   230 -- a second column at (2 x 230 + 12 + 24) x 1.35 = 670 real px. Both tablets get two,
+   a 412px phone one. Pinned by test_the_touch_minimum_survives_the_zoom and
+   ::test_a_tablet_in_portrait_fits_two_cards. */
 @media (max-width: 1089px) and (hover: none) and (pointer: coarse),
        (max-width: 1089px) and (min-resolution: 1.5dppx) {
   .btn,
   .segmented > *,
-  .nav-item,
-  .target-pick {
+  .nav-item {
     min-height: 33px;
     padding-top: 6px;
     padding-bottom: 6px;
@@ -3133,37 +2666,24 @@ a.file-name:hover {
     grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
   }
 
-  /* Not the phone's `1 1 100%`: 240 + 128 (segmented) + gaps is ~380 in 569 scaled px, so
-     the filter stops claiming a row of its own -- it had 110px more to clear back when
-     "+ Add device" sat beside the segmented control, and still fits without it. On a phone
-     the basis cannot fit and the row wraps exactly as it did. */
+  /* Not the phone's full-row basis: here the filter and the segmented control fit one row. */
   .titlebar-right .field {
     flex: 1 1 240px;
     width: auto !important;
   }
 }
 
-/* Phone, not merely narrow. Above this the topbar has room for everything and the 1089px
-   block's shrink rules never bind; below it the status chips squeeze down to "sshd …",
-   which says nothing at all. The crumb is what gives way, because it repeats what the
-   page states immediately below it -- "devices / all" over a "Devices" heading,
-   "library / X" over the pathline. The rail toggle beside it stays: at this width it is
-   the only way back to the nav. */
+/* Phone: the crumb gives way, since it repeats the heading below it; the rail toggle stays,
+   being the only way to the nav. */
 @media (max-width: 640px) {
   .crumb {
     display: none;
   }
 }
 
-/* Login ------------------------------------------------------------------- *
- *
- * Appended at the end of the file deliberately. tests/test_theme.py pins the cascade by
- * string index -- .theme-toggle must follow .btn -- so new rules go after everything,
- * never between.
- *
- * The page has no shell: no rail, no dock, no topbar, because routes/auth.py must not
- * build any of that for a visitor who has not logged in. So it needs its own centring
- * rather than borrowing .shell's. */
+/* Login -------------------------------------------------------------------- *
+   At the end of the file: tests/test_theme.py pins the cascade by position, so new rules go
+   after everything. No shell on this page, so it centres itself. */
 
 .login {
   display: flex;
@@ -3240,15 +2760,9 @@ a.file-name:hover {
   font-size: 11.5px;
 }
 
-/* The reveal eye ---------------------------------------------------------- *
- *
- * display:none until app.js has set data-js on <html>. The login page works with
- * scripting off -- a plain form post -- and an eye that cannot toggle anything is worse
- * than no eye at all, so it only appears once the code that drives it has run.
- *
- * Not [hidden]: a display rule outranks the UA's [hidden] and the control would stay
- * visible while looking like it had been hidden. That mistake is already recorded in
- * CLAUDE.md; this is the same class of bug avoided. */
+/* The reveal eye ----------------------------------------------------------- *
+   Hidden until app.js marks <html> with data-js: the login works without script, and an eye
+   that does nothing is worse than none. Not [hidden], which a display rule outranks. */
 
 .pw-reveal {
   display: none;

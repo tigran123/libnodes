@@ -1,7 +1,4 @@
-{# The only blocking dialog in the app. Everything else streams.
-
-   No job exists at this point — it is created only if the user confirms, so Cancel
-   leaves nothing behind. #}
+{# The only blocking dialog: no job exists until this is confirmed. #}
 <div class="backdrop" id="offline-dialog">
   <div class="dialog">
 
@@ -36,12 +33,6 @@
           </span>
         </label>
 
-        {% if device.wol_mac %}
-          <label class="opt">
-            <input class="check" type="checkbox" name="wol" value="on">
-            <span>Send wake-on-LAN to <span class="mono">{{ device.wol_mac }}</span> first</span>
-          </label>
-        {% endif %}
       </form>
     </div>
 
@@ -49,9 +40,7 @@
       {# Cancel is purely client-side: there is nothing on the server to undo. #}
       <button class="btn" type="button"
               onclick="document.getElementById('offline-dialog').remove()">Cancel</button>
-      {# Close AFTER the response lands — see the note on the same button in picker.html.
-         In onclick this detaches the button before htmx's listener runs, and htmx 2 drops
-         the request in silence. #}
+      {# Close after the response lands; see picker.html. #}
       <button class="btn btn-primary" type="button"
               hx-post="/jobs"
               hx-include="#offline-form"

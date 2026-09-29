@@ -10,8 +10,7 @@
     <span class="title-meta">this browser only</span>
   </div>
 
-  {# A plain form: no hx-*, no JS. The page works with scripting off, like the login form
-     and Log out, and a 303 back here is what shows the saved state. #}
+  {# A plain form: works with scripting off. #}
   <form class="panel" method="post" action="/settings"
         style="padding:14px;max-width:620px;display:flex;flex-direction:column;gap:12px">
 
@@ -37,8 +36,6 @@
 
     <div style="display:flex;gap:8px;align-items:center">
       <button class="btn btn-primary" type="submit">Save</button>
-      {# Not a preview card here: one would carry live Test and Abort buttons and a second
-         copy of a card id the Devices page targets. A link to the real thing instead. #}
       <a class="btn" href="/devices?view=grid">View grid</a>
     </div>
 
@@ -51,8 +48,7 @@
     </div>
   </form>
 
-  {# Rescued from the Keys page, which was a stub and is gone. The fact is still true and
-     still the first thing anyone wonders about when a device will not answer. #}
+  {# Where the ssh identities come from. #}
   <div class="panel" style="padding:14px;max-width:620px;margin-top:12px">
     <div class="section-label" style="margin:0 0 4px">SSH</div>
     <div class="t-dim" style="line-height:1.6">

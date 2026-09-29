@@ -11,10 +11,7 @@
         style="display:contents">
     {% include "device_status.html" %}
   </span>
-  {# Two jobs, one button: every node is probed again and /Books is re-walked. The
-     Library had its own ⟳ for the second, and two look-again glyphs doing different
-     things on two pages read as one. SVG rather than U+27F3, for the reason the theme
-     toggle's comment in base.html records. #}
+  {# Rescan: re-probe every node and rebuild the index. SVG, as base.html explains. #}
   <button class="btn btn-icon rescan"
           title="Rescan: check every device now, and rebuild the library index"
           aria-label="Rescan"
@@ -36,20 +33,14 @@
 
   <div class="titlebar">
     <h1 class="title">Devices</h1>
-    {# `total` rather than `nodes|length`: the count beside it is fleet-wide
-       (Config.profiles counts distinct types across every device), so a filtered
-       figure here made one sentence count two populations -- /devices?q=lg read
-       "3 devices · 3 profiles" when those three are one profile. `total` is the same
-       reachable_count the chip's denominator comes from, so the two cannot drift.
-       device_status.html carries this span out of band on its own 10s poll; the id
-       is what it aims at. #}
+    {# `total`, not the filtered count, so it counts the same fleet as `profiles`.
+       device_status.html repaints this out of band. #}
     <span id="device-meta" class="title-meta">{{ total }} devices · {{ profiles }} profiles</span>
 
     <div class="titlebar-right">
       <label class="field" style="width:230px">
         <span class="slash">/</span>
-        {# The fragment has to match the branch on screen: #device-rows is the cards
-           container in grid mode, so a fixed /devices/rows swapped table rows into it. #}
+        {# Aimed at the branch on screen: #device-rows is the cards container in grid mode. #}
         <input type="search" name="q" value="{{ q }}"
                placeholder="filter devices, types, addresses"
                hx-get="/devices/{{ 'grid' if view == 'grid' else 'rows' }}"
@@ -58,9 +49,7 @@
                hx-swap="innerHTML">
       </label>
 
-      {# Naming the view explicitly is what writes the cookie -- a bare /devices reads it
-         and writes nothing, so arriving by the rail cannot pin a default. `q` rides along
-         because switching layout is not a request to forget what you filtered for. #}
+      {# An explicit `?view=` is what writes the cookie; `q` rides along. #}
       <div class="segmented">
         <a class="{{ 'is-active' if view != 'grid' }}"
            href="/devices?view=table{% if q %}&amp;q={{ q|urlencode }}{% endif %}">TABLE</a>
@@ -71,13 +60,9 @@
   </div>
 
   {% if view == 'grid' %}
-    {# The poll repaints the very element the filter writes to, so it has to send the
-       filter with it. Without hx-include this is a bare GET: `q` binds to None,
-       `_filtered` short-circuits, and innerHTML puts the whole fleet back under a box
-       still reading `lg` -- every ten seconds, for ever, because innerHTML leaves this
-       div and its trigger intact. hx-disinherit rides along because hx-include is
-       inherited and every row's Test/Abort button lives inside here; that is the
-       same bug #sel-form carries hx-disinherit for in lib_pane.html. #}
+    {# The poll repaints what the filter wrote, so it must carry the filter, or it
+       puts the whole fleet back every 10 s. hx-disinherit keeps that include off the
+       rows' own buttons. #}
     <div id="device-rows"
          hx-get="/devices/grid"
          hx-trigger="every 10s"
@@ -99,7 +84,6 @@
         <div>Last sync</div>
         <div class="cell-r">Actions</div>
       </div>
-      {# Same two attributes as the grid branch, and for the same reason -- see there. #}
       <div id="device-rows"
            hx-get="/devices/rows"
            hx-trigger="every 10s"
@@ -111,13 +95,6 @@
     </div>
   {% endif %}
 
-  {# No status line here. The design's blueprint carried a "selected 0 · shift-click
-     ranges" line, which described the Library's file table and not this one, and what
-     replaced it said nothing the page does not: it listed the actions already visible in
-     every row's menu, and quoted settings.probe_interval as the refresh cadence when the
-     refresh above is a hardcoded `every 10s` — two independent numbers that happen to
-     both be 10 today and would silently disagree the moment one changed. Compare
-     lib_pane.html, whose status line reports a live match count. #}
 
 </div>
 {% endblock %}

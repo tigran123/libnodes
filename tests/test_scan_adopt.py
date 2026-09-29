@@ -298,7 +298,6 @@ def test_extras_flags_mangled_duplicates(settings, index):
 
     manifests = Manifests(settings.manifests_db)
     real = "Fiction/Joyce/Ulysses.pdf"
-    mangled = real.encode("utf-8").decode("latin-1")  # identical here (ASCII)
 
     cyrillic_real = "Fiction/Музыка.pdf"
     cyrillic_mangled = cyrillic_real.encode("utf-8").decode("latin-1")
@@ -980,3 +979,24 @@ async def test_the_scan_action_sets_the_expectation_before_the_click(client):
     """Cheaper than explaining it afterwards: the note says it is not a job."""
     menu = (await client.get("/device/kobo/menu")).text
     assert "not as a job" in menu
+
+
+async def test_stopping_the_scanner_reaps_a_listing_still_running(app, tmp_path, monkeypatch):
+    """The scan's `finally` deregistered its rsync on the CancelledError path too, so
+    `stop()` reaped an empty registry and the listing outlived the service."""
+    slow = tmp_path / "slow-listing"
+    slow.write_text("#!/bin/sh\nsleep 30\n")
+    slow.chmod(0o755)
+    monkeypatch.setattr("libnodes.scan.scan_argv", lambda *a, **k: [str(slow)])
+    lib = app.state.lib
+    device = lib.devices.config.by_id["kobo"]
+    assert lib.scanner.start(device)
+    for _ in range(100):
+        proc = lib.scanner._procs.get("kobo")
+        if proc is not None:
+            break
+        await asyncio.sleep(0.02)
+    else:
+        pytest.fail("the listing never started")
+    await lib.scanner.stop()
+    assert proc.returncode is not None, "the listing outlived stop()"

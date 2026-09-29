@@ -1,22 +1,9 @@
 """Ask a device what it already holds.
 
-A device that was populated by some other means — a card reader, an older script, a
-previous life — is invisible to LibNodes until it is scanned. Without this the Library
-view shows `—` for every row on a device holding the entire library, and there is no way
-to tell "not sent yet" from "sent long ago by other means".
-
-The listing comes from ``rsync -r --list-only``, which needs nothing the push path does
-not already need: the same ssh, the same remote rsync. Measured against a real Android
-device over WiFi: **35 s for 24,621 entries**, so it runs in the background and never in
-a request.
-
-What a listing cannot give us is content. It reports size and mtime only, so a scanned
-manifest row is a weaker claim than a pushed one — see `manifests._compare`.
-
-With one exception, and it is the stronger case rather than a further concession: a
-`sync_mode: mirror` device holds the library as symlinks, and rsync prints a link's target
-beside its name. The target *is* the blob hash, so scanning a mirror recovers exact content
-identity from the listing — see `parse_line`.
+A device populated by other means is invisible until scanned. The listing is `rsync -r
+--list-only` over the same ssh -- 35 s for 24,621 entries on an Android phone over Wi-Fi,
+so always in the background. It gives size and mtime, never content -- except on a CAS
+node, where a link's printed target *is* the blob hash (see `parse_line`).
 """
 
 from __future__ import annotations
@@ -30,7 +17,7 @@ from typing import Iterator
 
 from .library import blob_from_link
 from .models import Device
-from .probe import ssh_argv
+from .probe import rsync_e
 from .procs import reap
 
 #   -rwxr-x---     21,669,813 2026/08/11 08:32:40 Art/Complete-Book-of-Drawing.pdf
@@ -44,7 +31,6 @@ LINE_RE = re.compile(
 @dataclass
 class ScanResult:
     files: int = 0
-    dirs: int = 0
     total_bytes: int = 0
     skipped: int = 0
     error: str | None = None
@@ -62,22 +48,10 @@ def parse_line(
 ) -> tuple[str, str | None, int, int, bool] | None:
     """One listing line -> ``(path, blob, size, mtime, is_dir)``, or None if unusable.
 
-    Directories are kept, not discarded: an empty directory contains no files to count,
-    so its own row is the only evidence that it exists on the device at all. Sockets and
-    device nodes, and rsync's `.` self-entry, are dropped.
-
-    Symlinks are dropped too *unless* `keep_links` — which is a mirror device, where they
-    are not an oddity on the device but the whole point of it. Dropping them there would
-    report a node holding the entire library as holding none of it, the same way
-    `find -type f` finds no books.
-
-    A kept link is reported as a *file* carrying the blob hash its target names, because
-    that is what it stands for. rsync prints `name -> ../../.data/<hash>`, so the hash is
-    already in the listing and needs no second round trip. That makes a scanned mirror row
-    an exact content claim rather than the size guess a scan is normally limited to --
-    `manifests._compare` prefers blob-vs-blob and never reaches the size check. Size is
-    reported as 0 for the same reason: the 63 bytes of the link itself would be a lie
-    about the book, and nothing needs to read it once the blob is known.
+    Directories are kept (an empty one's row is its only evidence). Symlinks are dropped
+    unless `keep_links` -- a CAS node, where they *are* the library -- and then reported as
+    files carrying the hash their target names, with size 0 rather than the link's own
+    bytes: an exact content claim where a scan is otherwise only a size guess.
     """
     m = LINE_RE.match(line.rstrip("\n"))
     if m is None:
@@ -90,8 +64,7 @@ def parse_line(
     path = path.strip()
     blob = None
     if is_link:
-        # `name -> target`. Split from the right: a book's name may contain " -> ",
-        # rsync's separator is the last one.
+        # `name -> target`, split from the right: a book's name may contain " -> ".
         path, _, target = path.rpartition(" -> ")
         if not path:
             return None
@@ -114,11 +87,7 @@ def parse_line(
 def parse_listing(
     lines: Iterator[str], *, keep_links: bool = False
 ) -> Iterator[tuple[str, str | None, int, int, int]]:
-    """Manifest rows from a listing: ``(path, blob, size, mtime, is_dir)``.
-
-    `blob` is None for an ordinary file — a remote listing cannot tell us its content. A
-    symlink on a mirror device is the exception; see `parse_line`.
-    """
+    """Manifest rows from a listing: ``(path, blob, size, mtime, is_dir)``."""
     for line in lines:
         parsed = parse_line(line, keep_links=keep_links)
         if parsed is not None:
@@ -127,16 +96,8 @@ def parse_listing(
 
 
 def demangle(path: str) -> str | None:
-    """Recover a filename whose UTF-8 bytes were re-encoded as Latin-1, or None.
-
-    A real device turned up 17 files named like ``01 ÐÑÐ·ÑÐºÐ°.flac`` — the UTF-8 bytes
-    of ``01 Музыка.flac`` each expanded into their own two-byte sequence, by whatever
-    wrote them originally. rsync cannot see that as the same file, so it copies a second
-    correct-named copy alongside and the device quietly carries both.
-
-    Reversing the mistake turns a wall of gibberish into "this is a duplicate of X",
-    which is the difference between a listing you can act on and one you cannot.
-    """
+    """Recover a filename whose UTF-8 bytes were re-encoded as Latin-1, or None. A real
+    device held 17 like ``01 ÐÑÐ·ÑÐºÐ°.flac`` beside correctly named copies."""
     try:
         recovered = path.encode("latin-1").decode("utf-8")
     except (UnicodeEncodeError, UnicodeDecodeError):
@@ -145,19 +106,8 @@ def demangle(path: str) -> str | None:
 
 
 def scan_argv(device: Device, settings) -> list[str]:
-    """``rsync -r --list-only`` over the device's target directory.
-
-    A mirror device also gets `-l`, and that is not cosmetic. Plain `-r --list-only` does
-    list a symlink, but prints only its name; `-l` is what makes rsync append
-    ``-> ../../.data/<hash>``, which is the whole reason a mirror scan can report exact
-    content instead of a size. Verified against rsync 3.4.1. Readers never get it: without
-    a target to read, a link row would be a book we cannot identify, and `parse_line`
-    drops it as it always has.
-    """
-    ssh = ssh_argv(device, settings)
-    remote = f"{device.effective_user}@{device.host}"
-    # ssh_argv ends with user@host; everything before it is the ssh command itself.
-    ssh_cmd = " ".join(a for a in ssh[:-1])
+    """``rsync -r --list-only`` over the target. A CAS node also gets `-l`, without which
+    rsync lists a symlink but not its `-> …/<hash>` target (verified on rsync 3.4.1)."""
     target = device.target.rstrip("/")
     return [
         "rsync",
@@ -165,8 +115,8 @@ def scan_argv(device: Device, settings) -> list[str]:
         *(["-l"] if device.cas_tree else []),
         "--list-only",
         "-e",
-        ssh_cmd,
-        f"{remote}:{target}/",
+        rsync_e(device),
+        f"{device.effective_user}@{device.host}:{target}/",
     ]
 
 
@@ -179,9 +129,7 @@ class Scanner:
         self._results: dict[str, ScanResult] = {}
         self._running: set[str] = set()
         self._tasks: set[asyncio.Task] = set()
-        #: The live rsync per device, so `stop` can reap it. Cancelling the task alone
-        #: leaves the listing running against the device and its transport open — see
-        #: procs.reap.
+        #: The live rsync per device, so `stop` can reap it (see procs.reap).
         self._procs: dict[str, asyncio.subprocess.Process] = {}
 
     def result(self, device_id: str) -> ScanResult | None:
@@ -204,12 +152,9 @@ class Scanner:
         started = time.time()
         result = ScanResult(started_at=started)
         rows: list[tuple[str, str | None, int, int, int]] = []
-        # On a CAS-shaped node the books *are* symlinks, so dropping them would report a
-        # node holding the whole library as holding none of it. See parse_line. `cas_tree`
-        # rather than `is_mirror` because an upstream has the same shape for the opposite
-        # reason -- it is where that shape comes from -- and getting it wrong there fails
-        # green: a full production library reported as an empty pull backlog.
+        # `cas_tree`, not `is_mirror`: an upstream has the shape too.
         keep_links = device.cas_tree
+        stderr_task: asyncio.Future | None = None
         try:
             argv = scan_argv(device, self.settings)
             proc = await asyncio.create_subprocess_exec(
@@ -218,7 +163,9 @@ class Scanner:
                 stderr=asyncio.subprocess.PIPE,
             )
             self._procs[device.id] = proc
-            assert proc.stdout is not None
+            assert proc.stdout is not None and proc.stderr is not None
+            # Beside stdout: a full stderr pipe would stall rsync while we wait on stdout.
+            stderr_task = asyncio.ensure_future(proc.stderr.read())
             async for raw in proc.stdout:
                 parsed = parse_line(
                     raw.decode("utf-8", errors="replace"), keep_links=keep_links
@@ -229,20 +176,17 @@ class Scanner:
                 path, blob, size, mtime, is_dir = parsed
                 if is_dir:
                     rows.append((path, None, 0, mtime, 1))
-                    result.dirs += 1
                 else:
                     rows.append((path, blob, size, mtime, 0))
                     result.files += 1
                     result.total_bytes += size
 
-            stderr = await proc.stderr.read()
+            stderr = await stderr_task
             code = await proc.wait()
             if code != 0:
                 tail = stderr.decode(errors="replace").strip().splitlines()
                 result.error = tail[-1] if tail else f"rsync exited {code}"
             else:
-                # Replace wholesale: a scan is authoritative about what is there now,
-                # so a file deleted on the device must disappear from the manifest too.
                 self.manifests.replace_scan(device.id, rows)
         except (OSError, asyncio.CancelledError) as exc:
             result.error = str(exc) or exc.__class__.__name__
@@ -253,14 +197,16 @@ class Scanner:
             result.finished_at = time.time()
             self._results[device.id] = result
             self._running.discard(device.id)
-            self._procs.pop(device.id, None)
+            if stderr_task is not None and not stderr_task.done():
+                stderr_task.cancel()
+            # Only a child that has exited, or `stop()` has nothing to reap.
+            proc = self._procs.get(device.id)
+            if proc is not None and proc.returncode is not None:
+                self._procs.pop(device.id, None)
         return result
 
     async def stop(self) -> None:
-        # Cancel the readers, then reap: a scan sits in `async for raw in proc.stdout`,
-        # and cancelling that alone leaves rsync listing a device nobody is listening to,
-        # with its transport open for a garbage collector that runs after the loop has
-        # closed. See procs.reap.
+        # Cancel the readers, then reap. See procs.reap.
         for task in list(self._tasks):
             task.cancel()
         for task in list(self._tasks):

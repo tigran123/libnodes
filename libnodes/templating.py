@@ -60,15 +60,7 @@ def commafy(num: int | float | None) -> str:
 
 
 def reltime(ts: float | None, now: float | None = None) -> str:
-    """`14m ago` / `yesterday` / `4d ago` — every "how old is this" on the page.
-
-    One vocabulary on purpose. The index's age had its own `fresh 18m` beside the Devices
-    chip's `last scan 3s ago`, and once Rescan rebuilt the index as well as probing the
-    fleet the two read as one fact stated two ways that disagreed. They are two clocks --
-    the probe re-checks some node every ~10 s on its own, the index moves only on Rescan,
-    a pull or the 30-min timer -- so what they share is the format and a named subject,
-    never the number.
-    """
+    """`14m ago` / `yesterday` / `4d ago` -- every "how old is this" on the page."""
     if not ts:
         return "never"
     now = now if now is not None else time.time()
@@ -89,12 +81,7 @@ def reltime(ts: float | None, now: float | None = None) -> str:
 
 
 def until(ts: float | None, now: float | None = None) -> str:
-    """`in 4m` / `due now` — `reltime` pointed the other way, for the probe's next check.
-
-    Separate from `reltime` rather than folded into its `delta < 0` arm, which answers
-    "just now": a timestamp in the past means a clock skew there and a probe that has come
-    due here, and the row wants to say so.
-    """
+    """`in 4m` / `due now` -- `reltime` pointed forward, for the probe's next check."""
     if not ts:
         return "unscheduled"
     now = now if now is not None else time.time()
@@ -135,25 +122,15 @@ def isodate(ts: float | None) -> str:
 
 
 def asset(name: str) -> str:
-    """`/static/app.js?v=1a2b3c` — the stamp is the file's mtime, so a deploy changes the
-    URL and the browser has no cached copy to serve.
+    """`/static/app.js?v=1a2b3c`, stamped with the file's mtime so a change changes the URL.
 
-    Without it a deployed CSS or JS change is simply invisible for a while. StaticFiles
-    sends an ETag and a Last-Modified but no Cache-Control, so the browser falls back to
-    heuristic freshness — around 10% of the file's age — and serves its copy *without
-    revalidating*. Measured: an app.js last modified 23:36 the previous day was still
-    being used at 12:34, over an hour after the deploy that replaced it, because 10% of
-    its twelve-hour age is 74 minutes. The page HTML is dynamic and never cached, so the
-    symptom is markup from the new version driven by script from the old one — which
-    reads exactly like a fix that did not work.
-
-    Stat per call rather than once at import: it costs microseconds against five small
-    files, and it means `--reload` picks up an edited stylesheet without a restart.
+    StaticFiles sends no Cache-Control, so a browser serves its copy for ~10% of the file's
+    age without revalidating: an app.js replaced an hour earlier was still running, new
+    markup driven by old script. Stat per call: microseconds, five files.
     """
     try:
         stamp = int((STATIC_DIR / name).stat().st_mtime)
     except OSError:
-        # A missing file is the mount's problem to report, not this helper's.
         return f"/static/{name}"
     return f"/static/{name}?v={stamp:x}"
 
@@ -173,15 +150,8 @@ def build_templates() -> Jinja2Templates:
         clock=clock,
         isodate=isodate,
     )
-    # A global, not a filter: it is a URL builder, not a formatter, and base.html calls it
-    # as asset('app.js').
     env.globals["asset"] = asset
-    # The card as it was before the Settings ticks existed. A context value overrides a
-    # global in Jinja, so a real per-request map always wins -- this is only what a
-    # handler that forgot to build one falls back to, and falling back to "show
-    # everything" is the half of that mistake a rendered-HTML test can still see. The
-    # other half, an undefined name, is falsy for every key and draws a card with nothing
-    # in it but the title.
+    # A context value overrides a global, so this is only the fallback: the full card.
     env.globals["card_show"] = ALL_VISIBLE
     return templates
 

@@ -13,22 +13,12 @@
 
     <div data-label="Source" class="mono nowrap" title="{{ job.sources|join(', ') }}">
       {% if job.adopt %}<span class="badge">ADOPT</span> {% endif %}{% if job.dry_run %}<span class="badge badge-warn">DRY RUN</span> {% endif %}
-      {# source_label, not job.label: the label is a caption ("(full library)", "Art +16")
-         and this column is the source path. The full list is in the cell's title. #}
+      {# The source path, not the job's caption; the full list is in the title. #}
       {{ source_label(job) }}
     </div>
 
-    {# Files sent out of files selected. Both are files-only counts from the index, so
-       this agrees with the Library's DIR count and the PRESENT ON fraction; rsync's own total
-       would count directories and disagree with all three.
-
-       A pull has no denominator and never will: `_estimate` prices the local index, which
-       cannot know what the far end holds. So it shows the numerator alone rather than the
-       dash it used to — job #31 received 2 files and reported "—", which reads as "nothing
-       is known" about the one number that was.
-
-       The prune is appended to either form, and is deliberately not conditioned on the
-       job's kind: a mirror Replicate deletes too, and that has never shown anywhere. #}
+    {# Files sent of files selected, both files-only counts. A pull has no selection,
+       so its count stands alone; a prune is appended for any kind. #}
     <div class="cell-r mono" data-label="Files"
          title="{{ job.files_sent|commafy }} files {{ 'received' if job.kind == 'pull' else 'sent' }}{% if job.files_total %} of {{ job.files_total|commafy }} selected{% endif %}{% if job.files_deleted %}, {{ job.files_deleted|commafy }} deleted{% endif %}{% if job.entries_total %} · {{ job.entries_done }}/{{ job.entries_total }} file-list entries checked, directories included{% endif %}">
       {%- if job.files_total %}{{ job.files_sent }}/{{ job.files_total }}
@@ -37,8 +27,7 @@
       {%- if job.files_deleted %} <span class="t-err">−{{ job.files_deleted|commafy }}</span>{% endif %}
     </div>
 
-    {# Finished jobs report what the link carried, which delta-matching makes far smaller
-       than the size of the files involved — 6.7 MB for 4.4 GB of files, measured. #}
+    {# A finished job reports what the link carried. #}
     <div class="cell-r mono" data-label="Bytes"
          title="{{ job.bytes_done|hsize }} of files handled, out of {{ job.bytes_total|hsize }} selected">
       {% if job.state == 'running' %}
@@ -74,7 +63,6 @@
         <span class="badge badge-err">FAILED</span>
       {% endif %}
 
-      {# The log lives with its job, not in a separate section. #}
       {% if job.started_at %}
         <button class="btn btn-push"
                 hx-get="/jobs/{{ job.id }}/log/view"
@@ -83,8 +71,7 @@
                 title="Show this job's log">log</button>
       {% endif %}
 
-      {# Every job must be removable. A deferred job whose device never comes back
-         would otherwise sit in this table for ever. #}
+      {# Every job is removable, or a deferred one whose device never returns stays for ever. #}
       <button class="btn btn-ghost btn-icon"
               hx-delete="/jobs/{{ job.id }}"
               hx-target="#job-rows"

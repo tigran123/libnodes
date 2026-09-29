@@ -19,8 +19,7 @@
 {% endblock %}
 
 {# The Jobs rail footer swaps host stats for live transfer telemetry. #}
-{# Poll fast only while something is actually transferring. An idle Jobs page left open
-   was asking the Pi for telemetry every 3s for ever. #}
+{# Fast only while something transfers. #}
 {% block rail_foot %}
 <span id="telemetry"
       hx-get="/jobs/telemetry"

@@ -638,6 +638,7 @@ def _recorder(
     name: str,
     exit_code: int = 0,
     emits: Sequence[str] = (),
+    sleep: float = 0,
 ) -> list[str]:
     """A stand-in command that appends its own name to the trace and exits as told.
 
@@ -656,7 +657,8 @@ def _recorder(
         "#!/bin/sh\n"
         f"echo {name} >> {trace}\n"
         f"{body}"
-        f"exit {exit_code}\n"
+        + (f"sleep {sleep}\n" if sleep else "")
+        + f"exit {exit_code}\n"
     )
     script.chmod(0o755)
     return [str(script)]
@@ -676,7 +678,10 @@ def pull_rig(monkeypatch, app, settings, library, tmp_path, trace):
     settings.catalog_db.write_text("old catalog", encoding="utf-8")
     settings.local_service = "fake.service"
 
-    codes = {"pull": 0, "snapshot": 0, "stop": 0, "catalog": 0, "start": 0, "cleanup": 0}
+    codes = {"is-active": 0, "pull": 0, "snapshot": 0, "stop": 0, "catalog": 0,
+             "start": 0, "cleanup": 0}
+    #: Phases that take a moment, so a test can act while one is running.
+    slow: dict[str, float] = {}
     #: Lines a phase prints. `pull` is the @-lines, i.e. what the upstream sent us; any
     #: other phase can be given its own, which is how the later ones are shown *not* to
     #: redefine the transfer's numbers.
@@ -686,7 +691,8 @@ def pull_rig(monkeypatch, app, settings, library, tmp_path, trace):
         monkeypatch.setattr(
             J, "build_pull_argv",
             lambda *a, **k: _recorder(
-                tmp_path, trace, "pull", codes["pull"], emits["pull"]))
+                tmp_path, trace, "pull", codes["pull"], emits["pull"],
+                slow.get("pull", 0)))
         monkeypatch.setattr(
             J, "snapshot_argv",
             lambda *a, **k: _recorder(tmp_path, trace, "snapshot", codes["snapshot"],
@@ -700,7 +706,8 @@ def pull_rig(monkeypatch, app, settings, library, tmp_path, trace):
             lambda *a, **k: _recorder(tmp_path, trace, "cleanup", codes["cleanup"]))
         monkeypatch.setattr(
             J, "service_argv",
-            lambda verb, s: _recorder(tmp_path, trace, verb, codes[verb]))
+            lambda verb, s: _recorder(tmp_path, trace, verb, codes[verb],
+                                      sleep=slow.get(verb, 0)))
 
     async def run(dry_run: bool = False):
         install()
@@ -714,15 +721,19 @@ def pull_rig(monkeypatch, app, settings, library, tmp_path, trace):
 
     rig = type("Rig", (), {})()
     rig.codes, rig.run, rig.steps, rig.settings = codes, run, steps, settings
-    rig.emits = emits
+    rig.emits, rig.slow = emits, slow
     return rig
+
+
+#: A clean pull, command by command: the preflight's `is-active` and no-op `start`, the six
+#: phases, and `is-active` asked again at phase 3 because hours may have passed since.
+CLEAN_PULL = ["is-active", "start", "pull", "snapshot", "is-active", "stop", "catalog",
+              "start", "cleanup"]
 
 
 async def test_a_clean_pull_runs_all_six_phases_in_order(pull_rig):
     job = await pull_rig.run()
-    assert pull_rig.steps() == [
-        "pull", "snapshot", "stop", "catalog", "start", "cleanup"
-    ]
+    assert pull_rig.steps() == CLEAN_PULL
     assert job.state == "done"
 
 
@@ -739,9 +750,7 @@ async def test_a_pull_restarts_the_local_service_even_when_the_catalog_fails(pul
     cannot span two jobs."""
     pull_rig.codes["catalog"] = 1
     job = await pull_rig.run()
-    assert pull_rig.steps() == [
-        "pull", "snapshot", "stop", "catalog", "start", "cleanup"
-    ]
+    assert pull_rig.steps() == CLEAN_PULL
     assert "catalog" in (job.catalog_warning or "").lower()
 
 
@@ -750,10 +759,10 @@ async def test_a_pull_that_never_stopped_the_service_never_starts_it(pull_rig):
     deliberately stopped."""
     pull_rig.codes["stop"] = 1
     await pull_rig.run()
-    steps = pull_rig.steps()
-    assert "stop" in steps
-    assert "start" not in steps
-    assert "catalog" not in steps
+    after = pull_rig.steps()[pull_rig.steps().index("pull"):]
+    assert "stop" in after
+    assert "start" not in after
+    assert "catalog" not in after
 
 
 async def test_a_failed_snapshot_leaves_the_books_but_says_the_catalog_is_stale(pull_rig):
@@ -762,7 +771,7 @@ async def test_a_failed_snapshot_leaves_the_books_but_says_the_catalog_is_stale(
     pull_rig.codes["snapshot"] = 1
     job = await pull_rig.run()
     steps = pull_rig.steps()
-    assert steps == ["pull", "snapshot", "cleanup"]
+    assert steps == ["is-active", "start", "pull", "snapshot", "cleanup"]
     assert job.state == "done"
     assert job.catalog_warning
 
@@ -770,7 +779,7 @@ async def test_a_failed_snapshot_leaves_the_books_but_says_the_catalog_is_stale(
 async def test_a_failed_transfer_never_reaches_the_catalog_at_all(pull_rig):
     pull_rig.codes["pull"] = 1
     job = await pull_rig.run()
-    assert pull_rig.steps() == ["pull"]
+    assert pull_rig.steps() == ["is-active", "start", "pull"]
     assert job.state == "failed"
 
 
@@ -1069,3 +1078,111 @@ async def test_a_clean_pull_leaves_no_breadcrumb_behind(pull_rig, app):
     """Otherwise every subsequent restart would start a service nobody had stopped."""
     await pull_rig.run()
     assert not app.state.lib.jobs._service_hold.exists()
+
+
+# ------------------------------------------------------------------ preflight --
+
+
+async def test_a_pull_that_may_not_manage_the_service_transfers_nothing(
+    pull_rig, app, monkeypatch
+):
+    """The polkit rule is the only thing that lets this process stop the unit, and a missing
+    one used to surface at phase 3 -- after the whole transfer. The preflight's no-op
+    `start` travels the same authorisation path, so a denial is known before a byte moves,
+    and it is not retried: three more attempts would be refused the same way."""
+    monkeypatch.setattr(app.state.lib.jobs, "_retries_for", lambda job: 2)
+    pull_rig.codes["start"] = 1
+    job = await pull_rig.run()
+    assert pull_rig.steps() == ["is-active", "start"]
+    assert job.state == "failed"
+    assert "preflight" in job.error
+
+
+async def test_a_stopped_service_is_neither_stopped_nor_started(pull_rig):
+    """Nothing is reading the catalog, so the swap needs no quiet window -- and starting the
+    unit afterwards would start a service somebody had deliberately stopped."""
+    pull_rig.codes["is-active"] = 3
+    job = await pull_rig.run()
+    assert pull_rig.steps() == ["is-active", "pull", "snapshot", "is-active", "catalog",
+                                "cleanup"]
+    assert job.state == "done" and not job.catalog_warning
+
+
+async def test_abort_cannot_kill_the_service_stop_half_way(pull_rig, app):
+    """Killing a `systemctl stop` client does not cancel the stop job -- systemd finishes it.
+    So an Abort landing there left the unit down while the runner recorded "could not
+    stop", dropped the breadcrumb and never started it again. The service calls are out of
+    Abort's reach; everything after them still stops normally."""
+    pull_rig.slow["stop"] = 0.5
+    task = asyncio.create_task(pull_rig.run())
+    for _ in range(100):
+        if pull_rig.steps()[-1:] == ["stop"]:
+            break
+        await asyncio.sleep(0.02)
+    else:
+        pytest.fail("the pull never reached its stop")
+    job = next(iter(app.state.lib.jobs._live.values()))
+    await app.state.lib.jobs.abort(job.id)
+    await task
+    assert pull_rig.steps() == CLEAN_PULL
+    assert not app.state.lib.jobs._service_hold.exists()
+
+
+# -------------------------------------------------------------- who runs when --
+
+
+async def test_two_pulls_never_run_at_once(pull_rig):
+    """Concurrency is 3, and a pull waiting for pushes still reads "queued" -- so the row
+    offered Pull again. Two at once wrote the vault together and could start the local
+    service in the middle of the other's catalog swap."""
+    pull_rig.slow["pull"] = 0.3
+    await asyncio.gather(pull_rig.run(), pull_rig.run())
+    assert pull_rig.steps() == CLEAN_PULL + CLEAN_PULL
+
+
+async def test_a_push_waits_for_a_running_pull(pull_rig, app, monkeypatch, tmp_path, trace):
+    """A push dereferences the vault as it goes, so it must not run while a pull fills it."""
+    import libnodes.jobs as J
+
+    pull_rig.slow["pull"] = 0.3
+    lib = app.state.lib
+    pulling = asyncio.create_task(pull_rig.run())
+    for _ in range(100):
+        if "pull" in pull_rig.steps():
+            break
+        await asyncio.sleep(0.02)
+    monkeypatch.setattr(J, "build_argv", lambda *a, **k: _recorder(tmp_path, trace, "push"))
+    push = lib.jobs.submit(_device(app, "kobo"), ["Fiction"])
+    await asyncio.gather(pulling, lib.jobs._run(push.id))
+    assert pull_rig.steps() == CLEAN_PULL + ["push"]
+
+
+@pytest.mark.parametrize("target", ["source", "thinkpad"])
+async def test_a_selection_dry_run_refuses_an_upstream_or_a_mirror(client, target):
+    """`POST /jobs/dry-run` had none of `POST /jobs`'s mode guards: an upstream target was
+    an unhandled 500 (`build_argv` refuses it), and a mirror queued a whole-root
+    `--delete -n` under a subtree label."""
+    r = await client.post("/jobs/dry-run", data={"device": target, "path": "Fiction"})
+    assert r.status_code == 200
+    assert "Could not queue" in r.text
+    assert not client._transport.app.state.lib.jobs._live
+
+
+async def test_the_menu_shows_the_preflight_before_the_transfer(client, settings, library):
+    """Every action shows what it runs, and the first thing a Pull runs is now a question."""
+    settings.catalog_db = library / ".data" / "db" / "lib.db"
+    settings.local_service = "urantia-library.service"
+    menu = (await client.get("/device/source/menu")).text
+    assert "systemctl --no-ask-password is-active urantia-library.service" in menu
+    assert menu.index("0. before anything moves") < menu.index("1. the library")
+
+
+async def test_a_pull_ends_by_saying_the_index_caught_up(pull_rig, app):
+    """"· reindexing the library" was the last word of every pull, as though the job were
+    still busy: the rebuild ran in the background and nothing reported its end. The pull
+    now waits for it -- about a second -- and says how it went."""
+    job = await pull_rig.run()
+    lines = [text for _, text in app.state.lib.jobs.terminal(job.id)]
+    assert lines[-2] == "· reindexing the library"
+    assert lines[-1].startswith("✓ library reindexed · ")
+    assert job.state == "done"

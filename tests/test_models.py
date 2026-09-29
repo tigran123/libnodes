@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from libnodes.models import TYPE_SEEDS, parse_devices, parse_size
 
 
@@ -88,19 +90,20 @@ def test_empty_file_is_valid():
     assert config.devices == []
 
 
-def test_legacy_formats_field_still_loads():
-    """`formats` is accepted but inert.
-
-    LibNodes pushes whatever you point it at; what a device can open is the device's
-    business. The field stays in the schema only so an older devices.yaml does not fail
-    validation over a dead key.
-    """
+@pytest.mark.parametrize(
+    "field", ["formats: [epub]", "rsync_flags: ['-z']", "wol_mac: 'aa:bb'",
+              "keep_free: 1G", "probe_interval: 60"],
+)
+def test_a_field_that_does_nothing_is_refused_with_its_line(field):
+    """These were once accepted and ignored, so an edit to one looked like it did
+    something. Refused now, with the line, in the chip the Devices page already shows."""
     config, issues = parse_devices(
         "devices:\n  - id: a\n    name: A\n    host: h\n    target: /t\n"
-        "    formats: ['.EPUB', 'Pdf']\n"
+        f"    {field}\n"
     )
-    assert issues == []
-    assert not hasattr(config.by_id["a"], "accepts")
+    assert config is None
+    assert issues and issues[0].line == 6
+    assert "extra inputs are not permitted" in issues[0].message
 
 
 def test_parse_size():
@@ -115,7 +118,6 @@ def test_defaults_are_inherited_not_copied():
     config, _ = parse_devices(
         """
 defaults:
-  rsync_flags: ["-a"]
   retries: 5
 devices:
   - id: a

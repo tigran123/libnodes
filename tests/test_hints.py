@@ -136,3 +136,12 @@ def test_failing_to_set_times_names_its_cause(tmp_path):
     # setting turns the next device that hits this into a one-line edit.
     assert any("re-send" in h for h in hints)
     assert any("stores_times: false" in h for h in hints)
+
+
+def test_a_key_failure_is_not_also_blamed_on_write_permission():
+    """`permission denied` is a substring of `permission denied (publickey)`, so a key
+    problem also collected the "cannot write to the target" hint beside the right one."""
+    from libnodes.jobs import hints_for_text
+
+    hints = hints_for_text("root@10.0.0.2: Permission denied (publickey).", 255)
+    assert len(hints) == 1 and "key" in hints[0]

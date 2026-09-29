@@ -6,11 +6,9 @@ Every test here corresponds to something that actually went wrong in use.
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 import time
 
-import pytest
 
 
 async def test_offline_push_asks_before_creating_anything(client, app):

@@ -1,20 +1,9 @@
-"""inotify-backed change notification for devices.yaml.
+"""inotify change notification for devices.yaml, via `watchfiles` (a uvicorn[standard]
+dependency).
 
-Polling a file's mtime from the browser is the wrong shape twice over: it costs a
-request per interval per open page, and it still reports the change late. The kernel
-already has the answer — inotify — and `watchfiles` (a uvicorn[standard] dependency, so
-nothing new to install) wraps it with an async iterator.
-
-Two deliberate details:
-
-* We watch the **parent directory**, not the file. A file watch is registered against an
-  inode, and `$EDITOR` typically saves by writing a temp file and renaming it over the
-  target; the watch then survives pointing at an unlinked inode and never fires again.
-  vim, emacs and `sed -i` all behave this way.
-* inotify drives *latency*, not correctness. `DevicesStore` still stats the file on
-  access, so a missed or unavailable event costs freshness on the next request, never a
-  stale config. On a filesystem without inotify (NFS, some FUSE mounts) the app simply
-  loses the push and keeps working.
+It watches the **parent directory**: editors save by rename, and a watch on the file would
+survive pointing at an unlinked inode. inotify only drives latency -- `DevicesStore` still
+checks the mtime on access, so a missed event costs nothing but a few seconds.
 """
 
 from __future__ import annotations
@@ -31,12 +20,6 @@ class FileWatcher:
         self.path = Path(path)
         self._subs: set[asyncio.Queue] = set()
         self._task: asyncio.Task | None = None
-        self._available = True
-
-    @property
-    def available(self) -> bool:
-        """False once the watch has failed; callers may fall back to polling."""
-        return self._available
 
     def subscribe(self) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue(maxsize=8)
@@ -60,8 +43,7 @@ class FileWatcher:
         target = self.path.name
         directory = self.path.parent
         try:
-            # rust_timeout keeps the loop responsive to cancellation; step debounces
-            # the burst of events a single save produces.
+            # rust_timeout keeps it cancellable; step debounces one save's burst.
             async for changes in awatch(
                 directory, step=50, rust_timeout=5000, yield_on_timeout=True
             ):
@@ -70,7 +52,7 @@ class FileWatcher:
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - inotify is an optimisation, never a hard dep
-            self._available = False
+            pass
 
     def start(self) -> None:
         if self._task is None or self._task.done():

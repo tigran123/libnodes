@@ -1,9 +1,6 @@
-{# One device card -- the grid's counterpart to device_row.html, and it renders
-   standalone for the same reasons: /device/{id}/card swaps it as outerHTML, and `oob`
-   lets the Test dialog carry a refreshed card along with its own payload. Undefined in
-   the grid loop, and an undefined name is falsy, so that path is unaffected. #}
+{# One device card, standalone for /device/{id}/card; `oob` as in device_row.html. #}
 <div class="card {{ 'is-active' if node.state == 'syncing' }}{{ 'is-offline' if node.offline }}"
-     {# dom_id, not id — see device_row.html. #}
+     {# dom_id, never the raw id: see Device.dom_id. #}
      id="card-{{ node.device.dom_id }}"
      data-node="{{ node.device.id }}"
      {% if oob %}hx-swap-oob="true"{% endif %}>
@@ -13,8 +10,7 @@
     <span class="card-title">{{ node.device.name }}</span>
     {% if node.state == 'syncing' %}
       <span class="badge badge-accent">{{ '%.0f'|format(node.job.pct) }}%</span>
-    {# The badge names the state, which is all it can honestly do in this space; the
-       card has no room for the error, so it goes in the tooltip rather than nowhere. #}
+    {# The state badge; the card has no room for the error, so it is in the tooltip. #}
     {% elif node.offline %}
       <span class="badge badge-err" title="{{ node.reach.error }}: {{ node.reach_note }}">OFFLINE</span>
     {% elif node.sleeping %}
@@ -22,31 +18,24 @@
     {% else %}
       <span class="badge">{{ node.device.type|upper }}</span>
     {% endif %}
-    {# Outside the branch above, not inside it: the state badge replaces the type badge,
-       but what kind of node this is does not stop being true because it is asleep — and
-       a card whose MIRROR came and went with reachability would be the more confusing
-       of the two. #}
+    {# The node's kind stays shown whatever its state. #}
     {% if node.device.is_mirror %}
       <span class="badge" title="sync_mode: mirror — replicates the library verbatim and
                                  prunes with --delete">MIRROR</span>
     {% elif node.device.is_upstream %}
-      {# Amber, unlike MIRROR's plain badge: this is the one node that must never be
-         written to, and the two read the same in the yaml. See device_row.html. #}
+      {# Amber: the one node that must never be written to. #}
       <span class="badge badge-warn"
             title="sync_mode: upstream — the library's source. LibNodes pulls from here
                    and never pushes, replicates, adopts or deletes there.">UPSTREAM</span>
     {% endif %}
     {% if node.scanning %}
-      {# See device_row.html: a scan has nowhere else to be seen, and it is independent of
-         both the state chain and the mode chain. #}
       <span class="badge badge-accent"
             title="a listing is running against this device. It keeps going if you close
                    the dialog you started it from — nothing there is holding it up.">SCANNING</span>
     {% endif %}
   </div>
 
-  {# Two lines became one: address left, target right, wrapping back to two only where
-     they stop fitting -- see .card-addr in app.css for the measurement. #}
+  {# Address left, target right, wrapping only where they stop fitting. #}
   {% if card_show.addr or card_show.target %}
   <div class="card-addr mono">
     {% if card_show.addr %}<span class="card-host">{{ node.device.host }}:{{ node.device.effective_port }}</span>{% endif %}
@@ -54,17 +43,13 @@
   </div>
   {% endif %}
 
-  {# .card-stats, and the 7px between these lines is its `gap` rather than a margin on
-     each: a margin belongs to the element above the space it makes, so hiding any one of
-     these would leave its neighbour's behind. #}
+  {# The gap belongs to .card-stats, so hiding one line leaves no stray margin. #}
   {% if card_show.sync or card_show.space or card_show.seen or (card_show.battery and node.has_battery) %}
   <div class="card-stats">
     {% if card_show.sync or card_show.space %}
     <div class="stat">
       {% if card_show.sync %}<span>{{ node.last_sync|reltime }}</span>{% endif %}
-      {# used / total and `.track`, both matching device_row.html: same datum, same
-         reading, same colour. The card used `.disk-bar`, whose fill is --faint, beside
-         a table drawing the identical number in --accent. #}
+      {# The table's datum, reading and colour. #}
       {% if card_show.space %}<b{% if node.used is not none %} title="{{ node.used|hsize }} used · {{ node.free|hsize }} free of {{ node.capacity|hsize }}"{% endif %}>
         {%- if node.used is not none -%}
           {{ node.used|hsize_short }}{% if node.capacity %} / {{ node.capacity|hsize_short }}{% endif %}
@@ -72,17 +57,13 @@
       </b>{% endif %}
     </div>
     {% endif %}
-    {# The {% raw %}{% if %}{% endraw %} stays outside this div and out of its class attribute:
-       tests/test_probe.py compares the card's bar classes with the table's, matching only
-       whitespace between the div and its <i>. #}
+    {# The if stays outside this div: a test compares its classes with the table's. #}
     {% if card_show.space %}
     <div class="track track-2 track-disk">
       <i style="width:{{ '%.1f'|format(node.used_pct) }}%"></i>
     </div>
     {% endif %}
 
-    {# Same age the table's LAST SEEN column prints, from the same property: a card and a
-       row showing the same figures must agree about how old they are. #}
     {% if card_show.seen %}
     <div class="stat">
       <span class="t-muted">seen</span>
@@ -90,8 +71,6 @@
     </div>
     {% endif %}
 
-    {# Battery, on the same terms as the table cell: shown only for a device that
-       declares where to read it, same thresholds, same tint. #}
     {% if card_show.battery and node.has_battery %}
       <div class="stat">
         <span class="t-muted">battery</span>
@@ -110,12 +89,8 @@
   </div>
   {% endif %}
 
-  {# The tick is literal. It first exempted a red or syncing card -- Test being the only
-     per-device re-probe in GRID and Abort the only way to stop a push -- and that was
-     wrong on this fleet, where six of ten nodes are red at any moment: a tick marked
-     "Test / Actions" left the buttons on most of the cards and read as simply broken.
-     Neither action is lost, only moved: Rescan in the topbar re-probes every node, and a
-     running job keeps its Abort in the dock (dock_card.html). #}
+  {# The Settings tick hides these on every card, red and syncing ones included:
+     Rescan re-probes the fleet and the dock keeps a running job's Abort. #}
   {% if card_show.actions %}
   <div class="card-actions">
     {% if node.state == 'syncing' %}
@@ -125,13 +100,7 @@
               hx-post="/jobs/{{ node.job.id }}/abort"
               hx-swap="none" hx-disabled-elt="this">Abort</button>
     {% else %}
-      {# Test sits in the card for the same reason it sits in the row: it is the only
-         action that changes nothing, so it needs no command strip to read first, and it
-         stays enabled when the dot is red because that is precisely when you want it.
-         See device_row.html for the full reasoning. It was missing here from the day the
-         cards were written -- the grid offered every *writing* action and withheld the
-         one that is safe, so a red node could not be diagnosed without switching to
-         TABLE. `test_the_card_offers_every_action_the_row_does` pins it. #}
+      {# Test, as on the row: it writes nothing and is most useful on a red node. #}
       <button class="btn"
               hx-post="/device/{{ node.device.id }}/test"
               hx-target="#notices"
@@ -140,8 +109,6 @@
               title="{{ node.test_command }}">Test</button>
 
       {% if not node.online %}
-        {# No Retry: Test re-probes too and refreshes this card out of band. See
-           device_row.html. #}
         <button class="btn is-disabled" disabled
                 title="not answering — Test first">Actions</button>
       {% else %}

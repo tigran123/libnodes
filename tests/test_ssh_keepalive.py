@@ -10,6 +10,8 @@ user gets `mux_client_request_session: read from master failed: Broken pipe`.
 
 from __future__ import annotations
 
+import itertools
+
 from libnodes.jobs import build_argv
 from libnodes.probe import (
     SERVER_ALIVE_COUNT_MAX,
@@ -21,7 +23,7 @@ from libnodes.probe import (
 def _opts(argv: list[str]) -> dict[str, str]:
     """The -o pairs of an argv, as a dict."""
     out = {}
-    for flag, value in zip(argv, argv[1:]):
+    for flag, value in itertools.pairwise(argv):
         if flag == "-o" and "=" in value:
             key, _, val = value.partition("=")
             out[key] = val

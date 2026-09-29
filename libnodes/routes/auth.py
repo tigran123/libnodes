@@ -1,13 +1,7 @@
-"""The login page and the two actions that open and close a session.
+"""The login page and the actions that open and close a session.
 
-The page is the one full page in the app that does *not* extend base.html, and that is
-the point rather than an oversight: base.html renders the rail, the dock, host telemetry
-and the whole device list, all of it assembled by deps.base_context. None of that may be
-built for someone who has not logged in yet -- an unauthenticated visitor should not be
-able to read the fleet's hostnames off the login screen.
-
-It also loads no JavaScript. A plain form posts the password, so the lock works with
-scripting off, and there is nothing here for htmx to swap.
+The one page that does not extend base.html, whose context would show a visitor the
+fleet's hostnames; and it loads no script, so the lock works with scripting off.
 """
 
 from __future__ import annotations
@@ -25,12 +19,9 @@ router = APIRouter()
 
 
 def _login_context(request: Request, error: str = "") -> dict:
-    """Deliberately thin. Compare deps.base_context -- everything it collects is
-    something this page must not show."""
+    """Deliberately thin: nothing base_context collects may be shown here."""
     return {
         "request": request,
-        # Same server-side stamp as base.html:4, so the login page is already in the
-        # right palette on first paint instead of flashing the other one.
         "theme": "light" if request.cookies.get("libnodes_theme") == "light" else "dark",
         "error": error,
         "next": safe_next(request.query_params.get("next")),
@@ -60,9 +51,7 @@ async def login(
         return RedirectResponse("/devices", 303)
 
     if not check_password(password, configured):
-        # A flat delay, not rate limiting: it costs an honest typo half a second and
-        # makes the endpoint useless as a fast oracle. Anything cleverer would be state
-        # to keep for a threat model that does not have an adversary in it.
+        # A flat delay: half a second for a typo, and no fast oracle.
         await asyncio.sleep(0.5)
         return templates.TemplateResponse(
             request,
@@ -76,15 +65,10 @@ async def login(
     response.set_cookie(
         COOKIE,
         mint(configured, ttl),
-        # No `secure`: LibNodes is served over plain http on the LAN -- there is no TLS
-        # and no reverse proxy in front (see deploy/README.md). A Secure cookie would
-        # never be stored and the login would appear to succeed and change nothing.
-        # app.js:37 records the same constraint about navigator.clipboard.
+        # No `secure`: on plain http the login would appear to succeed and change nothing.
         httponly=True,
         samesite="lax",
         path="/",
-        # Unticked means a session cookie, so a browser that is closed forgets. Ticked
-        # means the cookie outlives it, which is the whole point of asking once.
         max_age=int(ttl) if remember else None,
     )
     return response
@@ -93,7 +77,6 @@ async def login(
 @router.post("/logout")
 async def logout(request: Request):
     response = RedirectResponse("/login", 303)
-    # delete_cookie must be given the same path the cookie was set with, or the browser
-    # keeps the original and logging out silently does nothing.
+    # The same path it was set with, or the browser keeps the cookie.
     response.delete_cookie(COOKIE, path="/")
     return response

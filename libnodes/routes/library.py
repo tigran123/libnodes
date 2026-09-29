@@ -39,10 +39,7 @@ def library_context(
     meta = app.index.meta()
 
     ctx = base_context(request, "library")
-    # The rail's own Library link, overwritten because base_context read it from the
-    # cookie and the cookie is one navigation behind: on /library?p=A it still holds
-    # wherever you were before. A rail link pointing somewhere other than the page you
-    # are looking at is the "the URL moved and the content did not" failure again.
+    # The cookie base_context read is one navigation behind; the rail links here.
     ctx["library_href"] = library_href(path)
     ctx.update(
         {
@@ -51,9 +48,7 @@ def library_context(
             "q": q,
             "sort": sort,
             "rows": rows,
-            # The map is drawn from `slots`, never from `presence` directly: one slot per
-            # fleet device in fleet order, `None` where nothing is known. See
-            # `presence_slots` for what renders the dense list instead costs.
+            # Drawn from `slots`, never `presence`: see `presence_slots`.
             "fleet": fleet,
             "slots": presence_slots(presence, device_ids),
             "total_files": total_files,
@@ -76,11 +71,8 @@ async def library_page(
     q: str = "",
     sort: str = "name",
 ):
-    """The one full page. It records where it is, so the rail can come back here.
-
-    `ctx["path"]` and not `p`: that is the normalised path `index.require` has already
-    vouched for, so nothing a query string can say reaches the cookie unchecked.
-    """
+    """The one full page. It records the path the index vouched for, so the rail can
+    come back."""
     ctx = library_context(request, p, q, sort)
     response = templates.TemplateResponse(request, "library.html", ctx)
     remember(response, ctx["path"])
@@ -94,19 +86,9 @@ async def lib_pane(
     q: str = "",
     sort: str = "name",
 ):
-    """The whole panel. A breadcrumb segment and a directory name both swap it, so the
-    listing, the crumb and the selection change together.
-
-    It records the position too, and it is the one that matters: walking the tree never
-    reloads the page, so without this the cookie would only ever hold where you *arrived*.
-    A bare call records the root, which is right rather than the `/devices` hazard
-    restated -- that rule is that arriving by the rail must not pin a default the handler
-    merely guessed, and there is no guess here: a bare /lib/pane is the breadcrumb's root
-    link, and the root is then where you are.
-
-    /lib/list and /lib/selection deliberately do not record anything. Filtering, sorting
-    and ticking a box do not move you, and the filter fires on every keystroke.
-    """
+    """The whole panel, swapped by the breadcrumb and by a directory name. It records the
+    position, since walking never reloads the page; a bare call is the root link.
+    /lib/list and /lib/selection record nothing: filtering does not move you."""
     ctx = library_context(request, p, q, sort)
     response = templates.TemplateResponse(request, "lib_pane.html", ctx)
     remember(response, ctx["path"])
@@ -157,16 +139,8 @@ async def lib_selection(
 
 @router.get("/lib/presence", response_class=HTMLResponse)
 async def presence_dialog(request: Request, p: str = ""):
-    """Who holds this row, in words.
-
-    The map is 15 slots a few pixels wide, and every name, count and age behind it used
-    to live in a `title=` -- which the fleet's own tablets do not have. So the strip is a
-    button and this is what it opens.
-
-    It goes through `presence`/`presence_slots` exactly as the row does, so the dialog and
-    the strip it was opened from cannot disagree about a device; and through
-    `index.require`, so the index stays the only whitelist for a path.
-    """
+    """Who holds this row, in words: the strip's names and ages, which a `title=` could
+    not give the fleet's own tablets. Through `presence_slots`, as the row is."""
     app = state(request)
     entry = app.index.require(p)
     fleet = app.devices.config.devices
@@ -178,9 +152,8 @@ async def presence_dialog(request: Request, p: str = ""):
     ctx.update(
         {
             "entry": entry,
-            # Zipped here rather than in the template: a device and its slot are one fact
-            # and pairing them by index twice is one place too many.
-            "slots": list(zip(fleet, slots)),
+            # strict: one slot per fleet device is the whole contract (presence_slots).
+            "slots": list(zip(fleet, slots, strict=True)),
             "held": sum(1 for s in slots if s is not None),
         }
     )

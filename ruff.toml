@@ -1,0 +1,13 @@
+# Lint only, and only rules that catch something real: pyflakes (unused imports and
+# variables, undefined names) and bugbear (likely bugs). No formatter -- the tree's layout is
+# deliberate -- and nothing about comment length, which no linter can judge. Enforced by
+# tests/test_lint.py, so `uv run pytest` fails on a new finding. .gitignore'd paths (var/,
+# .venv/) are skipped by default.
+target-version = "py312"
+
+[lint]
+select = ["F", "B"]
+
+[lint.flake8-bugbear]
+# FastAPI's parameter declarations are calls in defaults by design, not shared mutable state.
+extend-immutable-calls = ["fastapi.Form", "fastapi.Query"]

@@ -1,7 +1,5 @@
 {# File-table body. Swapped on every keystroke of the filter (120ms debounce). #}
-{# The counter lives up in the filter bar, so a swap carries it along out-of-band.
-   Only when swapping, though: on first paint this template is included *inside* the
-   pane, which already renders the counter in place. #}
+{# The counter rides out of band on a swap; inline on first paint. #}
 {% if oob %}
 <span id="result-count" class="result-count" hx-swap-oob="true">
   {{ total_files|commafy }} → {{ match_count|commafy }} matches · {{ '%.0f'|format(elapsed_ms) }}ms
@@ -18,16 +16,8 @@
 
     <div data-label="Name">
       {% if row.is_dir %}
-        {# The way in. app.js's row-click handler returns early on anything inside
-           `a, button, select, textarea`, so this navigates without also ticking the box,
-           and every other part of the row still ticks it.
-           `p` and nothing else, exactly as the tree link carried. A directory row can now
-           reach you *through* a filter — `children()` narrows the current level rather
-           than searching the subtree, so `Audio` at the root leaves the `Audio/` row —
-           and dropping `q` is the point rather than an oversight: this link swaps the
-           whole #lib pane, so the pane comes back with `q` empty and the box clears
-           itself. Entering a directory is a fresh listing, which is what the tree click
-           did and why `sort` goes the same way. #}
+        {# The way in. A link, so the row-click handler lets it through without ticking the
+           box; it carries `p` alone, so entering a directory clears the filter. #}
         <a class="file-name" title="{{ row.path }}"
            href="/library?p={{ row.path|urlencode }}"
            hx-get="/lib/pane?p={{ row.path|urlencode }}"
@@ -38,8 +28,7 @@
         <span class="file-name" title="{{ row.path }}">{{ row.label }}</span>
       {% endif %}
       {% if row.title and row.title != row.name %}
-        {# The one line here that still elides, so it is the one line that needs a tooltip:
-           the filename above it wraps in full now, and this is the nicety beside it. #}
+        {# The one line that still elides, so it has a tooltip. #}
         <span class="file-title"
               title="{{ row.title }}{% if row.author %} · {{ row.author }}{% endif %}">{{ row.title }}{% if row.author %} · {{ row.author }}{% endif %}</span>
       {% endif %}
@@ -59,15 +48,9 @@
     <div class="mono t-dim" data-label="Modified">{{ row.mtime|isodate }}</div>
 
     <div data-label="Present on">
-      {# One slot per fleet device, in fleet order, drawn whether that device holds this
-         row or not — because the map's whole claim is that the fourth slot is the same
-         device on every row. `slots` is what guarantees that; see `presence_slots`. A
-         row nothing holds is fifteen faint slots rather than an em dash, for the same
-         reason: the column has to stay readable *down* the page.
-         A <button> and not a div, so app.js's row-click handler lets it through — it
-         returns early on `a, button, select, textarea` — and tapping the strip opens the
-         names instead of ticking the row. The titles below are the desktop's shortcut to
-         the same thing; on a tablet there is no hover and the dialog is all there is. #}
+      {# One slot per fleet device in fleet order, holding or not (see presence_slots).
+         A <button>, so the row-click handler lets it through and a tap opens the names --
+         the tablets have no hover for the titles. #}
       {% if fleet %}
       {% set row_slots = slots.get(row.path) or [] %}
       {% set held = row_slots|select|list|length %}
@@ -89,15 +72,8 @@
     </div>
 
     <div class="push-cell" data-label="Push">
-      {# Two buttons, and both of them ask first. The row used to carry `→ ONE` and
-         `→ LG` as well — the first two selectable devices in devices.yaml order, chosen
-         by nothing but file order — and each of those POSTed a real transfer on one
-         click. A one-click push to a target picked by file order is a control whose
-         name does not say what it does; the picker names every device and pre-checks
-         none.
-         PRESENT ON is a cached count and answers "what is there", not "what would move".
-         A push that repairs files already present looks identical to one that sends
-         everything, so the dry run stays reachable from the row itself. #}
+      {# Both buttons open the picker, which names every device and pre-checks none;
+         the dry run is here because PRESENT ON cannot say what a push would move. #}
       {% if devices %}
         <button class="btn btn-push btn-icon" type="button"
                 hx-get="/jobs/picker?dry_run=true&amp;path={{ row.path|urlencode }}"
@@ -121,7 +97,7 @@
       {% if q %}
         Nothing matches <span class="mono">{{ q }}</span>{% if path %} in <span class="mono">{{ path }}</span>{% endif %}.
       {% elif not index_meta.ready %}
-        Index not built yet — press <span class="mono">⟳</span> in the filter bar.
+        Index not built yet — press Rescan (<span class="mono">⟳</span>) on the Devices page.
       {% else %}
         Empty directory.
       {% endif %}

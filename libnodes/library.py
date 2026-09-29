@@ -1,23 +1,15 @@
 """The cached library index.
 
-`/Books` is content-addressed: every book is a symlink into `/Books/.data/<blake2b>`,
-so the browsable tree is 20.8k symlinks and the bytes live once in the vault. Two
-consequences run through this module:
-
-* `stat()` must follow the link (sizes come from the vault blob, not the 100-byte
-  symlink), which `os.DirEntry.stat()` does by default.
-* the link target's basename is the blob hash, which is a free exact content identity —
-  we store it, and both the manifest staleness check and the optional catalog join key
-  off it.
-
-Nothing here is ever called from a request handler while it walks. A full walk of the
-real library measures ~29s on the Pi, so reindexing runs on a single background thread
-and publishes by atomic rename; readers open short-lived read-only connections and
-never see a half-built index.
+Every book is a symlink into `/Books/.data/<blake2b>`, so sizes come from following the
+link, and the target's basename is a free exact content identity that the manifest and
+the catalog join key off. The walk (1.0 s on pi5, ~29 s on the Pi 3) runs on one
+background thread and publishes by atomic rename; readers open short read-only
+connections and never see a half-built index.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import sqlite3
@@ -25,9 +17,11 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Iterator, Sequence
+from typing import Callable, Sequence
 
 from .config import SKIP_TOPLEVEL, Settings
+
+log = logging.getLogger(__name__)
 
 _BLOB_RE = re.compile(r"^[0-9a-f]{32,128}$")
 
@@ -53,11 +47,8 @@ CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT);
 
 SORTS = {
     "name": "is_dir DESC, name COLLATE NOCASE ASC",
-    "name_desc": "is_dir DESC, name COLLATE NOCASE DESC",
     "size": "is_dir DESC, size DESC",
-    "size_asc": "is_dir DESC, size ASC",
     "modified": "is_dir DESC, mtime DESC",
-    "modified_asc": "is_dir DESC, mtime ASC",
 }
 
 _COLUMNS = "path, parent, name, is_dir, fmt, size, mtime, files, blob, title, author"
@@ -107,6 +98,9 @@ class IndexMeta:
     duration: float | None
     errors: int
     running: bool
+    #: Why the last rebuild failed, or None. The published index is still the previous
+    #: good one, so without this a failing rebuild looked like an index that was merely old.
+    error: str | None = None
 
     @property
     def ready(self) -> bool:
@@ -170,11 +164,11 @@ class LibraryIndex:
     def meta(self) -> IndexMeta:
         conn = self._connect()
         if conn is None:
-            return IndexMeta(None, 0, 0, 0, None, 0, self._running)
+            return IndexMeta(None, 0, 0, 0, None, 0, self._running, self._last_error)
         try:
             rows = dict(conn.execute("SELECT k, v FROM meta").fetchall())
         except sqlite3.Error:
-            return IndexMeta(None, 0, 0, 0, None, 0, self._running)
+            return IndexMeta(None, 0, 0, 0, None, 0, self._running, self._last_error)
         finally:
             conn.close()
 
@@ -192,6 +186,7 @@ class LibraryIndex:
             duration=num("duration", float, None),
             errors=num("errors"),
             running=self._running,
+            error=self._last_error,
         )
 
     def entry(self, path: str) -> Entry | None:
@@ -237,9 +232,6 @@ class LibraryIndex:
             raise PathError(f"not in index: {path!r}")
         return entry
 
-    def abs_path(self, path: str) -> Path:
-        return self.root / path if path else self.root
-
     def children(
         self,
         path: str,
@@ -248,19 +240,10 @@ class LibraryIndex:
         sort: str = "name",
         limit: int = 2000,
     ) -> list[Entry]:
-        """Rows for the file table.
-
-        Always the listing of one directory: `q` narrows what is already on screen rather
-        than changing what is being looked at. It used to do the opposite — a query turned
-        this into a recursive `path LIKE 'p/%'` search with `is_dir = 0`, so typing at the
-        root scanned all 24.6k entries and answered with up to 2,000 bare basenames giving
-        no clue where any of them lived. That is a different question from the one the box
-        in front of a directory listing asks, it cost seconds on a Nexus 10, and it could
-        not do the obvious thing: typing `Audio` at the root now leaves the `Audio/` row,
-        and `row` inside Fiction leaves `Rowling-Harry-Potter/`.
-
-        Directories therefore match like anything else, and `ix_entries_parent` still
-        bounds the scan to one level however large the library is.
+        """Rows for the file table: one directory's listing, which `q` narrows rather than
+        turning into a search. The recursive search it once was scanned all 24.6k entries
+        to answer with bare basenames, and could never return the directory being typed
+        towards. `ix_entries_parent` keeps it one level however large the library grows.
         """
         conn = self._connect()
         if conn is None:
@@ -286,13 +269,35 @@ class LibraryIndex:
             conn.close()
         return [Entry.from_row(r) for r in rows]
 
-    def child_count(self, path: str) -> tuple[int, int]:
-        """`(rows, bytes)` directly under `path`.
+    def subtree(self, path: str) -> list[Entry]:
+        """Every entry below `path`, not including it, in one query.
 
-        Counts directories as well as files, because this is the denominator the filter
-        counter reports (`26 → 9 matches`) and a directory of directories would
-        otherwise claim to hold nothing.
+        A half-open range on the `path` primary key, the idiom `max_file_size` and
+        `Manifests.presence` explain. It replaced a walk that asked `children()` once per
+        directory: 3,846 connections and queries to record a Full Sync, 817 ms against
+        42 ms measured on the live index, run on the event loop as each push finished --
+        and capped at 20,000 children a directory, silently.
         """
+        path = normalise(path)
+        conn = self._connect()
+        if conn is None:
+            return []
+        sql = f"SELECT {_COLUMNS} FROM entries"
+        params: tuple = ()
+        if path:
+            sql += " WHERE path >= ? AND path < ?"
+            params = (f"{path}/", f"{path}0")
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        except sqlite3.Error:
+            return []
+        finally:
+            conn.close()
+        return [Entry.from_row(r) for r in rows]
+
+    def child_count(self, path: str) -> tuple[int, int]:
+        """`(rows, bytes)` directly under `path`, directories included: the filter
+        counter's denominator (`26 → 9 matches`)."""
         conn = self._connect()
         if conn is None:
             return (0, 0)
@@ -309,17 +314,9 @@ class LibraryIndex:
         return (row[0], row[1])
 
     def max_file_size(self, paths: Sequence[str]) -> int:
-        """Largest single *file* at or under any of `paths`.
-
-        For the FAT32 warning, which is about one file exceeding 4 GiB. `Entry.size`
-        cannot answer it: on a directory that column holds the recursive total, so a
-        selection of the 17 top-level directories reported its largest file as 68.7 GB —
-        the size of `Science` entire — against a library whose biggest actual file is
-        786 MB. Every directory push therefore carried a red FAT32 warning that was
-        arithmetic on the wrong number.
-
-        `is_dir = 0` is the whole point of the query; do not drop it.
-        """
+        """Largest single *file* at or under any of `paths`, for the FAT32 4 GiB warning.
+        Not `Entry.size`, which is a directory's recursive total: that warned about 68.7 GB
+        in a library whose largest file is 786 MB. `is_dir = 0` is the point."""
         if not paths:
             return 0
         conn = self._connect()
@@ -330,20 +327,11 @@ class LibraryIndex:
         for raw in paths:
             path = normalise(raw)
             if not path:
-                # The library root is selected: every file is under it, so the prefix
-                # clauses would only narrow what is already the whole table.
+                # The root: every file is under it.
                 clauses = []
                 params = []
                 break
-            # A half-open range, not `path LIKE 'p/%'`, for the reason written out in
-            # `Manifests.presence`: the ESCAPE clause and case_sensitive_like=OFF each
-            # disable the LIKE optimisation on their own, so SQLite cannot answer it from
-            # the `path` primary key and scans all 24,633 rows per clause. 6.72 ms for
-            # one top-level path, 0.16 ms with the range; the plan becomes MULTI-INDEX OR
-            # over sqlite_autoindex_entries_1. Milliseconds here rather than the 18 s the
-            # same defect cost the Library listing, because this runs once per push and
-            # not once per row -- but it is the same defect, and the range is also exact
-            # where LIKE was case-insensitive.
+            # A half-open range, not LIKE: see `Manifests.presence` (6.72 -> 0.16 ms here).
             clauses.append("(path = ? OR (path >= ? AND path < ?))")
             params += [path, f"{path}/", f"{path}0"]
 
@@ -371,22 +359,9 @@ class LibraryIndex:
         return out
 
     def vault_totals(self) -> tuple[int, int]:
-        """``(files, bytes)`` of `.data` itself, for a mirror push's pre-flight estimate.
-
-        A mirror sends the vault as *paths*, and `.data` is not in the index — it is
-        skipped at depth 0 by design — so `JobRunner._estimate` would count the symlinks
-        and miss every byte behind them. The blobs are still knowable from here without a
-        walk: one row per library file records the hash it points at, so the distinct
-        hashes are the vault's contents and their sizes are its size.
-
-        DISTINCT is load-bearing. Two library paths sharing a blob are one file in the
-        vault, which is the entire point of content addressing; counting the rows would
-        report the deduplicated copy as though it were not.
-
-        A floor, not a total: `urantia-library/` is not indexed either, so a mirror moves
-        somewhat more than this. Better a bar that finishes early than one built on a
-        number that means nothing.
-        """
+        """``(files, bytes)`` of the vault, for a mirror's estimate, without walking it: the
+        distinct hashes the index records are the vault's contents. DISTINCT, because two
+        paths sharing a blob are one vault file. A floor: urantia-library/ is not indexed."""
         conn = self._connect()
         if conn is None:
             return (0, 0)
@@ -413,24 +388,6 @@ class LibraryIndex:
             return set()
         finally:
             conn.close()
-
-    def blobs_present(self, blobs: Iterable[str]) -> set[str]:
-        conn = self._connect()
-        if conn is None:
-            return set()
-        wanted = list(blobs)
-        found: set[str] = set()
-        try:
-            for chunk in _chunks(wanted, 400):
-                sql = "SELECT blob FROM entries WHERE blob IN (%s)" % ",".join(
-                    "?" * len(chunk)
-                )
-                found.update(r[0] for r in conn.execute(sql, chunk))
-        except sqlite3.Error:
-            return set()
-        finally:
-            conn.close()
-        return found
 
     # --- writing ---------------------------------------------------------
 
@@ -491,6 +448,9 @@ class LibraryIndex:
             os.replace(tmp, self.db_path)
             self._last_error = None
         except Exception as exc:  # noqa: BLE001 - surfaced in the UI, never fatal
+            if str(exc) != self._last_error:
+                # Once per distinct fault, not every reindex_interval.
+                log.warning("library reindex failed: %s", exc)
             self._last_error = str(exc)
             tmp.unlink(missing_ok=True)
         finally:
@@ -502,11 +462,6 @@ def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-def _chunks(seq: Sequence, size: int) -> Iterator[Sequence]:
-    for i in range(0, len(seq), size):
-        yield seq[i : i + size]
-
-
 class _Counters:
     def __init__(self) -> None:
         self.entries = 0
@@ -516,12 +471,8 @@ class _Counters:
 
 
 def blob_from_link(target: str) -> str | None:
-    """The vault hash a symlink target names, or None if it names something else.
-
-    Split out from `_blob_of` so the scanner can reach it: `rsync --list-only` prints
-    `name -> ../../.data/<hash>` for a symlink, which means a scan of a mirror device can
-    recover exact content identity from the listing alone. See scan.parse_line.
-    """
+    """The vault hash a symlink target names, or None. Shared with `scan.parse_line`,
+    which reads link targets out of a CAS node's listing."""
     base = os.path.basename(target)
     return base if _BLOB_RE.match(base) else None
 
@@ -540,17 +491,12 @@ def _blob_of(dir_entry: os.DirEntry) -> str | None:
 def _walk(
     root: Path,
     counters: _Counters,
-    flush: "Callable[[list[tuple]], None]",
+    flush: Callable[[list[tuple]], None],
     batch_size: int = 2000,
 ) -> None:
-    """Walk the library, handing `flush` batches of index rows.
-
-    Directory rows carry recursive `files`/`size` aggregates so the file table's
-    `DIR 4,812` badge and the breadcrumb's totals cost no query per node. The recursion
-    has to be depth-first to compute those aggregates, so rows are pushed through a
-    callback rather than yielded
-    — a generator would have to flatten every level before emitting anything.
-    """
+    """Walk the library, handing `flush` batches of index rows. Directory rows carry
+    recursive `files`/`size` totals, so the depth-first recursion pushes rows through a
+    callback rather than yielding them."""
     batch: list[tuple] = []
 
     def descend(abs_dir: Path, rel_dir: str, depth: int) -> tuple[int, int]:
@@ -617,10 +563,7 @@ def _walk(
 
 def _enrich(conn: sqlite3.Connection, catalog_db: Path) -> int:
     """Fold title/author in from urantia-library's catalog, keyed on the blob hash.
-
-    Entirely optional: a missing, locked or restructured `lib.db` costs us the two
-    metadata columns and nothing else. We never write to it.
-    """
+    Optional: a missing or locked `lib.db` costs two columns. Never written."""
     if not Path(catalog_db).exists():
         return 0
     try:

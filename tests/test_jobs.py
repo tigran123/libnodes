@@ -46,14 +46,6 @@ def test_argv_is_a_list_never_a_shell_string(app, settings):
     assert "BatchMode=yes" in ssh
 
 
-def test_argv_honours_explicit_flags_without_duplicating(app, settings):
-    lib = app.state.lib
-    device = _device(app).model_copy(update={"rsync_flags": ["-a", "-L", "-R"]})
-    argv = build_argv(device, lib.devices.config, ["Science"], settings)
-    assert argv.count("-L") == 1
-    assert argv.count("-R") == 1
-
-
 def test_dry_run_adds_n(app, settings):
     lib = app.state.lib
     argv = build_argv(
@@ -568,3 +560,237 @@ async def test_iter_lines_splits_on_carriage_returns():
     reader.feed_data(b"a\rb\rc\nd\n")
     reader.feed_eof()
     assert [line async for line in _iter_lines(reader)] == ["a", "b", "c", "d"]
+
+
+# ------------------------------------------------------------- who runs when --
+
+
+def _tracer(tmp_path, trace, tag, sleep=0.3):
+    """A stand-in rsync that records when it starts and ends, tagged by device."""
+    script = tmp_path / f"rsync-{tag}"
+    script.write_text(
+        f"#!/bin/sh\necho start-{tag} >> {trace}\nsleep {sleep}\necho end-{tag} >> {trace}\n"
+    )
+    script.chmod(0o755)
+    return [str(script)]
+
+
+def _held_pull():
+    """Stands for a pull that holds admission, so a push has to wait behind it."""
+    return Job(id=-1, device_id="elsewhere", sources=[], label="", kind="pull")
+
+
+@pytest.mark.parametrize("how", ["abort", "cancel"])
+async def test_a_push_stopped_while_waiting_behind_a_pull_never_runs(
+    app, tmp_path, monkeypatch, how
+):
+    """The state was checked once, on the way in. A queued push you aborted -- or ✕'d, which
+    also deletes its row -- while a pull held the queue still ran when the pull finished."""
+    lib = app.state.lib
+    trace = tmp_path / "trace"
+    monkeypatch.setattr(
+        "libnodes.jobs.build_argv", lambda d, *a, **k: _tracer(tmp_path, trace, d.id)
+    )
+    async with app.router.lifespan_context(app):
+        async with lib.jobs._admit(_held_pull()):
+            job = lib.jobs.submit(_device(app), ["Fiction"])
+            await asyncio.sleep(0.2)
+            assert lib.jobs.get(job.id).state == "queued"
+            await getattr(lib.jobs, how)(job.id)
+        await asyncio.sleep(0.5)
+        assert not trace.exists(), "a stopped job reached rsync"
+
+
+async def test_a_job_queued_twice_runs_once(app, tmp_path, monkeypatch):
+    lib = app.state.lib
+    lib.settings.concurrency = 3
+    trace = tmp_path / "trace"
+    monkeypatch.setattr(
+        "libnodes.jobs.build_argv", lambda d, *a, **k: _tracer(tmp_path, trace, d.id, 0.1)
+    )
+    async with app.router.lifespan_context(app):
+        async with lib.jobs._admit(_held_pull()):
+            job = lib.jobs.submit(_device(app), ["Fiction"])
+            lib.jobs._queue.put_nowait(job.id)  # Start pressed on a job already queued
+            await asyncio.sleep(0.2)
+        await _drain(lib, job.id)
+        await asyncio.sleep(0.3)
+    assert trace.read_text().split() == ["start-kobo", "end-kobo"]
+
+
+async def test_one_device_runs_one_job_at_a_time(app, tmp_path, monkeypatch):
+    """Two rsyncs into one target race on its temp files, and a pruning run's --delete
+    removes the other's in-flight `.name.XXXXXX`. Other devices still run alongside."""
+    lib = app.state.lib
+    lib.settings.concurrency = 3
+    trace = tmp_path / "trace"
+    monkeypatch.setattr(
+        "libnodes.jobs.build_argv", lambda d, *a, **k: _tracer(tmp_path, trace, d.id)
+    )
+    async with app.router.lifespan_context(app):
+        jobs = [
+            lib.jobs.submit(_device(app), ["Fiction"]),
+            lib.jobs.submit(_device(app), ["Science"]),
+            lib.jobs.submit(_device(app, "phone"), ["Fiction"]),
+        ]
+        for job in jobs:
+            await _drain(lib, job.id)
+    lines = trace.read_text().split()
+    assert [x for x in lines if x.endswith("kobo")] == [
+        "start-kobo", "end-kobo", "start-kobo", "end-kobo"
+    ]
+    assert lines.index("start-phone") < lines.index("end-kobo"), "the lock is per device"
+
+
+# --------------------------------------------------------------- restarts --
+
+
+async def test_a_job_waiting_at_a_restart_runs_after_it(app, fake_rsync, monkeypatch):
+    """`start()` used to fail running rows and ignore the rest, so a job still queued when
+    the service restarted read QUEUED for ever with nothing able to run it."""
+    from libnodes.jobs import JobRunner
+
+    lib = app.state.lib
+    monkeypatch.setattr("libnodes.jobs.build_argv", lambda *a, **k: [str(fake_rsync)])
+    queued = lib.jobs.submit(_device(app), ["Fiction"])  # no workers: it just waits
+    deferred = lib.jobs.submit(_device(app, "phone"), ["Fiction"], deferred=True)
+
+    fresh = JobRunner(lib.settings, lib.store, lib.index, lib.manifests, lib.probe, lib.devices)
+    fresh.start()
+    try:
+        for _ in range(100):
+            if fresh.get(queued.id).finished:
+                break
+            await asyncio.sleep(0.05)
+        assert fresh.get(queued.id).state == "done"
+        assert "resumed after a restart" in [t for _, t in fresh.terminal(queued.id)]
+        assert fresh.get(deferred.id).state == "deferred"
+        assert deferred.id in {j.id for j in fresh.active()}
+    finally:
+        await fresh.stop()
+
+
+async def test_a_job_whose_device_changed_mode_is_not_resumed(app, settings):
+    """Rebuilt against the devices.yaml loaded *now*: a node that has become an upstream since
+    is refused exactly as a retry of the job would be."""
+    from libnodes.jobs import JobRunner
+
+    lib = app.state.lib
+    job = lib.jobs.submit(_device(app), ["Fiction"])
+    path = settings.resolved_devices_file
+    path.write_text(
+        path.read_text().replace("  - id: kobo\n", "  - id: kobo\n    sync_mode: upstream\n")
+    )
+    lib.devices.reload(force=True)
+
+    fresh = JobRunner(lib.settings, lib.store, lib.index, lib.manifests, lib.probe, lib.devices)
+    fresh.start()
+    try:
+        row = fresh.get(job.id)
+        assert row.state == "failed"
+        assert "not resumed after a restart" in row.error
+    finally:
+        await fresh.stop()
+
+
+# ---------------------------------------------------------------- plumbing --
+
+
+async def test_a_character_split_across_a_read_survives(app):
+    """rsync's output arrives in 4 KiB reads that end mid-character wherever they like, and
+    decoding each on its own turned `Б` into two U+FFFD -- a filename that then matched
+    nothing when the manifest was credited."""
+    from libnodes.jobs import _iter_lines
+
+    name = "Fiction/Булгаков/Мастер.fb2"
+    line = f"@123|{name}\n".encode()
+    cut = line.index("Б".encode())
+    data = b"x" * (4095 - cut - 1) + b"\n" + line
+    assert data[4095:4097] == "Б".encode(), "the letter must straddle the read"
+    reader = asyncio.StreamReader()
+    reader.feed_data(data)
+    reader.feed_eof()
+    assert [line async for line in _iter_lines(reader)][-1] == f"@123|{name}"
+
+
+def test_a_full_queue_still_hears_that_a_job_finished(app):
+    """A slow reader's queue fills with terminal lines; the lines may go, `done` may not --
+    SSE does not poll, so a lost `done` left the card reading "running"."""
+    from libnodes.jobs import JobEvent
+
+    lib = app.state.lib
+    q = lib.jobs.subscribe()
+    for _ in range(q.maxsize):
+        lib.jobs._emit(JobEvent("line", 1, lines=[("", "x")]))
+    lib.jobs._emit(JobEvent("done", 1))
+    assert [q.get_nowait().kind for _ in range(q.qsize())] == ["dock"]
+
+
+async def test_a_command_that_cannot_start_fails_once_and_says_why(app, monkeypatch):
+    lib = app.state.lib
+    monkeypatch.setattr("libnodes.jobs.build_argv", lambda *a, **k: ["/nonexistent/rsync"])
+    monkeypatch.setattr(lib.jobs, "_retries_for", lambda job: 2)
+    job = lib.jobs.submit(_device(app), ["Fiction"])
+    await lib.jobs._run(job.id)
+    job = lib.jobs.get(job.id)
+    assert job.state == "failed" and job.exit_code == 127
+    lines = [t for _, t in lib.jobs.terminal(job.id)]
+    assert any("not installed" in t for t in lines)
+
+
+
+async def test_file_lines_reach_the_browser_in_batches(app, tmp_path, monkeypatch):
+    """One SSE event per @-line was one render and one frame per tab for each of the ~45k
+    names a Replicate prints. Every line still arrives, in far fewer events."""
+    lib = app.state.lib
+    chatty = tmp_path / "chatty-rsync"
+    chatty.write_text(
+        "#!/bin/sh\n"
+        "i=0; while [ $i -lt 500 ]; do echo \"@1|Fiction/f$i.pdf\"; i=$((i+1)); done\n"
+        "echo 'sent 10 bytes  received 20 bytes  60.00 bytes/sec'\n"
+    )
+    chatty.chmod(0o755)
+    monkeypatch.setattr("libnodes.jobs.build_argv", lambda *a, **k: [str(chatty)])
+    events = lib.jobs.subscribe()
+    job = lib.jobs.submit(_device(app), ["Fiction"])
+    await lib.jobs._run(job.id)
+
+    batches = []
+    while not events.empty():
+        event = events.get_nowait()
+        if event.kind == "line":
+            batches.append(event.lines)
+    names = [text for batch in batches for _, text in batch if text.startswith("Fiction/f")]
+    assert len(names) == 500, "a batched line went missing"
+    assert len(batches) < 25
+
+
+
+async def test_a_deferred_job_starts_when_its_device_answers(app, fake_rsync, monkeypatch):
+    """Woken by the probe's own state change, where it used to poll every 60 s and so
+    waited up to a minute past the dot going green."""
+    from libnodes.probe import Reachability
+
+    lib = app.state.lib
+    monkeypatch.setattr("libnodes.jobs.build_argv", lambda *a, **k: [str(fake_rsync)])
+    async with app.router.lifespan_context(app):
+        job = lib.jobs.submit(_device(app), ["Fiction"], deferred=True)
+        await asyncio.sleep(0.1)
+        assert lib.jobs.get(job.id).state == "deferred"
+
+        lib.probe._slot("kobo").reach = Reachability(state="online")
+        lib.probe._notify(["kobo"])
+        assert (await _drain(lib, job.id, tries=40)).state == "done"
+
+
+async def test_a_held_job_waits_for_start_whatever_the_probe_says(app, fake_rsync, monkeypatch):
+    from libnodes.probe import Reachability
+
+    lib = app.state.lib
+    monkeypatch.setattr("libnodes.jobs.build_argv", lambda *a, **k: [str(fake_rsync)])
+    async with app.router.lifespan_context(app):
+        job = lib.jobs.submit(_device(app), ["Fiction"], deferred=True, hold=True)
+        lib.probe._slot("kobo").reach = Reachability(state="online")
+        lib.probe._notify(["kobo"])
+        await asyncio.sleep(0.3)
+        assert lib.jobs.get(job.id).state == "deferred"
