@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from .config import SKIP_TOPLEVEL, Settings
+from .models import ExcludeRules
 
 log = logging.getLogger(__name__)
 
@@ -89,6 +90,24 @@ class Entry:
         return self.name + "/" if self.is_dir else self.name
 
 
+def within(path: str, root: str) -> bool:
+    """`path` is `root` or below it; `""`, the library root, is above everything."""
+    return not root or path == root or path.startswith(root + "/")
+
+
+def held_back(entry: Entry, roots: Sequence[Entry]) -> tuple[int, int]:
+    """`(files, bytes)` of `entry` that `excluded_roots` cover. The roots are disjoint, so
+    a sum; an entry inside one is held back whole."""
+    if any(within(entry.path, r.path) for r in roots):
+        return (entry.files or 0, entry.size) if entry.is_dir else (1, entry.size)
+    files = size = 0
+    for r in roots:
+        if within(r.path, entry.path):
+            files += (r.files or 0) if r.is_dir else 1
+            size += r.size
+    return files, size
+
+
 @dataclass(frozen=True)
 class IndexMeta:
     indexed_at: float | None
@@ -146,6 +165,8 @@ class LibraryIndex:
         self._lock = threading.Lock()
         self._running = False
         self._last_error: str | None = None
+        #: `excluded_roots` per pattern list, with the `indexed_at` it was walked against.
+        self._excluded: dict[tuple[str, ...], tuple[float | None, list[Entry]]] = {}
 
     # --- reading ---------------------------------------------------------
 
@@ -376,6 +397,54 @@ class LibraryIndex:
         finally:
             conn.close()
         return (int(row[0]), int(row[1])) if row else (0, 0)
+
+    def excluded_roots(self, patterns: Sequence[str]) -> list[Entry]:
+        """The top-most entries `patterns` hold back from a push (see `ExcludeRules`):
+        each directory's `files` and `size` already total what is below it, so any view's
+        excluded share is a sum over the roots under it, with no walk per request.
+
+        One walk of the index per pattern list and index generation -- note9, s4a and alice
+        share a list -- parents before children, so a directory inherits its parent's
+        answer and only a directory not already held back is matched.
+        """
+        key = tuple(patterns)
+        rules = ExcludeRules(key)
+        if not rules:
+            return []
+        generation = self.meta().indexed_at
+        hit = self._excluded.get(key)
+        if hit is not None and hit[0] == generation:
+            return hit[1]
+        conn = self._connect()
+        if conn is None:
+            return []
+        try:
+            # Three columns, not `subtree("")`: building 24.6k Entry objects was 174 ms of
+            # a 220 ms walk, and only the roots need one.
+            rows = conn.execute("SELECT path, parent, is_dir FROM entries").fetchall()
+            found: list[str] = []
+            out_dirs: set[str] = set()
+            for path, parent, is_dir in sorted(rows, key=lambda r: r[0].count("/")):
+                if (parent or "") in out_dirs:
+                    if is_dir:
+                        out_dirs.add(path)
+                elif rules.matches(path, bool(is_dir)):
+                    found.append(path)
+                    if is_dir:
+                        out_dirs.add(path)
+            roots = [
+                Entry.from_row(r)
+                for path in sorted(found)
+                if (r := conn.execute(
+                    f"SELECT {_COLUMNS} FROM entries WHERE path = ?", (path,)
+                ).fetchone())
+            ]
+        except sqlite3.Error:
+            return []
+        finally:
+            conn.close()
+        self._excluded[key] = (generation, roots)
+        return roots
 
     def all_file_paths(self) -> set[str]:
         """Every file path in the library, for set comparisons against a device."""

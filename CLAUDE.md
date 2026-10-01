@@ -162,6 +162,13 @@ listed.
   write bumps *after* committing (`_touched`; a new writer must call it), so a count taken
   across a write is never served. `test_manifests.py::test_coverage_counts_only_the_librarys_own_files`,
   `::test_the_root_coverage_follows_every_write`, `::test_a_write_during_the_root_count_is_not_cached_away`.
+- **A push credits only what its excludes let through, and the map measures a device against
+  that share.** `_update_manifest` and `_estimate` drop `LibraryIndex.excluded_roots`
+  (rsync's own matching, `models.ExcludeRules`: `*` stops at `/`, and an unanchored `Video/`
+  matches at any depth). A scan keeps push rows, so a false credit lasts for ever. A
+  leftover inside an excluded tree counts as held but never stands in for a missing book
+  (`_Drawn.held_out`). `test_excludes.py::test_a_push_does_not_credit_what_its_excludes_held_back`,
+  `::test_a_leftover_does_not_stand_in_for_a_missing_book`.
 - **"Not there" needs a `scans` row**; no rows and no scan is "nothing recorded"
   (`CoverageRow.state`). `test_routes.py::test_a_scanned_device_holding_nothing_is_not_called_unscanned`.
 - **A scanned symlink's size comes from the vault; unresolvable is `None` (a dash), not 0.**

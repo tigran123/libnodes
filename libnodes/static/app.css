@@ -2244,6 +2244,17 @@ a.file-name:hover {
   background: var(--warn-fill);
 }
 
+/* What the device's excludes hold back, at the far end: a device that has its whole
+   share is never solid green end to end. Ruled like `.cov-sq.is-excluded`. */
+.cov-bar > .cov-bar-excl {
+  margin-left: auto;
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--dim) 0 1px,
+    transparent 1px 3px
+  );
+}
+
 .cov-pct,
 .cov-n {
   justify-content: flex-end;
@@ -2285,7 +2296,8 @@ a.file-name:hover {
   color: var(--warn);
 }
 
-.cov-word.is-absent {
+.cov-word.is-absent,
+.cov-word.is-excluded {
   color: var(--muted);
 }
 
@@ -2294,8 +2306,10 @@ a.file-name:hover {
 }
 
 /* A square filled from the bottom: green for current copies, amber above for stale ones,
-   the track for the rest. `absent` is known empty, a scan's word; `unknown` is only an
-   outline, because nothing has been asked. */
+   the track for the rest, and the top `--fx` left clear over a hatch: what the device's
+   excludes hold back -- all of it for `is-excluded`, which may still show leftovers in
+   green. `absent` is known empty, a scan's word; `unknown` is only an outline, because
+   nothing has been asked. */
 .cov-sq {
   display: block;
   flex-shrink: 0;
@@ -2305,13 +2319,18 @@ a.file-name:hover {
 }
 
 .cov-sq.is-complete,
-.cov-sq.is-partial {
-  background: linear-gradient(
-    to top,
-    var(--ok) 0 var(--fo),
-    var(--warn-fill) var(--fo) calc(var(--fo) + var(--fs)),
-    var(--line) 0
-  );
+.cov-sq.is-partial,
+.cov-sq.is-share,
+.cov-sq.is-excluded {
+  background:
+    linear-gradient(
+      to top,
+      var(--ok) 0 var(--fo),
+      var(--warn-fill) var(--fo) calc(var(--fo) + var(--fs)),
+      var(--line) 0 calc(100% - var(--fx, 0%)),
+      transparent 0
+    ),
+    repeating-linear-gradient(-45deg, var(--dim) 0 1px, transparent 1px 3px);
 }
 
 .cov-sq.is-absent {

@@ -35,8 +35,9 @@
         <span>{% if entry.is_dir %}{{ entry.files|commafy }} files · {% endif %}{{ entry.size|hsize }}</span>
         <span class="cov-counts">
           {% for state, word in [('complete', 'complete' if view.is_tree else 'has it'),
-                                 ('partial', 'partial'), ('absent', 'not there'),
-                                 ('unknown', 'nothing recorded')] %}
+                                 ('share', 'complete minus excludes'),
+                                 ('partial', 'partial'), ('excluded', 'excluded'),
+                                 ('absent', 'not there'), ('unknown', 'nothing recorded')] %}
             {% if view.count(state) %}<span>{{ view.count(state) }} {{ word }}</span>{% endif %}
           {% endfor %}
         </span>
@@ -63,6 +64,7 @@
               <span class="cov-meta">
                 {% if row.device.is_upstream %}<span class="cov-role">upstream</span>
                 {% elif row.device.is_mirror %}<span class="cov-role">mirror</span>{% endif %}
+                {% if row.excluded_names %}<span>excludes {{ row.excluded_names|names }} · {{ row.excluded_bytes|hsize }}</span>{% endif %}
                 {% if t.stale and view.is_tree %}<span class="is-warn">{{ t.stale|commafy }} out of date</span>{% endif %}
                 {% if t.pushed_at %}<span>pushed {{ t.pushed_at|reltime }}</span>{% endif %}
                 {% if t.pulled_at %}<span>pulled {{ t.pulled_at|reltime }}</span>{% endif %}
@@ -71,14 +73,16 @@
               </span>
             </div>
 
-            {% if row.state in ('complete', 'partial') and view.is_tree %}
+            {% if row.held and view.is_tree %}
               <div class="cov-r">
                 <span class="cov-bar" aria-hidden="true">
                   <i class="cov-bar-ok" style="width:{{ '%.1f'|format(row.fill_ok) }}%"></i>
                   {% if row.fill_stale %}<i class="cov-bar-stale" style="width:{{ '%.1f'|format(row.fill_stale) }}%"></i>{% endif %}
+                  {% if row.fill_excluded %}<i class="cov-bar-excl" style="width:{{ '%.1f'|format(row.fill_excluded) }}%"></i>{% endif %}
                 </span>
               </div>
-              <div class="cov-r cov-pct">{{ row.held|share(row.total) }}</div>
+              {# Of what its excludes let it take; of the whole, when they take all of it. #}
+              <div class="cov-r cov-pct">{{ row.held_in|share(row.share) if row.share > 0 else row.held|share(row.total) }}</div>
               <div class="cov-r cov-n">
                 <span>{{ row.held|commafy }}</span>
                 <span class="cov-gb">{{ t.bytes|hsize }}</span>
@@ -89,15 +93,15 @@
               </div>
             {% else %}
               <div class="cov-r cov-word is-{{ row.state }}">
-                {{ 'not there' if row.state == 'absent' else 'nothing recorded' }}
+                {{ {'absent': 'not there', 'excluded': 'excluded by its config'}.get(row.state, 'nothing recorded') }}
               </div>
             {% endif %}
 
             {% for cell in row.cells %}
               <div class="cov-r cov-c{{ ' band' if loop.index is even }}"
-                   title="{{ row.device.name }} · {{ cell.name }} · {{ cell.held|commafy }}/{{ cell.total|commafy }} files{% if cell.stale %}, {{ cell.stale|commafy }} out of date{% endif %}">
+                   title="{{ row.device.name }} · {{ cell.name }} · {{ cell.held|commafy }}/{{ cell.total|commafy }} files{% if cell.stale %}, {{ cell.stale|commafy }} out of date{% endif %}{% if cell.excluded %}, {{ 'all' if cell.share <= 0 else cell.excluded|commafy }} excluded by its config{% endif %}">
                 <i class="cov-sq is-{{ cell.state }}"
-                   style="--fo:{{ '%.0f'|format(cell.fill_ok) }}%;--fs:{{ '%.0f'|format(cell.fill_stale) }}%"></i>
+                   style="--fo:{{ '%.0f'|format(cell.fill_ok) }}%;--fs:{{ '%.0f'|format(cell.fill_stale) }}%;--fx:{{ '%.0f'|format(cell.fill_excluded) }}%"></i>
               </div>
             {% endfor %}
           {% endfor %}
@@ -116,11 +120,14 @@
 
       {# Drawn with the map's own classes, so it cannot drift. #}
       <div class="cov-legend">
-        <span><i class="cov-sq is-complete" style="--fo:100%;--fs:0%"></i> has it</span>
+        <span><i class="cov-sq is-complete" style="--fo:100%;--fs:0%;--fx:0%"></i> has it</span>
         {% if view.is_tree %}
-          <span><i class="cov-sq is-partial" style="--fo:50%;--fs:0%"></i> part of it</span>
+          <span><i class="cov-sq is-partial" style="--fo:50%;--fs:0%;--fx:0%"></i> part of it</span>
         {% endif %}
-        <span><i class="cov-sq is-partial" style="--fo:0%;--fs:100%"></i> out of date</span>
+        <span><i class="cov-sq is-partial" style="--fo:0%;--fs:100%;--fx:0%"></i> out of date</span>
+        {% if view.any_excluded %}
+          <span><i class="cov-sq is-excluded" style="--fo:0%;--fs:0%;--fx:100%"></i> excluded by its config</span>
+        {% endif %}
         <span><i class="cov-sq is-absent"></i> not there (a scan says so)</span>
         <span><i class="cov-sq is-unknown"></i> nothing recorded</span>
       </div>

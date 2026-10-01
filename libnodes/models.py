@@ -100,6 +100,96 @@ def parse_size(value: str | int | None) -> int | None:
     return int(float(m.group(1)) * _SIZE_MULT[m.group(2).upper()])
 
 
+class ExcludeRules:
+    """rsync's `--exclude` patterns, asked of a library-relative path: what a push held back.
+
+    A push runs `-R` from `library_root`, so a library path *is* the transfer name an
+    exclude is matched against. The rules are rsync's (man rsync, PATTERN MATCHING RULES):
+    a leading `/` anchors at the root; a trailing `/` matches only a directory; a pattern
+    with no other `/` and no `**` is matched against the last component alone, anywhere in
+    the tree, and one with a `/` against a run of trailing components; `*` and `?` stop at
+    `/`, `**` does not -- which is why this is not `fnmatch`, whose `*` crosses it.
+
+    `matches` asks about the entry alone. rsync never descends into an excluded directory,
+    so everything below one is held back too; `LibraryIndex.excluded_roots` walks for that.
+    """
+
+    def __init__(self, patterns: Sequence[str]) -> None:
+        self._rules = [rule for p in patterns if (rule := self._compile(p))]
+
+    def __bool__(self) -> bool:
+        return bool(self._rules)
+
+    def matches(self, path: str, is_dir: bool) -> bool:
+        name = path.rsplit("/", 1)[-1]
+        for regex, dir_only, whole_path in self._rules:
+            if dir_only and not is_dir:
+                continue
+            if regex.search(path if whole_path else name):
+                return True
+        return False
+
+    @staticmethod
+    def _compile(pattern: str) -> tuple[re.Pattern, bool, bool] | None:
+        p = pattern
+        dir_only = False
+        if p.endswith("/***"):
+            # `dir/***` is `dir/` plus its contents, which the walk adds anyway.
+            p, dir_only = p[:-4], True
+        elif p.endswith("/"):
+            p, dir_only = p.rstrip("/"), True
+        anchored = p.startswith("/")
+        p = p.lstrip("/")
+        if not p:
+            return None
+        whole_path = anchored or "/" in p or "**" in p
+        body = _glob_regex(p) if any(c in p for c in "*?[") else re.escape(p)
+        if anchored:
+            regex = f"^{body}$"
+        elif whole_path:
+            regex = f"(?:^|/){body}$"
+        else:
+            regex = f"^{body}$"
+        return re.compile(regex), dir_only, whole_path
+
+
+def _glob_regex(pattern: str) -> str:
+    """An rsync wildcard as a regex: `**` crosses `/`, `*` and `?` do not, `\\` escapes."""
+    out: list[str] = []
+    i, n = 0, len(pattern)
+    while i < n:
+        c = pattern[i]
+        if c == "*":
+            if pattern.startswith("**", i):
+                out.append(".*")
+                i += 2
+                continue
+            out.append("[^/]*")
+        elif c == "?":
+            out.append("[^/]")
+        elif c == "[":
+            # A `]` first in the class, after any `!`, is a literal one.
+            first = i + 2 if pattern[i + 1 : i + 2] in ("!", "^") else i + 1
+            end = pattern.find("]", first + 1)
+            if end == -1:
+                out.append(re.escape(c))
+            else:
+                inner = pattern[i + 1 : end]
+                if inner[:1] == "!":
+                    inner = "^" + inner[1:]
+                out.append("[" + inner.replace("\\", "\\\\") + "]")
+                i = end + 1
+                continue
+        elif c == "\\" and i + 1 < n:
+            out.append(re.escape(pattern[i + 1]))
+            i += 2
+            continue
+        else:
+            out.append(re.escape(c))
+        i += 1
+    return "".join(out)
+
+
 class Defaults(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

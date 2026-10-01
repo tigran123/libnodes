@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup, escape
 
 from .cardprefs import ALL_VISIBLE
 
@@ -70,6 +71,20 @@ def share(held: int | None, total: int | None) -> str:
     if tenths == 0:
         return "<0.1%"
     return f"{tenths // 10}.{tenths % 10}%"
+
+
+def names(items: list[str] | None, limit: int = 3) -> Markup:
+    """`Audio, Video, Zhurnaly +1 more` -- a list that must stay on a line or two. A path
+    may break after each `/`: unbroken, `Science/Programming/Video` widened the coverage
+    map's device column into the bar beside it at tablet width."""
+    items = items or []
+    shown = Markup(", ").join(
+        Markup("/<wbr>").join(escape(part) for part in item.split("/"))
+        for item in items[:limit]
+    )
+    if len(items) > limit:
+        return shown + f" +{len(items) - limit} more"
+    return shown
 
 
 def reltime(ts: float | None, now: float | None = None) -> str:
@@ -158,6 +173,7 @@ def build_templates() -> Jinja2Templates:
         hsize_short=hsize_short,
         commafy=commafy,
         share=share,
+        names=names,
         reltime=reltime,
         until=until,
         hhmmss=hhmmss,
@@ -181,6 +197,7 @@ __all__ = [
     "hsize_short",
     "commafy",
     "share",
+    "names",
     "reltime",
     "hhmmss",
     "clock",

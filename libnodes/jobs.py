@@ -28,7 +28,7 @@ from typing import Literal, Sequence
 from .config import PULL_EXCLUDES, SKIP_TOPLEVEL, Settings
 from .probe import DeviceProbe, rsync_e, ssh_base
 from .procs import reap
-from .library import LibraryIndex, blob_from_link
+from .library import LibraryIndex, blob_from_link, held_back, within
 from .manifests import Manifests
 from .models import Device, DevicesFile
 
@@ -1106,7 +1106,9 @@ class JobRunner:
             adopt=adopt,
             whole_library=whole_library,
         )
-        files_total, bytes_total = self._estimate(sources, mirror=device.is_mirror)
+        files_total, bytes_total = self._estimate(
+            sources, mirror=device.is_mirror, excludes=device.excludes_with(config.defaults)
+        )
 
         job = Job(
             id=0,
@@ -1174,25 +1176,24 @@ class JobRunner:
         return job
 
     def _estimate(
-        self, sources: Sequence[str], *, mirror: bool = False
+        self, sources: Sequence[str], *, mirror: bool = False, excludes: Sequence[str] = ()
     ) -> tuple[int, int]:
-        """Totals from the index, so the dock has numbers before rsync does.
+        """Totals from the index, so the dock has numbers before rsync does, less what
+        `excludes` hold back (`excluded_roots`).
 
         A mirror also sends the vault, which is not indexed: its files are added to the
         count, but not its bytes, because a link's indexed size already is its blob's.
         """
+        roots = self.index.excluded_roots(excludes)
         files = 0
         size = 0
         for src in sources:
             entry = self.index.entry(src)
             if entry is None:
                 continue
-            if entry.is_dir:
-                files += entry.files or 0
-                size += entry.size
-            else:
-                files += 1
-                size += entry.size
+            out_files, out_bytes = held_back(entry, roots)
+            files += ((entry.files or 0) if entry.is_dir else 1) - out_files
+            size += entry.size - out_bytes
         if mirror:
             vault_files, _vault_bytes = self.index.vault_totals()
             files += vault_files
@@ -2007,7 +2008,20 @@ class JobRunner:
         )
 
     def _update_manifest(self, job: Job) -> None:
-        """Record what the device now holds, so PRESENT ON reflects the push."""
+        """Record what the device now holds, so PRESENT ON reflects the push.
+
+        Never what its excludes held back: rsync sent none of it, and a scan keeps push
+        rows (`replace_scan`), so a false one stays. Every Full Sync of note9 and s4a once
+        recorded Audio/, Video/ and Zhurnaly/, 1,952 files rsync never sent, and the map
+        drew both devices at 100% (2026-10-01).
+        """
+        device = self.devices.config.by_id.get(job.device_id)
+        roots = [
+            r.path
+            for r in self.index.excluded_roots(
+                device.excludes_with(self.devices.config.defaults) if device else ()
+            )
+        ]
         recorded: list[tuple] = []
         for src in job.sources:
             entry = self.index.entry(src)
@@ -2017,6 +2031,10 @@ class JobRunner:
             if entry.is_dir:
                 # The directory too: an empty one leaves no other trace.
                 recorded.extend(_manifest_row(e) for e in self.index.subtree(entry.path))
+        if roots:
+            recorded = [
+                row for row in recorded if not any(within(row[0], r) for r in roots)
+            ]
         if recorded:
             self.manifests.record(job.device_id, recorded, source="push")
 
