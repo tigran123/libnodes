@@ -165,10 +165,15 @@ listed.
 - **A push credits only what its excludes let through, and the map measures a device against
   that share.** `_update_manifest` and `_estimate` drop `LibraryIndex.excluded_roots`
   (rsync's own matching, `models.ExcludeRules`: `*` stops at `/`, and an unanchored `Video/`
-  matches at any depth). A scan keeps push rows, so a false credit lasts for ever. A
+  matches at any depth). A false credit stands until the next scan, which may be never. A
   leftover inside an excluded tree counts as held but never stands in for a missing book
   (`_Drawn.held_out`). `test_excludes.py::test_a_push_does_not_credit_what_its_excludes_held_back`,
   `::test_a_leftover_does_not_stand_in_for_a_missing_book`.
+- **A scan overrules every row written before it began, push rows included**
+  (`replace_scan`, with `Scanner._run`'s start time). A row written after that survives: a
+  push that finished mid-scan may have landed behind the listing.
+  `test_manifests.py::test_a_scan_retracts_a_push_it_did_not_find`,
+  `::test_a_push_that_lands_during_a_scan_survives_it`.
 - **"Not there" needs a `scans` row**; no rows and no scan is "nothing recorded"
   (`CoverageRow.state`). `test_routes.py::test_a_scanned_device_holding_nothing_is_not_called_unscanned`.
 - **A scanned symlink's size comes from the vault; unresolvable is `None` (a dash), not 0.**

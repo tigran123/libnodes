@@ -100,6 +100,51 @@ def test_scan_replaces_previous_scan_rows(settings, index):
     assert rows[0].source == "scan"
 
 
+def test_a_scan_retracts_a_push_it_did_not_find(settings, index):
+    """one: 30 books pushed, its .Books emptied by hand, then a scan that listed nothing --
+    and the map still drew the 30, because a scan replaced only scan and pull rows."""
+    manifests = Manifests(settings.manifests_db)
+    entry = index.entry("Fiction/Joyce/Ulysses.pdf")
+    manifests.record_entries("kobo", [entry])
+    assert _total(manifests.coverage(index.db_path, "", ["kobo"])["kobo"]).files == 1
+
+    manifests.replace_scan("kobo", [])
+
+    assert manifests.paths_for("kobo") == set()
+    assert manifests.presence([entry], ["kobo"])[entry.path] == []
+    assert manifests.coverage(index.db_path, "", ["kobo"])["kobo"] == {}
+
+
+async def test_a_push_that_lands_during_a_scan_survives_it(settings, tmp_path, monkeypatch):
+    """The listing may already have passed the directory the push wrote to, so it cannot
+    speak for a row newer than itself -- only for the ones it found waiting."""
+    import asyncio
+
+    from libnodes.models import Device
+    from libnodes.scan import Scanner
+
+    flag = tmp_path / "go"
+    listing = tmp_path / "listing"
+    listing.write_text(f"#!/bin/sh\nwhile [ ! -e '{flag}' ]; do sleep 0.01; done\n")
+    listing.chmod(0o755)
+    monkeypatch.setattr("libnodes.scan.scan_argv", lambda *a, **k: [str(listing)])
+    manifests = Manifests(settings.manifests_db)
+    scanner = Scanner(settings, manifests)
+    device = Device(id="kobo", name="kobo", type="kobo", host="h", target="/t")
+    manifests.record("kobo", [("Fiction/Gone.pdf", "aa", 1, 0)], source="push")
+
+    task = asyncio.create_task(scanner._run(device))
+    for _ in range(200):
+        if "kobo" in scanner._procs:
+            break
+        await asyncio.sleep(0.01)
+    manifests.record("kobo", [("Fiction/Landed.pdf", "bb", 2, 0)], source="push")
+    flag.touch()
+    assert (await task).ok
+
+    assert manifests.paths_for("kobo") == {"Fiction/Landed.pdf"}
+
+
 def test_forget_clears_a_device(settings, index):
     manifests = Manifests(settings.manifests_db)
     manifests.record_entries("kobo", [index.entry("Fiction/Joyce/Ulysses.pdf")])
@@ -452,8 +497,11 @@ def test_the_root_coverage_follows_every_write(settings, index):
     assert check() == 2
     cached.retract("kobo", [tal.path])
     assert check() == 1
-    cached.replace_scan("kobo", [(tal.path, tal.blob, tal.size, tal.mtime)])
-    assert check() == 2, "a scan replaces scan rows; the push row for Landau survives"
+    cached.replace_scan(
+        "kobo",
+        [(e.path, e.blob, e.size, e.mtime) for e in (landau, tal)],
+    )
+    assert check() == 2
     cached.forget("kobo")
     assert check() == 0
 

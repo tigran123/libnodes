@@ -2,8 +2,8 @@
 
 Every Full Sync of note9 and s4a recorded Audio/, Video/ and Zhurnaly/ as shipped -- 1,952
 files rsync had excluded -- and the coverage map drew both devices at 100%, solid green
-under all three. A scan keeps push rows, so nothing would ever have taken that back. Once
-the manifest was honest the same columns read "not there", which looks exactly like a
+under all three, and nothing but a scan would ever have taken that back. Once the
+manifest was honest the same columns read "not there", which looks exactly like a
 device that is merely behind: so what the excludes hold back is its own state, a hatch,
 and a device is measured against the share its excludes let it take.
 """

@@ -987,8 +987,7 @@ async def test_the_catalog_phase_does_not_redefine_the_transfers_numbers(
 async def test_a_scan_retracts_what_a_pull_claimed(app, settings):
     """A pull row was true when it was written and nothing else would ever take it back:
     delete the book upstream and it would read present for ever. A scan has just looked,
-    so it overrules the transfer — while push rows, which are a claim about a device we
-    write *to*, survive as they always have."""
+    so it overrules the transfer. Another device's rows are not its business."""
     m = app.state.lib.manifests
     m.record("source", [("Science/Physics/Feynman.djvu", "abc", 12, 1, 0)], source="pull")
     m.record("kobo", [("Science/Physics/Feynman.djvu", "abc", 12, 1, 0)], source="push")

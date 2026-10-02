@@ -2010,10 +2010,10 @@ class JobRunner:
     def _update_manifest(self, job: Job) -> None:
         """Record what the device now holds, so PRESENT ON reflects the push.
 
-        Never what its excludes held back: rsync sent none of it, and a scan keeps push
-        rows (`replace_scan`), so a false one stays. Every Full Sync of note9 and s4a once
-        recorded Audio/, Video/ and Zhurnaly/, 1,952 files rsync never sent, and the map
-        drew both devices at 100% (2026-10-01).
+        Never what its excludes held back: rsync sent none of it, and a false row stands
+        until the device is next scanned, which may be never. Every Full Sync of note9 and
+        s4a once recorded Audio/, Video/ and Zhurnaly/, 1,952 files rsync never sent, and
+        the map drew both devices at 100% (2026-10-01).
         """
         device = self.devices.config.by_id.get(job.device_id)
         roots = [

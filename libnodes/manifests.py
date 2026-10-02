@@ -509,22 +509,31 @@ class Manifests:
         )
 
     def replace_scan(
-        self, device_id: str, entries: Iterable[tuple[str, str | None, int | None, int | None]]
+        self,
+        device_id: str,
+        entries: Iterable[tuple[str, str | None, int | None, int | None]],
+        started_at: float | None = None,
     ) -> int:
-        """A scan is authoritative: it replaces the device's scan rows, and its pull rows,
-        which a book deleted upstream would otherwise leave claiming presence for ever.
-        Push rows survive."""
+        """A scan is authoritative: it replaces every row the device had before the listing
+        began, whatever wrote it. Push rows once survived, and one, emptied by hand, kept
+        30 pushed books through a scan that listed none (2026-10-02).
+
+        A row written after `started_at` survives: a push that finished mid-scan may have
+        landed in a directory the listing had already passed. None means it began now.
+        """
         rows = _rows(device_id, entries, "scan")
         files = [r for r in rows if not r[7]]
         total_bytes = sum((r[3] or 0) for r in files)
+        before = time.time() if started_at is None else started_at
         # One transaction. As three, a reader between the DELETE and the INSERT saw the
         # device holding nothing, and a crash there left it that way.
         conn = self._connect()
         try:
             with conn:
                 conn.execute(
-                    "DELETE FROM manifest WHERE device_id = ? AND source IN ('scan', 'pull')",
-                    (device_id,),
+                    "DELETE FROM manifest WHERE device_id = ? "
+                    "AND (shipped_at IS NULL OR shipped_at < ?)",
+                    (device_id, before),
                 )
                 conn.executemany(_UPSERT, rows)
                 conn.execute(

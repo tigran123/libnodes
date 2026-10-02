@@ -187,7 +187,7 @@ class Scanner:
                 tail = stderr.decode(errors="replace").strip().splitlines()
                 result.error = tail[-1] if tail else f"rsync exited {code}"
             else:
-                self.manifests.replace_scan(device.id, rows)
+                self.manifests.replace_scan(device.id, rows, started_at=started)
         except (OSError, asyncio.CancelledError) as exc:
             result.error = str(exc) or exc.__class__.__name__
         except Exception as exc:  # noqa: BLE001 - a scan must never take the app down
